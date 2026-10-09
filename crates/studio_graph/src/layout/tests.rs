@@ -403,6 +403,29 @@ fn assert_routes_obey_the_laws(g: &Graph) {
     }
 }
 
+/// Shared tracks never make two wires one line: no vertical stretch is drawn by code wires of two
+/// different providers, or by a code wire and a documentation wire.
+fn assert_no_collinear_verticals(g: &Graph) {
+    let flow = g.flow.as_ref().unwrap();
+    let mut verticals: Vec<(f32, f32, f32, NodeId, GateKind)> = Vec::new();
+    let routes = flow.routes.iter().map(|r| (r, GateKind::Code));
+    for (route, kind) in routes.chain(flow.doc_routes.iter().map(|r| (r, GateKind::Documentation))) {
+        for w in route.points.windows(2) {
+            if (w[0][0] - w[1][0]).abs() < 0.01 && (w[0][1] - w[1][1]).abs() > 0.01 {
+                verticals.push((w[0][0], w[0][1].min(w[1][1]), w[0][1].max(w[1][1]), route.provider, kind));
+            }
+        }
+    }
+    verticals.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for (i, a) in verticals.iter().enumerate() {
+        for b in verticals[i + 1..].iter().take_while(|b| b.0 - a.0 < 0.05) {
+            let overlap = a.2.min(b.2) - a.1.max(b.1);
+            let distinct = a.4 != b.4 || (a.4 == GateKind::Code && a.3 != b.3);
+            assert!(!(distinct && overlap > 0.05), "wires share a vertical line at x {}: {:?} and {:?}", a.0, a, b);
+        }
+    }
+}
+
 fn assert_route_obeys_the_laws(g: &Graph, route: &WireRoute, kind: GateKind) {
     let flow = g.flow.as_ref().unwrap();
     let gate_at = |id: &str, side: GateSide, p: [f32; 2]| {
@@ -497,6 +520,7 @@ fn routes_never_cross_cards_and_use_gates() {
         let mut g = random_graph(seed, 1 + (seed as usize % 7), 6 + (seed as usize * 3) % 40, 10 + seed as usize * 2);
         g.layout_folder_tree();
         assert_routes_obey_the_laws(&g);
+        assert_no_collinear_verticals(&g);
         total += g.flow.as_ref().unwrap().routes.len();
         docs += g.flow.as_ref().unwrap().doc_routes.len();
     }
@@ -555,6 +579,18 @@ fn the_route_checks_catch_violations() {
     let fails =
         |g: Graph| std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| assert_routes_obey_the_laws(&g))).is_err();
     assert!(!fails(laid_out()), "a fresh layout passes");
+
+    // Two providers' wires drawn on one vertical line.
+    let mut g = laid_out();
+    let flow = g.flow.as_mut().unwrap();
+    let vertical = |r: &WireRoute| r.points.windows(2).position(|w| w[0][0] == w[1][0] && w[0][1] != w[1][1]);
+    let a = flow.routes.iter().position(|r| vertical(r).is_some()).unwrap();
+    let (provider, i) = (flow.routes[a].provider, vertical(&flow.routes[a]).unwrap());
+    let seg = [flow.routes[a].points[i], flow.routes[a].points[i + 1]];
+    let other = flow.routes.iter().position(|r| r.provider != provider).unwrap();
+    flow.routes[other].points.extend([seg[0], seg[1]]);
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| assert_no_collinear_verticals(&g)));
+    assert!(caught.is_err(), "a shared vertical line is caught");
 
     // A card dropped onto the middle of a route.
     let mut g = laid_out();

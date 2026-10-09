@@ -818,6 +818,8 @@ struct ColumnLayout {
     col_w: Vec<f32>,
     paths: Vec<LinkPath>,
     back_count: usize,
+    /// Row below the columns for each backward path (by index into `paths`).
+    back_row: Vec<usize>,
     /// x of each wire's vertical track, relative to the content's left edge. Index 0 is the input
     /// gate band, `l + 1` the gap right of column `l`; the last is the output gate band.
     tracks: Vec<BTreeMap<TrackKey, f32>>,
@@ -924,6 +926,7 @@ impl ColumnLayout {
             col_w: Vec::new(),
             paths: Vec::new(),
             back_count: 0,
+            back_row: Vec::new(),
             tracks: Vec::new(),
         };
         let mut node_of = vec![usize::MAX; n];
@@ -1165,23 +1168,6 @@ impl ColumnLayout {
             gap_keys[self.nodes[u].layer + 1].insert((Some(a), key, 1));
             gap_keys[self.nodes[v].layer].insert((Some(b), key, 2));
         }
-        self.col_w = self.layers.iter().map(|l| l.iter().map(|&n| self.nodes[n].w).fold(0.0, f32::max)).collect();
-        let band = |n: usize| if n == 0 { 0.0 } else { GATE_BAND + TRACK_PITCH * n as f32 };
-        self.in_band = band(gap_keys[0].len());
-        self.out_band = band(gap_keys[layers].len());
-        let mut x = 0.0;
-        let mut gap_left = vec![-self.in_band; layers + 1];
-        self.column_x = Vec::with_capacity(layers);
-        for l in 0..layers {
-            self.column_x.push(x);
-            x += self.col_w[l];
-            gap_left[l + 1] = x;
-            if l + 1 < layers {
-                x += GAP_BASE + TRACK_PITCH * gap_keys[l + 1].len() as f32;
-            }
-        }
-        self.content_width = x;
-
         // Initial stacking, then alternating passes towards the median of neighbouring ports.
         for layer in &self.layers {
             let mut y = 0.0;
@@ -1239,32 +1225,94 @@ impl ColumnLayout {
         self.in_gate_y = place_gates(&in_targets);
         self.out_gate_y = place_gates(&out_sources_y);
 
-        // Each gap's tracks, ordered by the height their wires start at so they cross less.
-        let mut key_y: BTreeMap<(usize, TrackKey), f32> = BTreeMap::new();
+        // The vertical span each wire covers in each gap. Wires whose spans do not overlap share a
+        // track, so a gap is only as wide as the most wires passing any one height.
+        let mut spans: BTreeMap<(usize, TrackKey), (f32, f32)> = BTreeMap::new();
+        let mut cover = |gap: usize, key: TrackKey, a: f32, b: f32| {
+            let span = spans.entry((gap, key)).or_insert((f32::INFINITY, f32::NEG_INFINITY));
+            *span = (span.0.min(a.min(b)), span.1.max(a.max(b)));
+        };
         for (seg, &(item, key)) in self.segs.iter().zip(&self.seg_source) {
-            let (gap, y) = match *seg {
-                Seg::Node { from, from_y, .. } => (self.nodes[from].layer + 1, self.nodes[from].y + from_y),
-                Seg::In { gate, .. } => (0, self.in_gate_y.get(&gate).copied().unwrap_or(0.0)),
-                Seg::Out { from, from_y, .. } => (layers, self.nodes[from].y + from_y),
+            let gate_y = |gates: &BTreeMap<NodeId, f32>, g: &NodeId| gates.get(g).copied().unwrap_or(0.0);
+            let (gap, a, b) = match *seg {
+                Seg::Node { from, to, from_y, to_y } => {
+                    (self.nodes[from].layer + 1, self.nodes[from].y + from_y, self.nodes[to].y + to_y)
+                }
+                Seg::In { gate, to, to_y } => (0, gate_y(&self.in_gate_y, &gate), self.nodes[to].y + to_y),
+                Seg::Out { from, from_y, gate } => {
+                    (layers, self.nodes[from].y + from_y, gate_y(&self.out_gate_y, &gate))
+                }
             };
-            key_y.entry((gap, (item, key, 0))).or_insert(y);
+            cover(gap, (item, key, 0), a, b);
         }
+        // The ends of a backward wire run down to the rows below the columns.
         for path in self.paths.iter().filter(|p| p.back) {
             let (From::Item(a, key), To::Item(b, _)) = (path.from, path.to) else { continue };
             let (u, v) = (path.nodes[0], path.nodes[1]);
-            key_y.insert((self.nodes[u].layer + 1, (Some(a), key, 1)), self.nodes[u].y + path.from_y);
-            key_y.insert((self.nodes[v].layer, (Some(b), key, 2)), self.nodes[v].y + path.to_y);
+            cover(self.nodes[u].layer + 1, (Some(a), key, 1), self.nodes[u].y + path.from_y, f32::INFINITY);
+            cover(self.nodes[v].layer, (Some(b), key, 2), self.nodes[v].y + path.to_y, f32::INFINITY);
         }
-        self.tracks = vec![BTreeMap::new(); layers + 1];
+        let mut slot: BTreeMap<(usize, TrackKey), usize> = BTreeMap::new();
+        let mut used = vec![0usize; layers + 1];
         for (gap, keys) in gap_keys.iter().enumerate() {
-            let mut ordered: Vec<(f32, TrackKey)> =
-                keys.iter().map(|k| (key_y.get(&(gap, *k)).copied().unwrap_or(0.0), *k)).collect();
-            ordered.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
-            let margin = if gap == 0 || gap == layers { GATE_BAND * 0.5 } else { GAP_BASE * 0.5 };
-            for (t, (_, k)) in ordered.into_iter().enumerate() {
-                self.tracks[gap].insert(k, gap_left[gap] + margin + t as f32 * TRACK_PITCH);
+            let intervals: Vec<(f32, f32, TrackKey)> = keys
+                .iter()
+                .map(|k| {
+                    let (lo, hi) = spans.get(&(gap, *k)).copied().unwrap_or((0.0, 0.0));
+                    (lo, hi, *k)
+                })
+                .collect();
+            let (slots, count) = share_tracks(&intervals);
+            used[gap] = count;
+            for ((_, _, k), t) in intervals.iter().zip(slots) {
+                slot.insert((gap, *k), t);
             }
         }
+
+        // Column x positions, sized for the tracks in each gap.
+        self.col_w = self.layers.iter().map(|l| l.iter().map(|&n| self.nodes[n].w).fold(0.0, f32::max)).collect();
+        let band = |n: usize| if n == 0 { 0.0 } else { GATE_BAND + TRACK_PITCH * n as f32 };
+        self.in_band = band(used[0]);
+        self.out_band = band(used[layers]);
+        let mut x = 0.0;
+        let mut gap_left = vec![-self.in_band; layers + 1];
+        self.column_x = Vec::with_capacity(layers);
+        for l in 0..layers {
+            self.column_x.push(x);
+            x += self.col_w[l];
+            gap_left[l + 1] = x;
+            if l + 1 < layers {
+                x += GAP_BASE + TRACK_PITCH * used[l + 1] as f32;
+            }
+        }
+        self.content_width = x;
+        self.tracks = vec![BTreeMap::new(); layers + 1];
+        for (&(gap, k), &t) in &slot {
+            let margin = if gap == 0 || gap == layers { GATE_BAND * 0.5 } else { GAP_BASE * 0.5 };
+            self.tracks[gap].insert(k, gap_left[gap] + margin + t as f32 * TRACK_PITCH);
+        }
+
+        // Rows for backward wires: wires whose horizontal runs do not overlap share a row.
+        let back: Vec<(usize, f32, f32)> = self
+            .paths
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.back)
+            .filter_map(|(i, p)| {
+                let (From::Item(a, key), To::Item(b, _)) = (p.from, p.to) else { return None };
+                let (u, v) = (p.nodes[0], p.nodes[1]);
+                let t1 = self.tracks[self.nodes[u].layer + 1].get(&(Some(a), key, 1)).copied()?;
+                let t2 = self.tracks[self.nodes[v].layer].get(&(Some(b), key, 2)).copied()?;
+                Some((i, t1.min(t2), t1.max(t2)))
+            })
+            .collect();
+        let intervals: Vec<(f32, f32, usize)> = back.iter().map(|&(i, lo, hi)| (lo, hi, i)).collect();
+        let (rows, count) = share_tracks(&intervals);
+        self.back_row = vec![0; self.paths.len()];
+        for (&(i, _, _), row) in back.iter().zip(rows) {
+            self.back_row[i] = row;
+        }
+        self.back_count = count;
 
         // Shift everything so the topmost node or gate starts at 0.
         let top = self
@@ -1327,8 +1375,7 @@ impl ColumnLayout {
         let track = |gap: usize, key: TrackKey| cl + self.tracks[gap].get(&key).copied().unwrap_or(0.0);
 
         let mut out = BTreeMap::new();
-        let mut back_row = 0;
-        for path in &self.paths {
+        for (index, path) in self.paths.iter().enumerate() {
             let (src_item, key) = match path.from {
                 From::Item(a, k) => (Some(a), k),
                 From::Gate(k) => (None, k),
@@ -1337,8 +1384,7 @@ impl ColumnLayout {
                 let To::Item(b, _) = path.to else { continue };
                 let (u, v) = (path.nodes[0], path.nodes[1]);
                 let (yu, yv) = (y_of(u, path.from_y), y_of(v, path.to_y));
-                let row = back_top + (back_row as f32 + 0.5) * LANE;
-                back_row += 1;
+                let row = back_top + (self.back_row.get(index).copied().unwrap_or(0) as f32 + 0.5) * LANE;
                 let t1 = track(self.nodes[u].layer + 1, (src_item, key, 1));
                 let t2 = track(self.nodes[v].layer, (Some(b), key, 2));
                 vec![[right(u), yu], [t1, yu], [t1, row], [t2, row], [t2, yv], [left(v), yv]]
@@ -1515,6 +1561,32 @@ fn ordered_fit(desired: &[f32], heights: &[(f32, f32)]) -> Vec<f32> {
         }
     }
     out.iter().zip(&offset).map(|(z, o)| z + o).collect()
+}
+
+/// Assigns each interval `(lo, hi, key)` the lowest track free over its span, with one track
+/// pitch of clearance, visiting intervals by start. Returns each interval's track (in the input
+/// order) and the number of tracks used, which is the most intervals overlapping at any point.
+fn share_tracks<K: Ord + Copy>(intervals: &[(f32, f32, K)]) -> (Vec<usize>, usize) {
+    let mut order: Vec<usize> = (0..intervals.len()).collect();
+    order.sort_by(|&a, &b| {
+        let (x, y) = (&intervals[a], &intervals[b]);
+        x.0.total_cmp(&y.0).then(x.1.total_cmp(&y.1)).then(x.2.cmp(&y.2))
+    });
+    let mut ends: Vec<f32> = Vec::new();
+    let mut slots = vec![0; intervals.len()];
+    for i in order {
+        let (lo, hi, _) = intervals[i];
+        let t = match ends.iter().position(|&end| end + TRACK_PITCH <= lo) {
+            Some(t) => t,
+            None => {
+                ends.push(f32::NEG_INFINITY);
+                ends.len() - 1
+            }
+        };
+        ends[t] = hi;
+        slots[i] = t;
+    }
+    (slots, ends.len())
 }
 
 /// Each gate at the median y of its wires, spread to at least `GATE_PITCH` apart in that order.
