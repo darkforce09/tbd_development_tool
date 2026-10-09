@@ -377,3 +377,36 @@ fn test_zoom_while_panning_maintains_cursor_anchor() {
     assert!((world_after.x - world_at_new_cursor.x).abs() < 1e-4);
     assert!((world_after.y - world_at_new_cursor.y).abs() < 1e-4);
 }
+
+#[test]
+fn test_clicking_unloaded_folder_requests_load_instead_of_toggling() {
+    let mut graph = studio_graph::Graph::new();
+    graph.tree_layout = true;
+    let mut lazy = studio_graph::GroupCluster::new("dir:node_modules", "node_modules", "Folder", 0);
+    lazy.is_collapsed = true;
+    lazy.lazy = Some(studio_graph::LazyFolder {
+        abs_path: "/p/node_modules".into(),
+        file_count: 3,
+        dir_count: 1,
+        total_bytes: 10,
+        reason: "dependencies".into(),
+    });
+    let mut normal = studio_graph::GroupCluster::new("dir:src", "src", "Folder", 0);
+    normal.is_collapsed = true;
+    graph.clusters = vec![lazy, normal];
+    let mut state = CanvasState::default();
+    let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
+
+    let events =
+        super::types::RenderEvents { toggle_cluster_id: Some("dir:node_modules".into()), ..Default::default() };
+    super::actions::apply_render_events(events, &mut state, &mut graph, rect);
+    assert!(
+        matches!(state.action_request.take(), Some(super::types::CanvasAction::ExpandFolder(id)) if id == "dir:node_modules")
+    );
+    assert!(graph.clusters[0].is_collapsed, "stays collapsed until its contents arrive");
+
+    let events = super::types::RenderEvents { toggle_cluster_id: Some("dir:src".into()), ..Default::default() };
+    super::actions::apply_render_events(events, &mut state, &mut graph, rect);
+    assert!(state.action_request.is_none());
+    assert!(!graph.clusters[1].is_collapsed, "loaded folders toggle directly");
+}

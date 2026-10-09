@@ -65,7 +65,10 @@ pub fn paint_group_cluster(painter: &Painter, props: GroupClusterProps<'_>) -> G
         );
 
         let label_text = format!("{}  {}", egui_phosphor::regular::FOLDER, props.label);
-        let label_pos = Pos2::new(chevron_rect.max.x + 4.0 * z, pill_rect.center().y);
+        let subtitle = props.subtitle.filter(|s| !s.is_empty());
+        let label_y =
+            if subtitle.is_some() { pill_rect.top() + pill_rect.height() * 0.34 } else { pill_rect.center().y };
+        let label_pos = Pos2::new(chevron_rect.max.x + 4.0 * z, label_y);
         painter.text(
             label_pos,
             egui::Align2::LEFT_CENTER,
@@ -73,6 +76,18 @@ pub fn paint_group_cluster(painter: &Painter, props: GroupClusterProps<'_>) -> G
             FontId::new(font_size, FontFamily::Proportional),
             TEXT_PRIMARY,
         );
+
+        // Folder totals (e.g. "48,213 files · 312 MB · gitignored") on a second line
+        if let Some(subtitle) = subtitle {
+            painter.text(
+                Pos2::new(label_pos.x, pill_rect.top() + pill_rect.height() * 0.72),
+                egui::Align2::LEFT_CENTER,
+                crate::truncate_with_ellipsis(subtitle, 40),
+                FontId::new((9.0 * z).max(5.0), FontFamily::Monospace),
+                TEXT_DIM,
+            );
+            return GroupClusterLayout { collapse_button_rect: pill_rect };
+        }
 
         // Count pill
         let count_text = format!("{} items", props.item_count);

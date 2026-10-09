@@ -75,6 +75,7 @@ impl StudioApp {
             code_editor_path: None,
             code_editor_origin: None,
             pending_editor_switch: None,
+            folder_loads: Vec::new(),
             markdown_preview_mode: true,
             markdown_inspector_tab: 0,
             spotlight_open: false,

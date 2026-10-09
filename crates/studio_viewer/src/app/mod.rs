@@ -1,4 +1,5 @@
 pub mod editor;
+pub mod folders;
 pub mod left_sidebar;
 pub mod modals;
 pub mod right_inspector;
@@ -69,6 +70,9 @@ pub struct StudioApp {
     /// Which part of `code_editor_path` the buffer holds.
     pub code_editor_origin: Option<studio_parser::EditOrigin>,
     pub pending_editor_switch: Option<editor::PendingEditorSwitch>,
+
+    // Collapsed folders being loaded in the background
+    pub folder_loads: Vec<folders::FolderLoad>,
     pub markdown_preview_mode: bool,
     pub markdown_inspector_tab: usize,
 
@@ -170,6 +174,8 @@ impl App for StudioApp {
             }
         }
 
+        self.poll_folder_loads();
+
         // FPS calculation
         let now = ctx.input(|i| i.time);
         self.frame_counter += 1;
@@ -217,6 +223,7 @@ impl App for StudioApp {
                         self.canvas_state.transform.center_on_world_pos(center_world, ctx.content_rect(), None);
                     }
                 }
+                CanvasAction::ExpandFolder(cluster_id) => self.start_folder_load(cluster_id),
                 CanvasAction::ToggleMemberWires(id) => {
                     if let Some(n) = self.graph.nodes.get_mut(&id) {
                         n.show_member_wires = !n.show_member_wires;

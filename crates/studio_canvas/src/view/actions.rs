@@ -6,8 +6,14 @@ use super::types::{CanvasAction, CanvasState, ContextMenuAction, RenderEvents, Z
 
 pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph: &mut Graph, rect: Rect) {
     if let Some(cid) = events.toggle_cluster_id {
-        graph.toggle_cluster_collapse(&cid);
-        state.spatial_grid_dirty = true;
+        let unloaded = graph.clusters.iter().any(|c| c.id == cid && c.is_collapsed && c.lazy.is_some());
+        if unloaded {
+            // The host loads the folder's contents, then expands it.
+            state.action_request = Some(CanvasAction::ExpandFolder(cid));
+        } else {
+            graph.toggle_cluster_collapse(&cid);
+            state.spatial_grid_dirty = true;
+        }
     }
 
     if let Some(node_id) = events.file_dropdown_toggle_clicked {

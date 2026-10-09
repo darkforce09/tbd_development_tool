@@ -94,6 +94,8 @@ pub enum CanvasAction {
     DeleteNode(NodeId),
     FitGraph,
     ResetGraph,
+    /// Load a collapsed folder whose contents are not in the graph yet (cluster id).
+    ExpandFolder(String),
 }
 
 pub use studio_ui::ContextMenuItem as ContextMenuAction;
