@@ -1,4 +1,4 @@
-use egui::{FontFamily, FontId, Painter, Pos2, Rect, Rounding, Stroke, Vec2};
+use egui::{FontFamily, FontId, Painter, Pos2, Rect, CornerRadius, Stroke, Vec2};
 use studio_graph::{Graph, NodeArchetype, NodeId};
 use studio_ui::{
     color_tokens::*, paint_card_frame, paint_code_card, paint_file_card, paint_pin_socket,
@@ -108,7 +108,7 @@ pub fn render_nodes_and_sockets(
                 } else {
                     with_alpha(arch_color, 160)
                 };
-                painter.rect_filled(card_rect, Rounding::ZERO, fill);
+                painter.rect_filled(card_rect, CornerRadius::ZERO, fill);
             }
         } else if zoom < 0.12 {
             // LOD 2: Micro/Far Zoom
@@ -119,7 +119,7 @@ pub fn render_nodes_and_sockets(
             } else {
                 with_alpha(arch_color, 190)
             };
-            painter.rect_filled(card_rect, Rounding::same(2.0), fill);
+            painter.rect_filled(card_rect, CornerRadius::from(2.0), fill);
         } else if zoom < 0.35 {
             // LOD 1: Medium Zoom
             let fill = if is_hovered { CARD_BG_HOVER } else { CARD_BG };
@@ -128,11 +128,11 @@ pub fn render_nodes_and_sockets(
             } else {
                 Stroke::new(1.0, CARD_BORDER_NORMAL)
             };
-            painter.rect(card_rect, Rounding::same(4.0), fill, border);
+            painter.rect(card_rect, CornerRadius::from(4.0), fill, border, egui::StrokeKind::Middle);
 
             let header_h = (4.0 * zoom).max(1.5);
             let header_rect = Rect::from_min_size(card_rect.min, Vec2::new(card_rect.width(), header_h));
-            painter.rect_filled(header_rect, Rounding::same(2.0), arch_color);
+            painter.rect_filled(header_rect, CornerRadius::from(2.0), arch_color);
 
             let font_size = (11.0 * zoom).max(6.0);
             painter.text(

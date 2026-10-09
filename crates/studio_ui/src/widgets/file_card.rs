@@ -1,5 +1,5 @@
 use egui::{
-    epaint::RectShape, Color32, FontFamily, FontId, Painter, Pos2, Rect, Rounding, Stroke, Vec2,
+    epaint::RectShape, Color32, FontFamily, FontId, Painter, Pos2, Rect, CornerRadius, Stroke, Vec2,
 };
 use crate::colors::*;
 use crate::syntax::SyntaxHighlighter;
@@ -52,7 +52,7 @@ pub struct FileCardLayout {
 /// and inline code snippet drawers.
 pub fn paint_file_card(painter: &Painter, props: FileCardProps<'_>) -> FileCardLayout {
     let z = props.zoom;
-    let rounding = Rounding::same(6.0 * z);
+    let rounding = CornerRadius::from(6.0 * z);
 
     // 1. Drop shadow & selection glow
     let shadow_offset = Vec2::new(0.0, 3.0 * z);
@@ -62,14 +62,14 @@ pub fn paint_file_card(painter: &Painter, props: FileCardProps<'_>) -> FileCardL
             props.rect.translate(shadow_offset),
             rounding,
             Color32::from_rgba_premultiplied(99, 102, 241, 60),
-            Stroke::NONE,
+            Stroke::NONE, egui::StrokeKind::Middle,
         );
     } else {
         painter.rect(
             props.rect.translate(shadow_offset),
             rounding,
             CARD_SHADOW,
-            Stroke::NONE,
+            Stroke::NONE, egui::StrokeKind::Middle,
         );
     }
 
@@ -88,7 +88,7 @@ pub fn paint_file_card(painter: &Painter, props: FileCardProps<'_>) -> FileCardL
         CARD_BG
     };
 
-    painter.add(RectShape::new(props.rect, rounding, bg_color, border_stroke));
+    painter.add(RectShape::new(props.rect, rounding, bg_color, border_stroke, egui::StrokeKind::Middle));
 
     // 3. Header Area (38px high)
     let header_h = 38.0 * z;
@@ -107,9 +107,9 @@ pub fn paint_file_card(painter: &Painter, props: FileCardProps<'_>) -> FileCardL
     // Pill background tinted with extension color
     header_painter.rect(
         badge_rect,
-        Rounding::same(4.0 * z),
+        CornerRadius::from(4.0 * z),
         with_alpha(ext_color, 40),
-        Stroke::new((1.0 * z).max(0.5), with_alpha(ext_color, 180)),
+        Stroke::new((1.0 * z).max(0.5), with_alpha(ext_color, 180)), egui::StrokeKind::Middle,
     );
 
     // Extension text uppercase (e.g., "RS", "JS")
@@ -141,7 +141,7 @@ pub fn paint_file_card(painter: &Painter, props: FileCardProps<'_>) -> FileCardL
         } else {
             Color32::from_rgba_premultiplied(99, 102, 241, 40)
         };
-        header_painter.rect_filled(code_expand_btn_rect, Rounding::same(3.0 * z), fill);
+        header_painter.rect_filled(code_expand_btn_rect, CornerRadius::from(3.0 * z), fill);
     }
     let expand_color = if props.is_code_expanded {
         Color32::from_rgb(168, 85, 247)
@@ -170,7 +170,7 @@ pub fn paint_file_card(painter: &Painter, props: FileCardProps<'_>) -> FileCardL
         } else {
             Color32::from_rgba_premultiplied(148, 163, 184, 25)
         };
-        header_painter.rect_filled(dropdown_btn_rect, Rounding::same(3.0 * z), fill);
+        header_painter.rect_filled(dropdown_btn_rect, CornerRadius::from(3.0 * z), fill);
     }
     let dropdown_color = if props.is_dropdown_expanded {
         Color32::from_rgb(129, 140, 248)
@@ -286,7 +286,7 @@ pub fn paint_file_card(painter: &Painter, props: FileCardProps<'_>) -> FileCardL
                 if is_row_hovered {
                     header_painter.rect_filled(
                         row_rect,
-                        Rounding::same(4.0 * z),
+                        CornerRadius::from(4.0 * z),
                         with_alpha(member.archetype_color, 28),
                     );
                 }
@@ -303,9 +303,9 @@ pub fn paint_file_card(painter: &Painter, props: FileCardProps<'_>) -> FileCardL
 
                 header_painter.rect(
                     tag_rect,
-                    Rounding::same(3.0 * z),
+                    CornerRadius::from(3.0 * z),
                     with_alpha(member.archetype_color, 45),
-                    Stroke::new((1.0 * z).max(0.5), with_alpha(member.archetype_color, 180)),
+                    Stroke::new((1.0 * z).max(0.5), with_alpha(member.archetype_color, 180)), egui::StrokeKind::Middle,
                 );
 
                 header_painter.text(
@@ -393,9 +393,9 @@ pub fn paint_file_card(painter: &Painter, props: FileCardProps<'_>) -> FileCardL
                     // Background container
                     header_painter.rect(
                         drawer_rect,
-                        Rounding::same(4.0 * z),
+                        CornerRadius::from(4.0 * z),
                         Color32::from_rgb(12, 14, 20),
-                        Stroke::new((1.0 * z).max(0.5), Color32::from_rgb(45, 50, 68)),
+                        Stroke::new((1.0 * z).max(0.5), Color32::from_rgb(45, 50, 68)), egui::StrokeKind::Middle,
                     );
 
                     let drawer_clip = header_painter.with_clip_rect(drawer_rect);

@@ -1,5 +1,5 @@
 use egui::{
-    epaint::RectShape, Color32, FontFamily, FontId, Painter, Pos2, Rect, Rounding, Stroke, Vec2,
+    epaint::RectShape, Color32, FontFamily, FontId, Painter, Pos2, Rect, CornerRadius, Stroke, Vec2,
 };
 use crate::colors::*;
 
@@ -34,23 +34,23 @@ pub fn paint_group_cluster(painter: &Painter, props: GroupClusterProps<'_>) -> G
         base_fill.a().saturating_add(depth_alpha_boost),
     );
     let border_stroke_color = base_stroke;
-    let rounding = Rounding::same(10.0 * z);
+    let rounding = CornerRadius::from(10.0 * z);
 
     if props.is_collapsed {
         // Collapsed Mode: Render sleek compact folder pill
         let pill_rect = props.rect;
         painter.rect(
             pill_rect.translate(Vec2::new(0.0, 2.0 * z)),
-            Rounding::same(8.0 * z),
+            CornerRadius::from(8.0 * z),
             Color32::from_black_alpha(70),
-            Stroke::NONE,
+            Stroke::NONE, egui::StrokeKind::Middle,
         );
 
         painter.add(RectShape::new(
             pill_rect,
-            Rounding::same(8.0 * z),
+            CornerRadius::from(8.0 * z),
             CLUSTER_HEADER_BG,
-            Stroke::new((1.2 * z).max(1.0), border_stroke_color),
+            Stroke::new((1.2 * z).max(1.0), border_stroke_color), egui::StrokeKind::Middle,
         ));
 
         // Chevron ▸ + Folder Icon + Label
@@ -96,7 +96,7 @@ pub fn paint_group_cluster(painter: &Painter, props: GroupClusterProps<'_>) -> G
         props.rect,
         rounding,
         fill_tint,
-        Stroke::new((1.5 * z).clamp(1.0, 3.0), border_stroke_color),
+        Stroke::new((1.5 * z).clamp(1.0, 3.0), border_stroke_color), egui::StrokeKind::Middle,
     ));
 
     // 2. Top Folder Header Tab
@@ -116,18 +116,18 @@ pub fn paint_group_cluster(painter: &Painter, props: GroupClusterProps<'_>) -> G
         Vec2::new(header_width, header_height),
     );
 
-    let tab_rounding = Rounding {
-        nw: 10.0 * z,
-        ne: 6.0 * z,
-        sw: 0.0,
-        se: 8.0 * z,
+    let tab_rounding = CornerRadius {
+        nw: (10.0 * z).round() as u8,
+        ne: (6.0 * z).round() as u8,
+        sw: 0,
+        se: (8.0 * z).round() as u8,
     };
 
     painter.add(RectShape::new(
         header_rect,
         tab_rounding,
         CLUSTER_HEADER_BG,
-        Stroke::new((1.0 * z).max(0.75), border_stroke_color),
+        Stroke::new((1.0 * z).max(0.75), border_stroke_color), egui::StrokeKind::Middle,
     ));
 
     // Chevron ▾ Button

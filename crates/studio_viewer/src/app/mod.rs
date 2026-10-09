@@ -80,7 +80,8 @@ pub struct StudioApp {
 }
 
 impl App for StudioApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
+    fn ui(&mut self, root: &mut egui::Ui, _frame: &mut Frame) {
+        let ctx = &root.ctx().clone();
         ctx.request_repaint();
 
         // Drain asynchronous loader messages
@@ -203,7 +204,7 @@ impl App for StudioApp {
                 CanvasAction::CenterNode(id) => {
                     if let Some(n) = self.graph.nodes.get(&id) {
                         let center_world = Pos2::new(n.position[0] + n.size[0] * 0.5, n.position[1] + n.size[1] * 0.5);
-                        self.canvas_state.transform.center_on_world_pos(center_world, ctx.screen_rect(), None);
+                        self.canvas_state.transform.center_on_world_pos(center_world, ctx.content_rect(), None);
                     }
                 }
                 CanvasAction::ToggleMemberWires(id) => {
@@ -222,24 +223,24 @@ impl App for StudioApp {
         self.sync_category_filters();
 
         // 1. Top Navigation Bar
-        self.render_top_nav(ctx);
+        self.render_top_nav(root);
 
         // 2. Bottom Status Strip
-        self.render_bottom_panel(ctx);
+        self.render_bottom_panel(root);
 
         // 3. Left Sidebar
-        self.render_left_sidebar(ctx);
+        self.render_left_sidebar(root);
 
         // 4. Right Inspector
         self.sync_editor_with_selection();
-        self.render_right_inspector(ctx);
+        self.render_right_inspector(root);
 
         // 5. Central Infinite Canvas Viewport
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(studio_ui::color_tokens::CANVAS_BG))
-            .show(ctx, |ui| {
+            .frame(egui::Frame::NONE.fill(studio_ui::color_tokens::CANVAS_BG))
+            .show(root, |ui| {
                 if self.pending_fit_view {
-                    let screen_rect = ui.ctx().screen_rect();
+                    let screen_rect = ui.ctx().content_rect();
                     self.canvas_state.zoom_to_fit(&self.graph, screen_rect);
                     self.pending_fit_view = false;
                 }

@@ -1,6 +1,6 @@
 use egui::{
     epaint::RectShape,
-    Color32, FontFamily, FontId, Painter, Pos2, Rect, Rounding, Stroke, Vec2,
+    Color32, FontFamily, FontId, Painter, Pos2, Rect, CornerRadius, Stroke, Vec2,
 };
 
 use crate::colors::*;
@@ -36,23 +36,23 @@ pub struct CardFrameProps<'a> {
 /// scaling all typography and dimensions proportionally with `props.zoom`.
 pub fn paint_card_frame(painter: &Painter, props: CardFrameProps<'_>) {
     let z = props.zoom;
-    let rounding = Rounding::same(8.0 * z);
+    let rounding = CornerRadius::from(8.0 * z);
 
     // Drop shadow
     painter.rect(
         props.rect.translate(Vec2::new(0.0, 3.0 * z)),
         rounding,
         Color32::from_black_alpha(70),
-        Stroke::NONE,
+        Stroke::NONE, egui::StrokeKind::Middle,
     );
 
     // Selection glow
     if props.is_selected {
         painter.add(RectShape::new(
             props.rect.expand(2.5 * z),
-            Rounding::same(9.5 * z),
+            CornerRadius::from(9.5 * z),
             Color32::TRANSPARENT,
-            Stroke::new(1.8 * z, with_alpha(CARD_BORDER_SELECTED, 180)),
+            Stroke::new(1.8 * z, with_alpha(CARD_BORDER_SELECTED, 180)), egui::StrokeKind::Middle,
         ));
     }
 
@@ -71,7 +71,7 @@ pub fn paint_card_frame(painter: &Painter, props: CardFrameProps<'_>) {
         Stroke::new((1.0 * z).max(0.75), CARD_BORDER_NORMAL)
     };
 
-    painter.add(RectShape::new(props.rect, rounding, bg_fill, border_stroke));
+    painter.add(RectShape::new(props.rect, rounding, bg_fill, border_stroke, egui::StrokeKind::Middle));
 
     // Scissored painter to ensure nothing ever bleeds outside the card boundaries
     let card_painter = painter.with_clip_rect(props.rect);
@@ -84,31 +84,31 @@ pub fn paint_card_frame(painter: &Painter, props: CardFrameProps<'_>) {
     );
 
     // Header background
-    let header_rounding = Rounding {
-        nw: 8.0 * z,
-        ne: 8.0 * z,
-        sw: 0.0,
-        se: 0.0,
+    let header_rounding = CornerRadius {
+        nw: (8.0 * z).round() as u8,
+        ne: (8.0 * z).round() as u8,
+        sw: 0,
+        se: 0,
     };
     card_painter.add(RectShape::new(
         header_rect,
         header_rounding,
         CARD_HEADER_BG,
-        Stroke::NONE,
+        Stroke::NONE, egui::StrokeKind::Middle,
     ));
 
     // Archetype accent line at very top
     let accent_rect = Rect::from_min_size(props.rect.min, Vec2::new(props.rect.width(), 3.0 * z));
     card_painter.add(RectShape::new(
         accent_rect,
-        Rounding {
-            nw: 8.0 * z,
-            ne: 8.0 * z,
-            sw: 0.0,
-            se: 0.0,
+        CornerRadius {
+            nw: (8.0 * z).round() as u8,
+            ne: (8.0 * z).round() as u8,
+            sw: 0,
+            se: 0,
         },
         props.archetype_color,
-        Stroke::NONE,
+        Stroke::NONE, egui::StrokeKind::Middle,
     ));
 
     // Archetype mini pill badge (top-left)
@@ -118,9 +118,9 @@ pub fn paint_card_frame(painter: &Painter, props: CardFrameProps<'_>) {
     );
     card_painter.add(RectShape::new(
         badge_rect,
-        Rounding::same(3.0 * z),
+        CornerRadius::from(3.0 * z),
         with_alpha(props.archetype_color, 40),
-        Stroke::new((1.0 * z).max(0.75), with_alpha(props.archetype_color, 120)),
+        Stroke::new((1.0 * z).max(0.75), with_alpha(props.archetype_color, 120)), egui::StrokeKind::Middle,
     ));
     card_painter.text(
         badge_rect.center(),
@@ -187,7 +187,7 @@ pub fn paint_card_frame(painter: &Painter, props: CardFrameProps<'_>) {
         // Shaded background for description area
         card_painter.rect_filled(
             desc_rect,
-            Rounding::ZERO,
+            CornerRadius::ZERO,
             Color32::from_black_alpha(35),
         );
 

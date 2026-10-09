@@ -1,4 +1,4 @@
-use egui::{Color32, FontFamily, FontId, Painter, Pos2, Rect, Rounding, Stroke, Vec2};
+use egui::{Color32, FontFamily, FontId, Painter, Pos2, Rect, CornerRadius, Stroke, Vec2};
 use crate::colors::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,28 +84,28 @@ pub fn paint_node_context_menu(
     // Drop shadow
     painter.rect(
         menu_rect.translate(Vec2::new(0.0, 5.0)),
-        Rounding::same(7.0),
+        CornerRadius::from(7.0),
         Color32::from_black_alpha(130),
-        Stroke::NONE,
+        Stroke::NONE, egui::StrokeKind::Middle,
     );
 
     // Menu panel container
     painter.rect(
         menu_rect,
-        Rounding::same(7.0),
+        CornerRadius::from(7.0),
         Color32::from_rgb(20, 24, 34),
-        Stroke::new(1.0, Color32::from_rgb(46, 54, 72)),
+        Stroke::new(1.0, Color32::from_rgb(46, 54, 72)), egui::StrokeKind::Middle,
     );
 
     // Header bar with node title
     let header_rect = Rect::from_min_size(menu_rect.min, Vec2::new(width, header_h));
     painter.rect_filled(
         header_rect,
-        Rounding {
-            nw: 7.0,
-            ne: 7.0,
-            sw: 0.0,
-            se: 0.0,
+        CornerRadius {
+            nw: 7,
+            ne: 7,
+            sw: 0,
+            se: 0,
         },
         Color32::from_rgb(15, 18, 26),
     );
@@ -147,7 +147,7 @@ pub fn paint_node_context_menu(
             } else {
                 Color32::from_rgba_premultiplied(99, 102, 241, 40)
             };
-            painter.rect_filled(row_rect, Rounding::same(4.0), fill);
+            painter.rect_filled(row_rect, CornerRadius::from(4.0), fill);
         }
 
         let text_color = if is_danger {

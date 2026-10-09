@@ -303,8 +303,11 @@ mod tests {
         assert!(saved.contains("    20\n"));
     }
 
+    /// (member id, visibility, signature, line) per member, and (caller, callee) member ids per call edge.
+    type CardShape = (Vec<(String, String, String, usize)>, Vec<(String, String)>);
+
     /// Member list + call edges of a file card, by name, for comparing a saved graph with a fresh load.
-    fn file_card_shape(graph: &Graph, title: &str) -> (Vec<(String, String, String, usize)>, Vec<(String, String)>) {
+    fn file_card_shape(graph: &Graph, title: &str) -> CardShape {
         let node = graph.nodes.values().find(|n| n.title == title).expect("file card");
         let members = node
             .member_nodes

@@ -14,3 +14,5 @@ rustc-hash = { workspace = true }
 wgpu = { workspace = true }
 egui-wgpu = { workspace = true }
 
+[dev-dependencies]
+wgpu = { workspace = true, features = ["naga-ir"] }

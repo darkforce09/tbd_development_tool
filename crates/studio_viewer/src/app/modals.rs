@@ -1,5 +1,5 @@
 use eframe::egui;
-use egui::{Color32, FontFamily, FontId, Key, Pos2, ProgressBar, RichText, Rounding, Stroke};
+use egui::{Color32, FontFamily, FontId, Key, Pos2, ProgressBar, RichText, CornerRadius, Stroke};
 use studio_graph::{DataType, NodeArchetype};
 use studio_ui::color_tokens::*;
 
@@ -18,11 +18,11 @@ impl StudioApp {
             .collapsible(false)
             .resizable(false)
             .frame(
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(Color32::from_rgb(18, 20, 29))
                     .stroke(Stroke::new(1.5, Color32::from_rgb(99, 102, 241)))
-                    .rounding(Rounding::same(12.0))
-                    .inner_margin(egui::Margin::same(18.0)),
+                    .corner_radius(CornerRadius::from(12.0))
+                    .inner_margin(egui::Margin::same(18)),
             )
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
@@ -70,7 +70,7 @@ impl StudioApp {
             return;
         }
 
-        let screen_rect = ctx.screen_rect();
+        let screen_rect = ctx.content_rect();
         let spot_title = format!("{} Enso Spotlight & Quick Actions", egui_phosphor::regular::MAGNIFYING_GLASS);
         egui::Window::new(spot_title)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, -80.0])
@@ -78,11 +78,11 @@ impl StudioApp {
             .collapsible(false)
             .resizable(false)
             .frame(
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(Color32::from_rgb(18, 20, 28))
                     .stroke(Stroke::new(1.5, Color32::from_rgb(99, 102, 241)))
-                    .rounding(Rounding::same(10.0))
-                    .inner_margin(egui::Margin::same(16.0)),
+                    .corner_radius(CornerRadius::from(10.0))
+                    .inner_margin(egui::Margin::same(16)),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {

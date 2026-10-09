@@ -1,5 +1,5 @@
 use egui::{
-    epaint::RectShape, Color32, FontFamily, FontId, Painter, Pos2, Rect, Rounding, Stroke, Vec2,
+    epaint::RectShape, Color32, FontFamily, FontId, Painter, Pos2, Rect, CornerRadius, Stroke, Vec2,
 };
 use crate::colors::*;
 
@@ -35,17 +35,17 @@ pub fn paint_floating_toolbar(
     // Drop shadow
     painter.rect(
         bar_rect.translate(Vec2::new(0.0, 3.0 * z)),
-        Rounding::same(bar_height * 0.5),
+        CornerRadius::from(bar_height * 0.5),
         Color32::from_black_alpha(80),
-        Stroke::NONE,
+        Stroke::NONE, egui::StrokeKind::Middle,
     );
 
     // Pill background
     painter.add(RectShape::new(
         bar_rect,
-        Rounding::same(bar_height * 0.5),
+        CornerRadius::from(bar_height * 0.5),
         FLOATING_TOOLBAR_BG,
-        Stroke::new((1.2 * z).max(1.0), FLOATING_TOOLBAR_BORDER),
+        Stroke::new((1.2 * z).max(1.0), FLOATING_TOOLBAR_BORDER), egui::StrokeKind::Middle,
     ));
 
     let font_id = FontId::new((13.0 * z).max(8.0), FontFamily::Proportional);
@@ -72,7 +72,7 @@ pub fn paint_floating_toolbar(
     let paint_btn = |rect: Rect, label: &str, text_color: Color32| {
         let is_hov = hovered_pos.map(|p| rect.contains(p)).unwrap_or(false);
         if is_hov {
-            painter.rect_filled(rect, Rounding::same(4.0 * z), FLOATING_BTN_HOVER);
+            painter.rect_filled(rect, CornerRadius::from(4.0 * z), FLOATING_BTN_HOVER);
         }
         painter.text(
             rect.center(),

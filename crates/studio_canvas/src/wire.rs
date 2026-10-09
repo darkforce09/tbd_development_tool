@@ -225,7 +225,7 @@ pub fn paint_wire_badge_and_label(
         let pill_height = 14.0 * zoom;
         let pill_rect = egui::Rect::from_center_size(label_pos, Vec2::new(pill_width, pill_height));
 
-        painter.rect_filled(pill_rect, egui::Rounding::same(3.0 * zoom), Color32::from_black_alpha(180));
+        painter.rect_filled(pill_rect, egui::CornerRadius::from(3.0 * zoom), Color32::from_black_alpha(180));
         painter.text(
             label_pos,
             egui::Align2::CENTER_CENTER,

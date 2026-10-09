@@ -1,6 +1,6 @@
 use egui::{
     epaint::{CircleShape, RectShape},
-    Color32, Painter, Pos2, Rect, Rounding, Stroke,
+    Color32, Painter, Pos2, Rect, CornerRadius, Stroke,
 };
 use studio_ui::{color_tokens::*, with_alpha};
 
@@ -15,9 +15,9 @@ pub fn paint_infinite_grid(
     // 1. Fill base canvas background
     painter.add(RectShape::new(
         clip_rect,
-        Rounding::ZERO,
+        CornerRadius::ZERO,
         CANVAS_BG,
-        Stroke::NONE,
+        Stroke::NONE, egui::StrokeKind::Middle,
     ));
 
     // If zoomed out very far (galaxy overview), canvas background is sufficient

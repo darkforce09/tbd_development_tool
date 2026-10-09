@@ -1,5 +1,5 @@
 use egui::{
-    epaint::RectShape, Color32, FontFamily, FontId, Painter, Pos2, Rect, Rounding, Stroke, Vec2,
+    epaint::RectShape, Color32, FontFamily, FontId, Painter, Pos2, Rect, CornerRadius, Stroke, Vec2,
 };
 use studio_graph::{Graph, NodeId};
 use studio_ui::{color_tokens::*, paint_node_context_menu, with_alpha, NodeContextMenuProps};
@@ -56,15 +56,15 @@ pub fn render_hud(
 
     painter.rect(
         hud_rect.translate(Vec2::new(0.0, 2.0)),
-        Rounding::same(6.0),
+        CornerRadius::from(6.0),
         Color32::from_black_alpha(80),
-        Stroke::NONE,
+        Stroke::NONE, egui::StrokeKind::Middle,
     );
     painter.add(RectShape::new(
         hud_rect,
-        Rounding::same(6.0),
+        CornerRadius::from(6.0),
         with_alpha(PANEL_BG, 235),
-        Stroke::new(1.0, PANEL_BORDER),
+        Stroke::new(1.0, PANEL_BORDER), egui::StrokeKind::Middle,
     ));
 
     // Interactive buttons inside zoom HUD
@@ -76,7 +76,7 @@ pub fn render_hud(
     let paint_hud_btn = |btn_r: Rect, text: &str| {
         let is_hov = btn_r.contains(pointer_pos);
         if is_hov {
-            painter.rect_filled(btn_r, Rounding::same(4.0), FLOATING_BTN_HOVER);
+            painter.rect_filled(btn_r, CornerRadius::from(4.0), FLOATING_BTN_HOVER);
         }
         painter.text(
             btn_r.center(),

@@ -272,12 +272,13 @@ pub fn detect_language(path_or_file: Option<&str>, hint: Option<&str>) -> String
 /// Creates a layouter function closure for egui::TextEdit to enable real-time VS Code syntax highlighting.
 pub fn code_editor_layouter(
     lang: String,
-) -> impl FnMut(&Ui, &str, f32) -> Arc<Galley> {
-    move |ui: &Ui, text: &str, wrap_width: f32| {
+) -> impl FnMut(&Ui, &dyn egui::TextBuffer, f32) -> Arc<Galley> {
+    move |ui: &Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
+        let text = text.as_str();
         let highlighter = SyntaxHighlighter::global();
         let font_size = 11.5;
         let job = highlighter.highlight_layout_job(text, &lang, font_size, wrap_width);
-        ui.fonts(|f| f.layout_job(job))
+        ui.fonts_mut(|f| f.layout_job(job))
     }
 }
 

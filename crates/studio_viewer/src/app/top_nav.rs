@@ -1,5 +1,5 @@
 use eframe::egui;
-use egui::{Color32, FontFamily, FontId, RichText, Stroke, TopBottomPanel};
+use egui::{Color32, FontFamily, FontId, RichText, Stroke};
 use studio_parser::ViewGranularity;
 use studio_ui::color_tokens::*;
 
@@ -7,15 +7,15 @@ use super::types::StudioViewMode;
 use super::StudioApp;
 
 impl StudioApp {
-    pub(crate) fn render_top_nav(&mut self, ctx: &egui::Context) {
-        TopBottomPanel::top("studio_top_nav")
+    pub(crate) fn render_top_nav(&mut self, root: &mut egui::Ui) {
+        egui::Panel::top("studio_top_nav")
             .frame(
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(PANEL_BG)
-                    .inner_margin(egui::Margin::symmetric(14.0, 7.0))
+                    .inner_margin(egui::Margin::symmetric(14, 7))
                     .stroke(Stroke::new(1.0, PANEL_BORDER)),
             )
-            .show(ctx, |ui| {
+            .show(root, |ui| {
                 ui.horizontal(|ui| {
                     // CodeSee Brand Mark
                     ui.label(
@@ -90,7 +90,7 @@ impl StudioApp {
                         ViewGranularity::PublicApi => format!("{} Items: Public API", egui_phosphor::regular::GLOBE),
                         ViewGranularity::Modules => format!("{} Items: Modules", egui_phosphor::regular::PUZZLE_PIECE),
                     };
-                    egui::ComboBox::from_id_source("top_granularity_selector")
+                    egui::ComboBox::from_id_salt("top_granularity_selector")
                         .selected_text(current_granularity_label)
                         .show_ui(ui, |ui| {
                             let files_item = format!("{} Files & Folders (Default)", egui_phosphor::regular::FOLDER);
@@ -180,15 +180,15 @@ impl StudioApp {
             });
     }
 
-    pub(crate) fn render_bottom_panel(&mut self, ctx: &egui::Context) {
-        TopBottomPanel::bottom("studio_bottom_panel")
+    pub(crate) fn render_bottom_panel(&mut self, root: &mut egui::Ui) {
+        egui::Panel::bottom("studio_bottom_panel")
             .frame(
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(PANEL_BG)
-                    .inner_margin(egui::Margin::symmetric(14.0, 5.0))
+                    .inner_margin(egui::Margin::symmetric(14, 5))
                     .stroke(Stroke::new(1.0, PANEL_BORDER)),
             )
-            .show(ctx, |ui| {
+            .show(root, |ui| {
                 ui.horizontal(|ui| {
                     if let Some(msg) = &self.canvas_state.status_message {
                         ui.label(RichText::new(format!("● {}", msg)).font(FontId::new(11.0, FontFamily::Proportional)).color(ARCHETYPE_INGRESS));

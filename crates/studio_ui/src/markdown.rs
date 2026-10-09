@@ -1,5 +1,5 @@
 use egui::{
-    Color32, FontFamily, FontId, RichText, Rounding, Stroke, Ui, Vec2,
+    Color32, FontFamily, FontId, RichText, CornerRadius, Stroke, Ui, Vec2,
 };
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
@@ -308,7 +308,7 @@ impl MarkdownRenderer {
                 ui.add_space(8.0);
                 // Vertical bar
                 let (rect, _) = ui.allocate_exact_size(Vec2::new(3.0, 16.0), egui::Sense::hover());
-                ui.painter().rect_filled(rect, Rounding::same(1.5), quote_accent);
+                ui.painter().rect_filled(rect, CornerRadius::from(1.5), quote_accent);
                 ui.add_space(6.0);
 
                 ui.vertical(|ui| {
@@ -411,11 +411,11 @@ impl MarkdownRenderer {
         let font_size = self.base_font_size * 0.95;
 
         // Container frame
-        egui::Frame::none()
+        egui::Frame::NONE
             .fill(Color32::from_rgb(0x0e, 0x11, 0x17))
             .stroke(Stroke::new(1.0, Color32::from_rgb(0x28, 0x2e, 0x3d)))
-            .rounding(Rounding::same(6.0))
-            .inner_margin(egui::Margin::symmetric(10.0, 8.0))
+            .corner_radius(CornerRadius::from(6.0))
+            .inner_margin(egui::Margin::symmetric(10, 8))
             .show(ui, |ui| {
                 // Header badge
                 ui.horizontal(|ui| {
@@ -466,11 +466,11 @@ impl MarkdownRenderer {
         let rows = std::mem::take(&mut self.table_rows);
         let font_size = self.base_font_size;
 
-        egui::Frame::none()
+        egui::Frame::NONE
             .fill(CARD_BG)
             .stroke(Stroke::new(1.0, CARD_BORDER_NORMAL))
-            .rounding(Rounding::same(4.0))
-            .inner_margin(egui::Margin::same(8.0))
+            .corner_radius(CornerRadius::from(4.0))
+            .inner_margin(egui::Margin::same(8))
             .show(ui, |ui| {
                 egui::Grid::new(ui.next_auto_id())
                     .striped(true)

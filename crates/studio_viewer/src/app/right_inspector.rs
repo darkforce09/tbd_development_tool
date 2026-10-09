@@ -1,29 +1,30 @@
 use eframe::egui;
-use egui::{Color32, FontFamily, FontId, Pos2, RichText, Rounding, Stroke, Vec2};
+use egui::{Color32, FontFamily, FontId, Pos2, RichText, CornerRadius, Stroke, Vec2};
 use studio_canvas::{archetype_color, data_type_color};
 use studio_ui::{color_tokens::*, truncate_with_ellipsis};
 
 use super::StudioApp;
 
 impl StudioApp {
-    pub(crate) fn render_right_inspector(&mut self, ctx: &egui::Context) {
+    pub(crate) fn render_right_inspector(&mut self, root: &mut egui::Ui) {
+        let ctx = root.ctx().clone();
         if !self.right_inspector_open {
             return;
         }
 
         let panel_width = if self.code_editor_expanded { 640.0 } else { 380.0 };
-        egui::SidePanel::right("studio_right_inspector")
+        egui::Panel::right("studio_right_inspector")
             .resizable(true)
-            .default_width(panel_width)
-            .min_width(320.0)
-            .max_width(900.0)
+            .default_size(panel_width)
+            .min_size(320.0)
+            .max_size(900.0)
             .frame(
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(PANEL_BG)
-                    .inner_margin(egui::Margin::symmetric(14.0, 10.0))
+                    .inner_margin(egui::Margin::symmetric(14, 10))
                     .stroke(Stroke::new(1.0, PANEL_BORDER)),
             )
-            .show(ctx, |ui| {
+            .show(root, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     // Check selected node
                     let selected_id = self.canvas_state.selected_nodes.iter().next().copied();
@@ -60,7 +61,7 @@ impl StudioApp {
                             let focus_label = format!("{} Focus on Canvas", egui_phosphor::regular::EYE);
                             if ui.button(focus_label).clicked() {
                                 let center_world = Pos2::new(node.position[0] + node.size[0] * 0.5, node.position[1] + node.size[1] * 0.5);
-                                self.canvas_state.transform.center_on_world_pos(center_world, ctx.screen_rect(), None);
+                                self.canvas_state.transform.center_on_world_pos(center_world, ctx.content_rect(), None);
                             }
 
                             ui.add_space(8.0);
@@ -99,14 +100,14 @@ impl StudioApp {
                                     0 => {
                                         // Tab 0: Document Preview (Full-Height Scrollable Markdown View)
                                         let avail_h = (ui.available_height() - 20.0).max(480.0);
-                                        egui::Frame::none()
+                                        egui::Frame::NONE
                                             .fill(CARD_BG)
                                             .stroke(Stroke::new(1.0, CARD_BORDER_NORMAL))
-                                            .rounding(Rounding::same(6.0))
-                                            .inner_margin(egui::Margin::same(12.0))
+                                            .corner_radius(CornerRadius::from(6.0))
+                                            .inner_margin(egui::Margin::same(12))
                                             .show(ui, |ui| {
                                                 egui::ScrollArea::vertical()
-                                                    .id_source("md_sidebar_full_preview")
+                                                    .id_salt("md_sidebar_full_preview")
                                                     .max_height(avail_h)
                                                     .show(ui, |ui| {
                                                         studio_ui::render_markdown(ui, &self.code_editor_buffer);
@@ -117,11 +118,11 @@ impl StudioApp {
                                         // Tab 1: Outline & Headings
                                         ui.label(RichText::new("DOCUMENT OUTLINE & HEADINGS").font(FontId::new(10.5, FontFamily::Monospace)).color(TEXT_DIM).strong());
                                         ui.add_space(4.0);
-                                        egui::Frame::none()
+                                        egui::Frame::NONE
                                             .fill(CARD_BG)
                                             .stroke(Stroke::new(1.0, CARD_BORDER_NORMAL))
-                                            .rounding(Rounding::same(6.0))
-                                            .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+                                            .corner_radius(CornerRadius::from(6.0))
+                                            .inner_margin(egui::Margin::symmetric(8, 6))
                                             .show(ui, |ui| {
                                                 if node.member_nodes.is_empty() {
                                                     ui.label(RichText::new("(No headings extracted)").font(FontId::new(11.0, FontFamily::Proportional)).color(TEXT_DIM));
@@ -243,11 +244,11 @@ impl StudioApp {
                                     });
                                     ui.add_space(4.0);
 
-                                    egui::Frame::none()
+                                    egui::Frame::NONE
                                         .fill(CARD_BG)
                                         .stroke(Stroke::new(1.0, CARD_BORDER_NORMAL))
-                                        .rounding(Rounding::same(6.0))
-                                        .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+                                        .corner_radius(CornerRadius::from(6.0))
+                                        .inner_margin(egui::Margin::symmetric(8, 6))
                                         .show(ui, |ui| {
                                             for member in &node.member_nodes {
                                                 let is_active = self.code_editor_member_id.as_deref() == Some(&member.id);
@@ -313,7 +314,7 @@ impl StudioApp {
                                                         self.canvas_state.selected_nodes.clear();
                                                         self.canvas_state.selected_nodes.insert(src_node.id);
                                                         let center_world = Pos2::new(src_node.position[0] + src_node.size[0] * 0.5, src_node.position[1] + src_node.size[1] * 0.5);
-                                                        self.canvas_state.transform.center_on_world_pos(center_world, ctx.screen_rect(), None);
+                                                        self.canvas_state.transform.center_on_world_pos(center_world, ctx.content_rect(), None);
                                                     }
                                                 }
                                             }
@@ -338,7 +339,7 @@ impl StudioApp {
                                                         self.canvas_state.selected_nodes.clear();
                                                         self.canvas_state.selected_nodes.insert(dst_node.id);
                                                         let center_world = Pos2::new(dst_node.position[0] + dst_node.size[0] * 0.5, dst_node.position[1] + dst_node.size[1] * 0.5);
-                                                        self.canvas_state.transform.center_on_world_pos(center_world, ctx.screen_rect(), None);
+                                                        self.canvas_state.transform.center_on_world_pos(center_world, ctx.content_rect(), None);
                                                     }
                                                 }
                                             }
@@ -427,11 +428,11 @@ impl StudioApp {
                         ui.label(RichText::new("PIPELINE DIAGNOSTICS (HAYSTACK)").font(FontId::new(11.0, FontFamily::Monospace)).color(TEXT_DIM).strong());
                         ui.add_space(8.0);
 
-                        egui::Frame::none()
+                        egui::Frame::NONE
                             .fill(CARD_BG)
                             .stroke(Stroke::new(1.0, CARD_BORDER_NORMAL))
-                            .rounding(Rounding::same(8.0))
-                            .inner_margin(egui::Margin::same(12.0))
+                            .corner_radius(CornerRadius::from(8.0))
+                            .inner_margin(egui::Margin::same(12))
                             .show(ui, |ui| {
                                 let diag_label = format!("{} Architecture Graph Valid", egui_phosphor::regular::CHECK_CIRCLE);
                                 ui.label(RichText::new(diag_label).font(FontId::new(13.0, FontFamily::Proportional)).color(ARCHETYPE_EGRESS).strong());

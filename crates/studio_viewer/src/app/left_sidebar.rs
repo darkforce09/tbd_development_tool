@@ -1,5 +1,5 @@
 use eframe::egui;
-use egui::{Color32, FontFamily, FontId, Pos2, RichText, Rounding, Stroke};
+use egui::{Color32, FontFamily, FontId, Pos2, RichText, CornerRadius, Stroke};
 use studio_graph::NodeArchetype;
 use studio_ui::color_tokens::*;
 
@@ -7,23 +7,24 @@ use super::types::StudioViewMode;
 use super::StudioApp;
 
 impl StudioApp {
-    pub(crate) fn render_left_sidebar(&mut self, ctx: &egui::Context) {
+    pub(crate) fn render_left_sidebar(&mut self, root: &mut egui::Ui) {
+        let ctx = root.ctx().clone();
         if !self.left_sidebar_open {
             return;
         }
 
-        egui::SidePanel::left("studio_left_sidebar")
+        egui::Panel::left("studio_left_sidebar")
             .resizable(true)
-            .default_width(280.0)
-            .min_width(220.0)
-            .max_width(420.0)
+            .default_size(280.0)
+            .min_size(220.0)
+            .max_size(420.0)
             .frame(
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(PANEL_BG)
-                    .inner_margin(egui::Margin::symmetric(14.0, 10.0))
+                    .inner_margin(egui::Margin::symmetric(14, 10))
                     .stroke(Stroke::new(1.0, PANEL_BORDER)),
             )
-            .show(ctx, |ui| {
+            .show(root, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     match self.view_mode {
                         StudioViewMode::CodebaseMaps | StudioViewMode::ArchitectureMap => {
@@ -101,7 +102,7 @@ impl StudioApp {
                                         cluster.position[0] + cluster.size[0] * 0.5,
                                         cluster.position[1] + cluster.size[1] * 0.5,
                                     );
-                                    self.canvas_state.transform.center_on_world_pos(center_world, ctx.screen_rect(), None);
+                                    self.canvas_state.transform.center_on_world_pos(center_world, ctx.content_rect(), None);
                                 }
                             }
                         }
@@ -136,11 +137,11 @@ impl StudioApp {
                                     let card_bg = if is_selected { Color32::from_rgb(26, 32, 50) } else { CARD_BG };
                                     let border_stroke = if is_selected { Stroke::new(1.5, CARD_BORDER_SELECTED) } else { Stroke::new(1.0, CARD_BORDER_NORMAL) };
 
-                                    egui::Frame::none()
+                                    egui::Frame::NONE
                                         .fill(card_bg)
                                         .stroke(border_stroke)
-                                        .rounding(Rounding::same(6.0))
-                                        .inner_margin(egui::Margin::same(10.0))
+                                        .corner_radius(CornerRadius::from(6.0))
+                                        .inner_margin(egui::Margin::same(10))
                                         .show(ui, |ui| {
                                             ui.horizontal(|ui| {
                                                 ui.label(RichText::new(&variant.name).font(FontId::new(12.0, FontFamily::Proportional)).strong().color(if is_selected { TEXT_HIGHLIGHT } else { TEXT_PRIMARY }));

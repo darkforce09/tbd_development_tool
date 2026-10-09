@@ -84,8 +84,8 @@ impl GpuWirePipeline {
         // 3. Pipeline Layout & Vertex Attributes
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("gpu_wire_pipeline_layout"),
-            bind_group_layouts: &[&uniform_bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&uniform_bind_group_layout)],
+            immediate_size: 0,
         });
 
         let vertex_attributes = [
@@ -132,13 +132,13 @@ impl GpuWirePipeline {
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vs_main",
-                buffers: &[vertex_buffer_layout],
+                entry_point: Some("vs_main"),
+                buffers: &[Some(vertex_buffer_layout)],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "fs_main",
+                entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: target_format,
                     blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
@@ -157,7 +157,8 @@ impl GpuWirePipeline {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
+            cache: None,
         });
 
         Self {

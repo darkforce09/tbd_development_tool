@@ -1,5 +1,5 @@
 use egui::{
-    epaint::RectShape, Color32, FontFamily, FontId, Painter, Pos2, Rect, Rounding, Stroke, Vec2,
+    epaint::RectShape, Color32, FontFamily, FontId, Painter, Pos2, Rect, CornerRadius, Stroke, Vec2,
 };
 use crate::colors::*;
 use crate::syntax::{detect_language, SyntaxHighlighter};
@@ -57,7 +57,7 @@ pub struct CodeCardLayout {
 /// - Tab 3: Haystack Ports Schema with Jump buttons to connected nodes
 pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardLayout {
     let z = props.zoom;
-    let rounding = Rounding::same(8.0 * z);
+    let rounding = CornerRadius::from(8.0 * z);
     let lang = detect_language(props.file_path, props.language_hint);
     let is_markdown = lang == "md" || lang == "markdown" || props.language_hint == Some("MD");
 
@@ -66,7 +66,7 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
         props.rect.translate(Vec2::new(0.0, 4.0 * z)),
         rounding,
         Color32::from_black_alpha(90),
-        Stroke::NONE,
+        Stroke::NONE, egui::StrokeKind::Middle,
     );
 
     let border_color = if props.is_selected {
@@ -79,7 +79,7 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
         props.rect,
         rounding,
         CODE_EDITOR_BG,
-        Stroke::new((1.2 * z).max(1.0), border_color),
+        Stroke::new((1.2 * z).max(1.0), border_color), egui::StrokeKind::Middle,
     ));
 
     let card_painter = painter.with_clip_rect(props.rect);
@@ -93,14 +93,14 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
 
     card_painter.add(RectShape::new(
         header_rect,
-        Rounding {
-            nw: 8.0 * z,
-            ne: 8.0 * z,
-            sw: 0.0,
-            se: 0.0,
+        CornerRadius {
+            nw: (8.0 * z).round() as u8,
+            ne: (8.0 * z).round() as u8,
+            sw: 0,
+            se: 0,
         },
         CARD_HEADER_BG,
-        Stroke::NONE,
+        Stroke::NONE, egui::StrokeKind::Middle,
     ));
 
     // Language / Archetype Pill Badge
@@ -127,7 +127,7 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
     if is_close_hovered {
         card_painter.rect_filled(
             close_button_rect,
-            Rounding::same(3.0 * z),
+            CornerRadius::from(3.0 * z),
             Color32::from_rgba_premultiplied(239, 68, 68, 45),
         );
     }
@@ -168,7 +168,7 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
         Vec2::new(props.rect.width(), tab_bar_h),
     );
 
-    card_painter.rect_filled(tab_bar_rect, Rounding::ZERO, Color32::from_rgb(18, 20, 28));
+    card_painter.rect_filled(tab_bar_rect, CornerRadius::ZERO, Color32::from_rgb(18, 20, 28));
 
     // Define tabs depending on whether this is a Markdown document or Code file
     let mut tab_defs: Vec<(usize, String, &'static str)> = Vec::new();
@@ -207,14 +207,14 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
         if is_active {
             card_painter.rect(
                 tab_rect,
-                Rounding::same(4.0 * z),
+                CornerRadius::from(4.0 * z),
                 Color32::from_rgba_premultiplied(99, 102, 241, 55),
-                Stroke::new((1.0 * z).max(0.5), Color32::from_rgb(129, 140, 248)),
+                Stroke::new((1.0 * z).max(0.5), Color32::from_rgb(129, 140, 248)), egui::StrokeKind::Middle,
             );
         } else if is_hov {
             card_painter.rect_filled(
                 tab_rect,
-                Rounding::same(4.0 * z),
+                CornerRadius::from(4.0 * z),
                 Color32::from_rgba_premultiplied(148, 163, 184, 30),
             );
         }
@@ -417,7 +417,7 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
             } else if trimmed.starts_with("> ") {
                 body_clip.rect_filled(
                     Rect::from_min_size(Pos2::new(content_left, curr_y), Vec2::new(3.0 * z, font_size * 1.2)),
-                    Rounding::same(1.0),
+                    CornerRadius::from(1.0),
                     ARCHETYPE_FILE,
                 );
                 body_clip.text(
@@ -468,7 +468,7 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
                 if is_hov {
                     body_clip.rect_filled(
                         row_r,
-                        Rounding::same(3.0 * z),
+                        CornerRadius::from(3.0 * z),
                         Color32::from_rgba_premultiplied(99, 102, 241, 30),
                     );
                 }
@@ -524,7 +524,7 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
                 if is_row_hov {
                     body_clip.rect_filled(
                         row_rect,
-                        Rounding::same(4.0 * z),
+                        CornerRadius::from(4.0 * z),
                         with_alpha(member.archetype_color, 25),
                     );
                 }
@@ -538,9 +538,9 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
                 );
                 body_clip.rect(
                     tag_rect,
-                    Rounding::same(3.0 * z),
+                    CornerRadius::from(3.0 * z),
                     with_alpha(member.archetype_color, 45),
-                    Stroke::new((1.0 * z).max(0.5), with_alpha(member.archetype_color, 180)),
+                    Stroke::new((1.0 * z).max(0.5), with_alpha(member.archetype_color, 180)), egui::StrokeKind::Middle,
                 );
                 body_clip.text(
                     tag_rect.center(),
@@ -581,14 +581,14 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
                 if is_code_open {
                     body_clip.rect(
                         code_btn_rect,
-                        Rounding::same(3.0 * z),
+                        CornerRadius::from(3.0 * z),
                         Color32::from_rgba_premultiplied(99, 102, 241, 60),
-                        Stroke::new((1.0 * z).max(0.5), Color32::from_rgb(129, 140, 248)),
+                        Stroke::new((1.0 * z).max(0.5), Color32::from_rgb(129, 140, 248)), egui::StrokeKind::Middle,
                     );
                 } else if is_code_hov {
                     body_clip.rect_filled(
                         code_btn_rect,
-                        Rounding::same(3.0 * z),
+                        CornerRadius::from(3.0 * z),
                         Color32::from_rgba_premultiplied(148, 163, 184, 30),
                     );
                 }
@@ -631,9 +631,9 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
 
                     body_clip.rect(
                         drawer_rect,
-                        Rounding::same(4.0 * z),
+                        CornerRadius::from(4.0 * z),
                         Color32::from_rgb(12, 14, 20),
-                        Stroke::new((1.0 * z).max(0.5), Color32::from_rgb(45, 50, 68)),
+                        Stroke::new((1.0 * z).max(0.5), Color32::from_rgb(45, 50, 68)), egui::StrokeKind::Middle,
                     );
 
                     let drawer_clip = body_clip.with_clip_rect(drawer_rect);
@@ -741,7 +741,7 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
             Pos2::new(props.rect.min.x + gutter_width, props.rect.max.y),
         );
 
-        body_clip.rect_filled(gutter_rect, Rounding::ZERO, CODE_GUTTER_BG);
+        body_clip.rect_filled(gutter_rect, CornerRadius::ZERO, CODE_GUTTER_BG);
         body_clip.line_segment(
             [
                 Pos2::new(gutter_rect.max.x, body_rect.min.y),
@@ -813,7 +813,7 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
                 );
                 let is_caret_hov = props.hovered_pos.map(|p| caret_rect.contains(p)).unwrap_or(false);
                 if is_caret_hov {
-                    body_clip.rect_filled(caret_rect, Rounding::same(2.0 * z), Color32::from_rgba_premultiplied(99, 102, 241, 40));
+                    body_clip.rect_filled(caret_rect, CornerRadius::from(2.0 * z), Color32::from_rgba_premultiplied(99, 102, 241, 40));
                 }
                 body_clip.text(
                     caret_rect.center(),
@@ -939,7 +939,8 @@ mod tests {
     #[test]
     fn test_paint_code_card_tabs_and_jump_clicks() {
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| {
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            let ctx = ui.ctx();
             let painter = ctx.layer_painter(egui::LayerId::background());
             let rect = Rect::from_min_size(Pos2::new(50.0, 50.0), Vec2::new(500.0, 400.0));
 
@@ -1064,6 +1065,8 @@ mod tests {
             assert_eq!(layout_docs.member_row_clicks.len(), 0);
             assert_eq!(layout_docs.member_code_clicks.len(), 0);
         });
+        // Font atlas uploads are normally consumed by the renderer.
+        output.textures_delta.clear();
     }
 }
 

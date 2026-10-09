@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use eframe::egui;
-use egui::{Color32, FontFamily, FontId, RichText, Rounding, Stroke};
+use egui::{Color32, FontFamily, FontId, RichText, CornerRadius, Stroke};
 use studio_graph::NodeId;
 use studio_parser::{apply_edit, content_hash, save_and_reparse, EditOrigin};
 use studio_ui::color_tokens::*;
@@ -223,11 +223,11 @@ impl StudioApp {
             .collapsible(false)
             .resizable(false)
             .frame(
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(Color32::from_rgb(18, 20, 29))
                     .stroke(Stroke::new(1.5, Color32::from_rgb(251, 146, 60)))
-                    .rounding(Rounding::same(12.0))
-                    .inner_margin(egui::Margin::same(18.0)),
+                    .corner_radius(CornerRadius::from(12.0))
+                    .inner_margin(egui::Margin::same(18)),
             )
             .show(ctx, |ui| {
                 ui.label(

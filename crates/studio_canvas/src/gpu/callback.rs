@@ -36,11 +36,11 @@ impl CallbackTrait for GpuWireCallback {
         Vec::new()
     }
 
-    fn paint<'a>(
-        &'a self,
+    fn paint(
+        &self,
         info: PaintCallbackInfo,
-        render_pass: &mut wgpu::RenderPass<'a>,
-        callback_resources: &'a CallbackResources,
+        render_pass: &mut wgpu::RenderPass<'static>,
+        callback_resources: &CallbackResources,
     ) {
         if self.instances.is_empty() {
             return;
