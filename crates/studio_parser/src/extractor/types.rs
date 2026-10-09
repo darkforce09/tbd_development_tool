@@ -94,6 +94,18 @@ pub struct UseItem {
     pub items: Vec<String>,
 }
 
+/// A link in a documentation file to another file in the project.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkItem {
+    /// Link text, or the target's file name when the text is empty.
+    pub label: String,
+    /// Target path as written, without `#anchor` or `?query`. Relative to the linking file, or to
+    /// the project root when it starts with `/`.
+    pub target: String,
+    pub line: usize,
+    pub source_code: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct ExtractedFile {
     pub file_path: PathBuf,
@@ -105,6 +117,7 @@ pub struct ExtractedFile {
     pub traits: Vec<TraitItem>,
     pub impls: Vec<ImplItem>,
     pub uses: Vec<UseItem>,
+    pub links: Vec<LinkItem>,
     pub parse_error: Option<String>,
     pub language: super::lang::SourceLang,
 }
@@ -130,6 +143,7 @@ impl ExtractedFile {
             traits: Vec::new(),
             impls: Vec::new(),
             uses: Vec::new(),
+            links: Vec::new(),
             parse_error,
             language,
         }

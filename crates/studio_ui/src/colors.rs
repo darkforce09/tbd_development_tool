@@ -42,6 +42,15 @@ pub const TYPE_COMPOSITE_GLOW: Color32 = Color32::from_rgb(0xf0, 0xab, 0xfc);
 pub const TYPE_DEFAULT: Color32 = Color32::from_rgb(0x9c, 0xa3, 0xaf); // Gray
 pub const TYPE_DEFAULT_GLOW: Color32 = Color32::from_rgb(0xd1, 0xd5, 0xdb);
 
+// Wire kinds and the symbols they lead to (docs/VISUAL_LANGUAGE.md)
+pub const KIND_CALL: Color32 = Color32::from_rgb(0x34, 0xd3, 0x99); // Emerald: calls, functions
+pub const KIND_TYPE_USE: Color32 = Color32::from_rgb(0xfb, 0x92, 0x3c); // Orange: type use, structs and classes
+pub const KIND_IMPLEMENTS: Color32 = Color32::from_rgb(0xa7, 0x8b, 0xfa); // Violet: implements, traits and interfaces
+pub const KIND_IMPORT: Color32 = Color32::from_rgb(0x94, 0xa3, 0xb8); // Slate: imports, modules
+pub const KIND_DOCUMENTATION: Color32 = Color32::from_rgb(0x38, 0xbd, 0xf8); // Sky blue: documentation
+pub const KIND_ASSET: Color32 = Color32::from_rgb(0xf4, 0x72, 0xb6); // Pink: asset references
+pub const KIND_ENUM: Color32 = Color32::from_rgb(0xfb, 0xbf, 0x24); // Amber: enums
+
 // Archetype Accents
 pub const ARCHETYPE_INGRESS: Color32 = Color32::from_rgb(0x06, 0xb6, 0xd4);
 pub const ARCHETYPE_COMPUTE: Color32 = Color32::from_rgb(0xa8, 0x55, 0xf7);

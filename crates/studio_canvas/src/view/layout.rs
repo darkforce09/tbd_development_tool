@@ -26,9 +26,16 @@ pub fn calculate_file_node_size(node: &Node) -> [f32; 2] {
     }
 }
 
+/// Distance of the documentation port below a card's top edge.
+pub const DOC_PORT_OFFSET_Y: f32 = 9.0;
+
 /// Computes the world position of a port socket on a node card.
 pub fn port_world_position(node: &Node, port_id: PortId) -> Option<Pos2> {
     let (idx, dir) = node.port_index(port_id)?;
+    // The documentation port sits at the top of the left side, above the code inputs.
+    if node.doc_port() == Some(port_id) {
+        return Some(Pos2::new(node.position[0], node.position[1] + DOC_PORT_OFFSET_Y));
+    }
     let y = if node.archetype == NodeArchetype::File && !node.is_code_expanded {
         if node.is_dropdown_expanded {
             if let Some((m_idx, _)) = node

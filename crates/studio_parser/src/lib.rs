@@ -17,7 +17,7 @@ pub use cache::{
 pub use edit::{apply_edit, atomic_write, content_hash, EditError, EditOrigin};
 pub use extractor::{
     extract_file, extract_project, EnumItem, ExtractedCrate, ExtractedFile, ExtractedProject, FieldInfo, FunctionItem,
-    ImplItem, ItemVisibility, ParamInfo, StructItem, TraitItem, UseItem,
+    ImplItem, ItemVisibility, LinkItem, ParamInfo, StructItem, TraitItem, UseItem,
 };
 pub use project::{scan_project, CrateInfo, ProjectError, RustProject};
 pub use search_index::{SearchItem, SymbolSearchIndex};
@@ -248,7 +248,8 @@ mod tests {
     /// (member id, visibility, signature, line) per member, and (caller, callee) member ids per call edge.
     type CardShape = (Vec<(String, String, String, usize)>, Vec<(String, String)>);
 
-    /// Member list + call edges of a file card, by name, for comparing a saved graph with a fresh load.
+    /// Member list + the calls a file card's members make (provider member → consumer member), for
+    /// comparing a saved graph with a fresh load.
     fn file_card_shape(graph: &Graph, title: &str) -> CardShape {
         let node = graph.nodes.values().find(|n| n.title == title).expect("file card");
         let members = node
@@ -267,7 +268,7 @@ mod tests {
         let mut calls: Vec<(String, String)> = graph
             .edges
             .iter()
-            .filter(|e| e.from_node == node.id)
+            .filter(|e| e.to_node == node.id && e.kind == studio_graph::EdgeKind::Call)
             .filter_map(|e| Some((port_owner(e.from_port)?, port_owner(e.to_port)?)))
             .collect();
         calls.sort();
@@ -294,7 +295,10 @@ mod tests {
         let (fresh, _) = load_rust_project(dir.path()).unwrap();
         let saved_shape = file_card_shape(&graph, "a.rs");
         assert_eq!(saved_shape, file_card_shape(&fresh, "a.rs"));
-        assert!(saved_shape.1.iter().any(|(_, to)| to == "fn:delta"), "new call wired: {saved_shape:?}");
+        assert!(
+            saved_shape.1.iter().any(|(from, to)| from == "fn:delta" && to == "fn:gamma"),
+            "new call wired from provider to caller: {saved_shape:?}"
+        );
         assert!(saved_shape.0.iter().any(|m| m.0 == "method:S::m"), "impl methods are kept: {saved_shape:?}");
 
         let card = graph.nodes.values().find(|n| n.title == "a.rs").unwrap();
@@ -303,7 +307,8 @@ mod tests {
         for m in &card.member_nodes {
             assert!(port_ids.contains(&m.in_port_id.unwrap()) && port_ids.contains(&m.out_port_id.unwrap()));
         }
-        assert_eq!(card.inputs.len(), card.member_nodes.len() + 1, "stale member ports removed");
+        // Code input + documentation port + one input per member.
+        assert_eq!(card.inputs.len(), card.member_nodes.len() + 2, "stale member ports removed");
     }
 
     #[test]
@@ -515,8 +520,60 @@ Link back: [Hub](../README.md)
         let engine_members = &engine_node.member_nodes;
         assert!(engine_members.iter().any(|m| m.visibility == "MOD"));
 
-        // Verify wires exist connecting markdown links to destination files
-        assert!(!graph.edges.is_empty(), "Should connect wires between linked files");
+        // Documentation links become documentation wires into the target's documentation port.
+        let doc_wires: Vec<(&str, &str)> = graph
+            .edges
+            .iter()
+            .filter(|e| e.kind == studio_graph::EdgeKind::Documentation)
+            .map(|e| {
+                let target = &graph.nodes[&e.to_node];
+                assert_eq!(Some(e.to_port), target.doc_port(), "doc wires end at the documentation port");
+                (graph.nodes[&e.from_node].title.as_str(), target.title.as_str())
+            })
+            .collect();
+        for (from, to) in [("README.md", "satellite.md"), ("README.md", "engine.c"), ("satellite.md", "README.md")] {
+            assert!(doc_wires.contains(&(from, to)), "{from} → {to} missing: {doc_wires:?}");
+        }
+        assert!(
+            graph.edges.iter().all(|e| e.kind == studio_graph::EdgeKind::Documentation),
+            "markdown links are not code wires"
+        );
+    }
+
+    #[test]
+    fn test_wires_run_from_provider_to_consumer() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/util.rs"), "pub fn helper() {}\n").unwrap();
+        std::fs::write(dir.path().join("src/main.rs"), "use crate::util::helper;\n\nfn main() {\n    helper();\n}\n")
+            .unwrap();
+
+        let (graph, _) = load_rust_project(dir.path()).unwrap();
+        let id = |title: &str| graph.nodes.values().find(|n| n.title == title).unwrap().id;
+        let (util, main) = (id("util.rs"), id("main.rs"));
+
+        let file_wire = graph
+            .edges
+            .iter()
+            .find(|e| e.from_port == graph.nodes[&util].outputs[0].id)
+            .expect("util.rs provides to main.rs");
+        assert_eq!((file_wire.from_node, file_wire.to_node), (util, main));
+        assert_eq!(file_wire.to_port, graph.nodes[&main].inputs[0].id, "into the consumer's code input");
+        assert_eq!(file_wire.kind, studio_graph::EdgeKind::Import, "an import outranks a call");
+        assert!(graph.edges.iter().all(|e| e.from_node != main), "main.rs provides nothing");
+
+        let member = |node: studio_graph::NodeId, member_id: &str| {
+            graph.nodes[&node].member_nodes.iter().find(|m| m.id == member_id).unwrap().clone()
+        };
+        let (helper, caller) = (member(util, "fn:helper"), member(main, "fn:main"));
+        let call = graph.edges.iter().find(|e| e.kind == studio_graph::EdgeKind::Call).expect("member call wire");
+        assert_eq!(call.from_port, helper.out_port_id.unwrap(), "from the called function's output");
+        assert_eq!(call.to_port, caller.in_port_id.unwrap(), "into the caller's input");
     }
 
     #[test]

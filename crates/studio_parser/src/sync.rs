@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use studio_graph::{EdgeId, Graph, NodeArchetype, NodeId, PortId};
+use studio_graph::{EdgeId, EdgeKind, Graph, NodeArchetype, NodeId, PortId};
 
-use crate::builder::members::{attach_member_ports, build_member_nodes, member_calls, MemberPortIndex};
+use crate::builder::common::{node_rel_path, resolve_link};
+use crate::builder::members::{attach_member_ports, build_member_nodes, link_member_id, member_calls, MemberPortIndex};
 use crate::extractor::{extract_source, ExtractedFile};
 
 /// Outcome of a save + re-parse.
@@ -98,8 +99,8 @@ fn refresh_file_node(graph: &mut Graph, node_id: NodeId, extracted: &ExtractedFi
 
     attach_member_ports(graph, node_id, &mut members);
 
-    let out_port_by_member: HashMap<String, PortId> =
-        members.iter().filter_map(|m| Some((m.id.clone(), m.out_port_id?))).collect();
+    let ports_by_member: HashMap<String, (PortId, PortId)> =
+        members.iter().filter_map(|m| Some((m.id.clone(), (m.in_port_id?, m.out_port_id?)))).collect();
     if let Some(node) = graph.nodes.get_mut(&node_id) {
         if node.source_code.is_some() {
             node.source_code = Some(content.to_string());
@@ -107,22 +108,29 @@ fn refresh_file_node(graph: &mut Graph, node_id: NodeId, extracted: &ExtractedFi
         node.member_nodes = members;
     }
 
-    rewire_member_calls(graph, node_id, extracted, &out_port_by_member);
+    rewire_member_edges(graph, node_id, extracted, &ports_by_member);
 }
 
-/// Re-wires the card's outgoing member call edges from the new extraction, in the same order and
-/// with the same input-port semantics as the Files builder, so a save matches a fresh load.
-fn rewire_member_calls(
+/// Re-wires the card's member edges from the new extraction the same way the Files builder does,
+/// so a save matches a fresh load: calls its members make (provider → member input) and the
+/// documentation links its rows hold (link row → target's documentation port).
+fn rewire_member_edges(
     graph: &mut Graph,
     node_id: NodeId,
     extracted: &ExtractedFile,
-    out_port_by_member: &HashMap<String, PortId>,
+    ports_by_member: &HashMap<String, (PortId, PortId)>,
 ) {
-    let member_out_ports: HashSet<PortId> = out_port_by_member.values().copied().collect();
+    let member_inputs: HashSet<PortId> = ports_by_member.values().map(|&(i, _)| i).collect();
+    let member_outputs: HashSet<PortId> = ports_by_member.values().map(|&(_, o)| o).collect();
     let stale: Vec<EdgeId> = graph
         .edges
         .iter()
-        .filter(|e| e.from_node == node_id && member_out_ports.contains(&e.from_port))
+        .filter(|e| {
+            (e.to_node == node_id && e.kind == EdgeKind::Call && member_inputs.contains(&e.to_port))
+                || (e.from_node == node_id
+                    && e.kind == EdgeKind::Documentation
+                    && member_outputs.contains(&e.from_port))
+        })
         .map(|e| e.id)
         .collect();
     for edge_id in stale {
@@ -130,24 +138,34 @@ fn rewire_member_calls(
     }
 
     let index = MemberPortIndex::from_graph(graph);
-    let mut step = graph.edges.iter().filter_map(|e| e.step_number).max().unwrap_or(0) + 1;
-    let mut connected: HashSet<(PortId, NodeId, PortId)> = HashSet::new();
+    let mut connected: HashSet<(PortId, PortId)> = HashSet::new();
     for (member_id, calls) in member_calls(extracted) {
-        let Some(&out_port) = out_port_by_member.get(&member_id) else { continue };
+        let Some(&(consumer_in, own_out)) = ports_by_member.get(&member_id) else { continue };
         for call in calls {
-            let Some((target_node, in_port)) = index.resolve(call) else { continue };
-            if (target_node != node_id || in_port != out_port) && connected.insert((out_port, target_node, in_port)) {
-                graph.connect_labeled(
-                    node_id,
-                    out_port,
-                    target_node,
-                    in_port,
-                    Some("call".to_string()),
-                    Some(step),
-                    None,
-                );
-                step += 1;
+            let Some((provider, provider_out)) = index.resolve_provider(call) else { continue };
+            if provider_out != own_out && connected.insert((provider_out, consumer_in)) {
+                graph.connect_kind(provider, provider_out, node_id, consumer_in, EdgeKind::Call);
             }
+        }
+    }
+
+    let Some(from) = graph.nodes.get(&node_id).and_then(node_rel_path) else { return };
+    let path_to_node: HashMap<String, NodeId> = graph
+        .nodes
+        .iter()
+        .filter(|(_, n)| n.archetype == NodeArchetype::File)
+        .filter_map(|(&id, n)| Some((node_rel_path(n)?, id)))
+        .collect();
+    for link in &extracted.links {
+        let Some(&(_, link_out)) = ports_by_member.get(&link_member_id(link)) else { continue };
+        let Some(target) = resolve_link(&from, &link.target).and_then(|t| path_to_node.get(&t).copied()) else {
+            continue;
+        };
+        if target == node_id {
+            continue;
+        }
+        if let Some(doc_in) = graph.nodes.get(&target).and_then(|n| n.doc_port()) {
+            graph.connect_kind(node_id, link_out, target, doc_in, EdgeKind::Documentation);
         }
     }
 }

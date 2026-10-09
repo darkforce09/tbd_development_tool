@@ -17,5 +17,5 @@ pub use parse::{
 pub use treesitter::{extract_code_file, CodeLang};
 pub use types::{
     EnumItem, ExtractedCrate, ExtractedFile, ExtractedProject, FieldInfo, FunctionItem, ImplItem, ItemVisibility,
-    ParamInfo, StructItem, TraitItem, UseItem,
+    LinkItem, ParamInfo, StructItem, TraitItem, UseItem,
 };

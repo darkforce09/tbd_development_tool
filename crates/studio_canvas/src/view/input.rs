@@ -433,6 +433,8 @@ pub fn handle_canvas_input(state: &mut CanvasState, graph: &mut Graph, ui: &mut 
                     if let Ok((src_n, src_p, dst_n, dst_p)) =
                         can_connect(graph, *from_node, *from_port, target_node, target_port)
                     {
+                        // A hand-drawn wire replaces whatever fed that input.
+                        graph.disconnect_input(dst_n, dst_p);
                         graph.connect(src_n, src_p, dst_n, dst_p);
                         state.status_message = Some("Connected nodes".to_string());
                     }

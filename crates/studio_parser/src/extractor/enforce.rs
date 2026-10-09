@@ -28,6 +28,7 @@ pub fn extract_enforce_script_file(file_path: &Path, rel_path: &Path, content: &
         traits: Vec::new(),
         impls: out.impls,
         uses: out.uses,
+        links: Vec::new(),
         parse_error: None,
         language: super::lang::SourceLang::Enforce,
     }

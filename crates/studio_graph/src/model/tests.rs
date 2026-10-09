@@ -158,3 +158,64 @@ fn test_node_expanded_tab_and_scroll_roundtrip() {
     assert_eq!(n.expanded_tab, 1);
     assert_eq!(n.scroll_offset_y, 45.5);
 }
+
+fn file_node(graph: &mut Graph, name: &str) -> NodeId {
+    graph.add_node(
+        name,
+        NodeArchetype::File,
+        "",
+        None,
+        vec![("in".to_string(), DataType::RustFlow), ("docs".to_string(), DataType::Documentation)],
+        vec![("out".to_string(), DataType::RustFlow)],
+        [0.0, 0.0],
+    )
+}
+
+#[test]
+fn an_input_keeps_every_incoming_wire() {
+    let mut graph = Graph::new();
+    let shared = file_node(&mut graph, "types.hpp");
+    let users: Vec<NodeId> = (0..3).map(|i| file_node(&mut graph, &format!("user{i}.cpp"))).collect();
+    let consumer = file_node(&mut graph, "main.cpp");
+    let consumer_in = graph.nodes[&consumer].inputs[0].id;
+
+    for &provider in users.iter().chain([&shared]) {
+        let out = graph.nodes[&provider].outputs[0].id;
+        graph.connect_kind(provider, out, consumer, consumer_in, EdgeKind::Import);
+    }
+    assert_eq!(graph.get_port_edges(consumer, consumer_in).len(), 4, "fan-in is kept");
+    assert!(graph.edges.iter().all(|e| e.kind == EdgeKind::Import));
+
+    assert_eq!(graph.disconnect_input(consumer, consumer_in), 4);
+    assert!(graph.edges.is_empty());
+}
+
+#[test]
+fn edge_lookup_stays_correct_after_removals() {
+    let mut graph = Graph::new();
+    let a = file_node(&mut graph, "a");
+    let b = file_node(&mut graph, "b");
+    let (a_out, b_in) = (graph.nodes[&a].outputs[0].id, graph.nodes[&b].inputs[0].id);
+    let ids: Vec<EdgeId> = (0..5).map(|_| graph.connect(a, a_out, b, b_in).unwrap()).collect();
+
+    assert!(graph.disconnect_edge(ids[1]));
+    for &id in [ids[0], ids[2], ids[3], ids[4]].iter() {
+        assert_eq!(graph.get_edge(id).map(|e| e.id), Some(id));
+    }
+    assert!(graph.get_edge(ids[1]).is_none());
+
+    graph.disconnect_port(a, a_out);
+    assert!(ids.iter().all(|&id| graph.get_edge(id).is_none()));
+}
+
+#[test]
+fn documentation_port_is_found_and_kinds_split_layout_from_overlay() {
+    let mut graph = Graph::new();
+    let n = file_node(&mut graph, "lib.rs");
+    let doc = graph.nodes[&n].doc_port().expect("doc port");
+    assert_eq!(graph.nodes[&n].inputs[1].id, doc);
+    assert_ne!(graph.nodes[&n].inputs[0].id, doc, "the code input stays first");
+
+    assert!(EdgeKind::Import.is_code_flow() && EdgeKind::Call.is_code_flow());
+    assert!(!EdgeKind::Documentation.is_code_flow() && !EdgeKind::Asset.is_code_flow());
+}

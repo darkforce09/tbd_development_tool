@@ -1,6 +1,6 @@
 use egui::{Color32, Pos2, Rect, Vec2};
 use std::collections::BTreeSet;
-use studio_graph::{DataType, EdgeId, Graph, NodeArchetype, NodeId};
+use studio_graph::{DataType, EdgeId, EdgeKind, Graph, NodeArchetype, NodeId};
 use studio_ui::color_tokens::*;
 
 use crate::interaction::{HoverState, InteractionMode};
@@ -17,6 +17,7 @@ pub fn data_type_color(data_type: &DataType) -> Color32 {
         DataType::Flow => TYPE_FLOW,
         DataType::Composite => TYPE_COMPOSITE,
         DataType::RustFlow => TYPE_FLOW,
+        DataType::Documentation => KIND_DOCUMENTATION,
         DataType::RustType(name) => {
             let s = name.trim_start_matches('&').trim_start_matches("mut ").trim();
             match s {
@@ -70,12 +71,25 @@ pub fn archetype_color(archetype: NodeArchetype) -> Color32 {
         NodeArchetype::Compute => ARCHETYPE_COMPUTE,
         NodeArchetype::State => ARCHETYPE_STATE,
         NodeArchetype::Egress => ARCHETYPE_EGRESS,
-        NodeArchetype::Module => Color32::from_rgb(56, 189, 248),
-        NodeArchetype::Function => Color32::from_rgb(168, 85, 247),
-        NodeArchetype::Struct => Color32::from_rgb(251, 146, 60),
-        NodeArchetype::Enum => Color32::from_rgb(250, 204, 21),
-        NodeArchetype::Trait => Color32::from_rgb(52, 211, 153),
+        NodeArchetype::Module => KIND_IMPORT,
+        NodeArchetype::Function => KIND_CALL,
+        NodeArchetype::Struct => KIND_TYPE_USE,
+        NodeArchetype::Enum => KIND_ENUM,
+        NodeArchetype::Trait => KIND_IMPLEMENTS,
         NodeArchetype::File => ARCHETYPE_FILE,
+        NodeArchetype::Link => KIND_DOCUMENTATION,
+    }
+}
+
+/// Colour of a wire, by what it means (docs/VISUAL_LANGUAGE.md).
+pub fn edge_kind_color(kind: EdgeKind) -> Color32 {
+    match kind {
+        EdgeKind::Call => KIND_CALL,
+        EdgeKind::TypeUse => KIND_TYPE_USE,
+        EdgeKind::Implements => KIND_IMPLEMENTS,
+        EdgeKind::Import => KIND_IMPORT,
+        EdgeKind::Documentation => KIND_DOCUMENTATION,
+        EdgeKind::Asset => KIND_ASSET,
     }
 }
 

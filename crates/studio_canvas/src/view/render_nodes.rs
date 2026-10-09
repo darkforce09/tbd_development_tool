@@ -35,8 +35,6 @@ fn build_members_ui<'a>(member_nodes: &'a [studio_graph::FileMemberNode]) -> Vec
             },
             archetype_color: if m.visibility == "MOD" {
                 egui::Color32::from_rgb(0xf9, 0x73, 0x16)
-            } else if m.visibility == "LNK" {
-                egui::Color32::from_rgb(0x38, 0xbd, 0xf8)
             } else if m.visibility.starts_with('H') {
                 egui::Color32::from_rgb(0x2d, 0xd4, 0xbf)
             } else {
@@ -449,6 +447,11 @@ pub fn render_nodes_and_sockets(
                     {
                         continue;
                     }
+                    let is_connected = graph.is_port_connected(node_id, port.id);
+                    // An unused documentation port is noise: show it only when documentation links in.
+                    if port.data_type == studio_graph::DataType::Documentation && !is_connected {
+                        continue;
+                    }
                     if let Some(wpos) = port_world_position(node, port.id) {
                         let spos = state.transform.world_to_screen(wpos);
                         let is_hovered = state.hover.hovered_port == Some((node_id, port.id));
@@ -461,7 +464,6 @@ pub fn render_nodes_and_sockets(
                                 false
                             };
 
-                        let is_connected = graph.is_port_connected(node_id, port.id);
                         let port_color = data_type_color(&port.data_type);
 
                         paint_pin_socket(

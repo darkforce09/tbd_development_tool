@@ -8,7 +8,7 @@ use crate::interaction::InteractionMode;
 use crate::wire::{paint_bezier_wire, paint_pending_wire, paint_wire_badge_and_label, WireRenderProps};
 
 use super::layout::port_world_position;
-use super::types::{data_type_color, CanvasState};
+use super::types::{data_type_color, edge_kind_color, CanvasState};
 
 #[allow(clippy::too_many_arguments)]
 pub fn render_background_and_wires(
@@ -130,8 +130,7 @@ pub fn render_background_and_wires(
         let p0 = state.transform.world_to_screen(p0_w);
         let p3 = state.transform.world_to_screen(p3_w);
 
-        let base_color =
-            from_node.find_port(edge.from_port).map(|p| data_type_color(&p.data_type)).unwrap_or(WIRE_DEFAULT);
+        let base_color = edge_kind_color(edge.kind);
 
         let edge_color =
             if state.active_flow_edges.is_none() || is_flow_active { base_color } else { with_alpha(base_color, 45) };

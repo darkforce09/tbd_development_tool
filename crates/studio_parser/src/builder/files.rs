@@ -1,11 +1,11 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use studio_graph::{
-    human_bytes, DataType, FileContent, Graph, GroupCluster, LazyFolder, NodeArchetype, NodeId, PortId,
+    human_bytes, DataType, EdgeKind, FileContent, Graph, GroupCluster, LazyFolder, NodeArchetype, NodeId, PortId,
 };
 
-use super::common::slash_path;
-use super::members::{attach_member_ports, build_member_nodes, MemberPortIndex};
+use super::common::{node_rel_path, resolve_link, slash_path};
+use super::members::{attach_member_ports, build_member_nodes, link_member_id, member_calls, MemberPortIndex};
 use super::ProjectStats;
 use crate::extractor::{detect_language_by_path, ExtractedFile, ExtractedProject, SourceLang};
 use crate::tree::{DirKind, FileKind, ProjectTree};
@@ -246,7 +246,7 @@ fn add_file_card(
         NodeArchetype::File,
         desc,
         Some(badge),
-        vec![("in".to_string(), DataType::RustFlow)],
+        vec![("in".to_string(), DataType::RustFlow), ("docs".to_string(), DataType::Documentation)],
         vec![("out".to_string(), DataType::RustFlow)],
         [0.0, 0.0],
     );
@@ -287,7 +287,7 @@ fn add_file_card(
 
     wiring.register_file_names(graph, node_id, rel_in_project, &file_name);
     if let Some(p) = parsed {
-        wiring.register_parsed(graph, node_id, p.file, p.crate_name);
+        wiring.register_parsed(graph, node_id, rel_in_project, p.file, p.crate_name);
     }
     node_id
 }
@@ -318,35 +318,43 @@ fn group_thousands(n: u64) -> String {
     out
 }
 
-/// Name → node/port tables collected while cards are added, then resolved into wires.
+/// Ports of a file card: code comes in on the left, documentation in at the top left, and what
+/// the file provides goes out on the right.
+#[derive(Debug, Clone, Copy)]
+struct FilePorts {
+    input: PortId,
+    output: PortId,
+    doc: Option<PortId>,
+}
+
+/// Name → node/port tables collected while cards are added, then resolved into wires. Every wire
+/// runs from the provider's output to the consumer's input (docs/VISUAL_LANGUAGE.md).
 #[derive(Default)]
 struct Wiring {
-    file_to_node: HashMap<String, NodeId>,
-    file_to_in_port: HashMap<NodeId, PortId>,
-    file_to_out_port: HashMap<NodeId, PortId>,
+    file_ports: HashMap<NodeId, FilePorts>,
+    /// Project-relative `/` path of every file card, for exact documentation links.
+    path_to_node: HashMap<String, NodeId>,
     module_to_file: HashMap<String, NodeId>,
     symbol_to_file: HashMap<String, NodeId>,
-    member_in_ports: HashMap<String, (NodeId, PortId)>,
-    member_out_ports: HashMap<String, (NodeId, PortId)>,
-    pending_file_deps: Vec<(NodeId, String, &'static str)>,
-    pending_subnode_deps: Vec<(NodeId, PortId, String, &'static str)>,
-    next_step: usize,
+    members: MemberPortIndex,
+    /// (consumer file, name it uses, kind).
+    pending_file_deps: Vec<(NodeId, String, EdgeKind)>,
+    /// (consumer file, consumer member in-port, name it calls).
+    pending_member_calls: Vec<(NodeId, PortId, String)>,
+    /// (documentation file, link member out-port, resolved project-relative target).
+    pending_links: Vec<(NodeId, Option<PortId>, String)>,
 }
 
 impl Wiring {
     /// Tables for an existing graph, so newly loaded files can wire to what is already there.
     fn seeded_from(graph: &Graph) -> Self {
-        let index = MemberPortIndex::from_graph(graph);
-        let mut w = Wiring {
-            file_to_node: index.file_to_node,
-            file_to_in_port: index.file_to_in_port,
-            member_in_ports: index.member_in_ports,
-            next_step: graph.edges.iter().filter_map(|e| e.step_number).max().unwrap_or(0) + 1,
-            ..Default::default()
-        };
+        let mut w = Wiring { members: MemberPortIndex::from_graph(graph), ..Default::default() };
         for (&id, node) in graph.nodes.iter().filter(|(_, n)| n.archetype == NodeArchetype::File) {
-            if let Some(out) = node.outputs.first() {
-                w.file_to_out_port.insert(id, out.id);
+            if let (Some(input), Some(output)) = (node.inputs.first(), node.outputs.first()) {
+                w.file_ports.insert(id, FilePorts { input: input.id, output: output.id, doc: node.doc_port() });
+            }
+            if let Some(rel) = node_rel_path(node) {
+                w.path_to_node.insert(rel, id);
             }
             if let Some(module) = &node.module_path {
                 w.module_to_file.insert(module.clone(), id);
@@ -354,7 +362,7 @@ impl Wiring {
                     w.module_to_file.entry(short.to_string()).or_insert(id);
                 }
             }
-            for m in &node.member_nodes {
+            for m in node.member_nodes.iter().filter(|m| m.archetype != NodeArchetype::Link) {
                 w.symbol_to_file.entry(m.name.clone()).or_insert(id);
             }
         }
@@ -363,60 +371,55 @@ impl Wiring {
 
     fn register_file_names(&mut self, graph: &Graph, node_id: NodeId, rel: &Path, file_name: &str) {
         let node = &graph.nodes[&node_id];
-        if let Some(port) = node.inputs.first() {
-            self.file_to_in_port.insert(node_id, port.id);
+        if let (Some(input), Some(output)) = (node.inputs.first(), node.outputs.first()) {
+            self.file_ports.insert(node_id, FilePorts { input: input.id, output: output.id, doc: node.doc_port() });
         }
-        if let Some(port) = node.outputs.first() {
-            self.file_to_out_port.insert(node_id, port.id);
+        self.path_to_node.insert(slash_path(rel), node_id);
+        if let Some(output) = node.outputs.first() {
+            self.members.file_out_port.insert(node_id, output.id);
         }
-        self.file_to_node.insert(slash_path(rel), node_id);
-        self.file_to_node.insert(file_name.to_string(), node_id);
+        self.members.file_to_node.insert(slash_path(rel), node_id);
+        self.members.file_to_node.insert(file_name.to_string(), node_id);
         if let Some(stem) = rel.file_stem().and_then(|s| s.to_str()) {
-            self.file_to_node.insert(stem.to_string(), node_id);
+            self.members.file_to_node.insert(stem.to_string(), node_id);
         }
     }
 
-    /// Adds member cards/ports for a parsed file and queues its imports and calls.
-    fn register_parsed(&mut self, graph: &mut Graph, node_id: NodeId, file: &ExtractedFile, crate_name: &str) {
+    /// Adds member rows/ports for a parsed file and queues what it uses, calls and links to.
+    fn register_parsed(
+        &mut self,
+        graph: &mut Graph,
+        node_id: NodeId,
+        rel: &Path,
+        file: &ExtractedFile,
+        crate_name: &str,
+    ) {
         let mut member_nodes = build_member_nodes(file);
         attach_member_ports(graph, node_id, &mut member_nodes);
-        for m in &member_nodes {
-            if let (Some(in_pid), Some(out_pid)) = (m.in_port_id, m.out_port_id) {
-                self.member_in_ports.insert(m.name.clone(), (node_id, in_pid));
-                self.member_out_ports.insert(m.name.clone(), (node_id, out_pid));
-                self.member_in_ports.insert(m.id.clone(), (node_id, in_pid));
-                self.member_out_ports.insert(m.id.clone(), (node_id, out_pid));
-            }
-        }
-        if let Some(n) = graph.nodes.get_mut(&node_id) {
-            n.member_nodes = member_nodes;
-        }
+        self.members.register_members(node_id, &member_nodes);
+        let in_port = |id: &str| member_nodes.iter().find(|m| m.id == id).and_then(|m| m.in_port_id);
+        let out_port = |id: &str| member_nodes.iter().find(|m| m.id == id).and_then(|m| m.out_port_id);
 
         self.module_to_file.insert(file.module_name.clone(), node_id);
         if !crate_name.is_empty() {
             self.module_to_file.insert(format!("{}::{}", crate_name, file.module_name), node_id);
         }
 
-        for f in &file.functions {
-            self.symbol_to_file.insert(f.name.clone(), node_id);
-            let caller_out = self.member_out_ports.get(&f.name).map(|&(_, p)| p);
-            for call in &f.calls {
-                self.pending_file_deps.push((node_id, call.clone(), "call"));
-                if let Some(caller_p) = caller_out {
-                    self.pending_subnode_deps.push((node_id, caller_p, call.clone(), "call"));
+        for (member_id, calls) in member_calls(file) {
+            let consumer_in = in_port(&member_id);
+            for call in calls {
+                self.pending_file_deps.push((node_id, call.clone(), EdgeKind::Call));
+                if let Some(input) = consumer_in {
+                    self.pending_member_calls.push((node_id, input, call.clone()));
                 }
             }
         }
+        for f in &file.functions {
+            self.symbol_to_file.insert(f.name.clone(), node_id);
+        }
         for imp in &file.impls {
             for m in &imp.methods {
-                let method_key = format!("{}::{}", imp.target_type, m.name);
-                self.symbol_to_file.insert(method_key.clone(), node_id);
-                let caller_out = self.member_out_ports.get(&method_key).map(|&(_, p)| p);
-                for call in &m.calls {
-                    if let Some(caller_p) = caller_out {
-                        self.pending_subnode_deps.push((node_id, caller_p, call.clone(), "call"));
-                    }
-                }
+                self.symbol_to_file.insert(format!("{}::{}", imp.target_type, m.name), node_id);
             }
         }
         for name in file
@@ -433,89 +436,119 @@ impl Wiring {
             let last_segment =
                 u.path.split([':', '/', '\\', '.']).rfind(|s| !s.is_empty()).unwrap_or("").trim().to_string();
             if !last_segment.is_empty() {
-                self.pending_file_deps.push((node_id, last_segment, "use"));
+                self.pending_file_deps.push((node_id, last_segment, EdgeKind::Import));
             }
             if !u.path.is_empty() {
-                self.pending_file_deps.push((node_id, u.path.clone(), "use"));
+                self.pending_file_deps.push((node_id, u.path.clone(), EdgeKind::Import));
             }
             for item in &u.items {
                 if !item.is_empty() && item != "import" && item != "#include" {
-                    self.pending_file_deps.push((node_id, item.clone(), "use"));
+                    self.pending_file_deps.push((node_id, item.clone(), EdgeKind::Import));
                 }
+            }
+        }
+
+        let from = slash_path(rel);
+        for link in &file.links {
+            if let Some(target) = resolve_link(&from, &link.target) {
+                self.pending_links.push((node_id, out_port(&link_member_id(link)), target));
+            }
+        }
+
+        if let Some(n) = graph.nodes.get_mut(&node_id) {
+            n.member_nodes = member_nodes;
+        }
+    }
+
+    /// Resolves queued names into file-to-file, member-to-member and documentation wires.
+    fn connect(self, graph: &mut Graph) {
+        self.connect_files(graph);
+        self.connect_members(graph);
+        self.connect_links(graph);
+    }
+
+    /// One wire per (provider, consumer) file pair. An import outranks a call: if the consumer
+    /// imports the provider anywhere, the file-level wire is an import.
+    fn connect_files(&self, graph: &mut Graph) {
+        let mut pairs: Vec<(NodeId, NodeId, EdgeKind)> = Vec::new();
+        let mut pair_index: HashMap<(NodeId, NodeId), usize> = HashMap::new();
+        for (consumer, target_name, kind) in &self.pending_file_deps {
+            let Some(provider) = self.resolve_file(target_name) else { continue };
+            if provider == *consumer {
+                continue;
+            }
+            match pair_index.get(&(provider, *consumer)) {
+                Some(&i) if *kind == EdgeKind::Import => pairs[i].2 = EdgeKind::Import,
+                Some(_) => {}
+                None => {
+                    pair_index.insert((provider, *consumer), pairs.len());
+                    pairs.push((provider, *consumer, *kind));
+                }
+            }
+        }
+        for (provider, consumer, kind) in pairs {
+            if let (Some(p), Some(c)) = (self.file_ports.get(&provider), self.file_ports.get(&consumer)) {
+                graph.connect_kind(provider, p.output, consumer, c.input, kind);
             }
         }
     }
 
-    /// Resolves queued imports/calls into file-to-file and member-to-member wires.
-    fn connect(self, graph: &mut Graph) {
-        let mut step = self.next_step.max(1);
-        let mut connected_pairs: HashSet<(NodeId, NodeId)> = HashSet::new();
-
-        for (src_file_node, target_name, label) in self.pending_file_deps {
-            let clean = target_name
-                .trim_start_matches("./")
-                .trim_end_matches(".js")
-                .trim_end_matches(".ts")
-                .trim_end_matches(".tsx")
-                .trim_end_matches(".jsx")
-                .trim_end_matches(".py");
-            let stem = Path::new(&clean).file_stem().and_then(|s| s.to_str()).unwrap_or(clean);
-
-            let target_node = self
-                .module_to_file
-                .get(&target_name)
-                .or_else(|| self.symbol_to_file.get(&target_name))
-                .or_else(|| self.file_to_node.get(&target_name))
-                .or_else(|| self.file_to_node.get(clean))
-                .or_else(|| self.file_to_node.get(stem))
-                .or_else(|| self.symbol_to_file.get(stem))
-                .or_else(|| self.module_to_file.get(stem))
-                .copied();
-
-            if let Some(target_file_node) = target_node {
-                if target_file_node != src_file_node && connected_pairs.insert((src_file_node, target_file_node)) {
-                    if let (Some(&out_port), Some(&in_port)) =
-                        (self.file_to_out_port.get(&src_file_node), self.file_to_in_port.get(&target_file_node))
-                    {
-                        graph.connect_labeled(
-                            src_file_node,
-                            out_port,
-                            target_file_node,
-                            in_port,
-                            Some(label.to_string()),
-                            Some(step),
-                            None,
-                        );
-                        step += 1;
-                    }
-                }
+    fn connect_members(&self, graph: &mut Graph) {
+        let output_of: HashMap<PortId, PortId> =
+            self.members.member_ports.values().map(|m| (m.input, m.output)).collect();
+        let mut connected: HashSet<(PortId, PortId)> = HashSet::new();
+        for &(consumer, consumer_in, ref target_name) in &self.pending_member_calls {
+            let Some((provider, provider_out)) = self.members.resolve_provider(target_name) else { continue };
+            // A recursive function would wire to itself.
+            let self_loop = output_of.get(&consumer_in) == Some(&provider_out);
+            if !self_loop && connected.insert((provider_out, consumer_in)) {
+                graph.connect_kind(provider, provider_out, consumer, consumer_in, EdgeKind::Call);
             }
         }
+    }
 
-        // Fine-grained member-to-member call and link wires
-        let port_index = MemberPortIndex {
-            member_in_ports: self.member_in_ports,
-            file_to_node: self.file_to_node,
-            file_to_in_port: self.file_to_in_port,
-        };
-        let mut connected_subnode_pairs: HashSet<(NodeId, PortId, NodeId, PortId)> = HashSet::new();
-        for (src_file, caller_out_port, target_name, label) in self.pending_subnode_deps {
-            if let Some((target_file, callee_in_port)) = port_index.resolve(&target_name) {
-                if (src_file != target_file || caller_out_port != callee_in_port)
-                    && connected_subnode_pairs.insert((src_file, caller_out_port, target_file, callee_in_port))
-                {
-                    graph.connect_labeled(
-                        src_file,
-                        caller_out_port,
-                        target_file,
-                        callee_in_port,
-                        Some(label.to_string()),
-                        Some(step),
-                        None,
-                    );
-                    step += 1;
-                }
+    /// Documentation wires run from the documentation file (and from the link's row) into the
+    /// target's documentation port.
+    fn connect_links(&self, graph: &mut Graph) {
+        let mut file_pairs: HashSet<(NodeId, NodeId)> = HashSet::new();
+        for &(doc_file, link_out, ref target) in &self.pending_links {
+            let Some(&target_node) = self.path_to_node.get(target) else { continue };
+            if target_node == doc_file {
+                continue;
+            }
+            let (Some(doc_ports), Some(target_ports)) =
+                (self.file_ports.get(&doc_file), self.file_ports.get(&target_node))
+            else {
+                continue;
+            };
+            let Some(doc_in) = target_ports.doc else { continue };
+            if file_pairs.insert((doc_file, target_node)) {
+                graph.connect_kind(doc_file, doc_ports.output, target_node, doc_in, EdgeKind::Documentation);
+            }
+            if let Some(out) = link_out {
+                graph.connect_kind(doc_file, out, target_node, doc_in, EdgeKind::Documentation);
             }
         }
+    }
+
+    fn resolve_file(&self, target_name: &str) -> Option<NodeId> {
+        let clean = target_name
+            .trim_start_matches("./")
+            .trim_end_matches(".js")
+            .trim_end_matches(".ts")
+            .trim_end_matches(".tsx")
+            .trim_end_matches(".jsx")
+            .trim_end_matches(".py");
+        let stem = Path::new(&clean).file_stem().and_then(|s| s.to_str()).unwrap_or(clean);
+        let files = &self.members.file_to_node;
+        self.module_to_file
+            .get(target_name)
+            .or_else(|| self.symbol_to_file.get(target_name))
+            .or_else(|| files.get(target_name))
+            .or_else(|| files.get(clean))
+            .or_else(|| files.get(stem))
+            .or_else(|| self.symbol_to_file.get(stem))
+            .or_else(|| self.module_to_file.get(stem))
+            .copied()
     }
 }

@@ -118,6 +118,8 @@ pub enum DataType {
     Composite,
     RustType(String),
     RustFlow,
+    /// A documentation port: documentation that describes the node links in here.
+    Documentation,
 }
 
 impl DataType {
@@ -131,6 +133,7 @@ impl DataType {
             DataType::Composite => "CompositeFrame",
             DataType::RustType(name) => name.as_str(),
             DataType::RustFlow => "Flow",
+            DataType::Documentation => "Documentation",
         }
     }
 }
@@ -179,9 +182,14 @@ pub enum NodeArchetype {
     Enum = 7,
     Trait = 8,
     File = 9,
+    /// A link inside a documentation file.
+    Link = 10,
 }
 
 impl NodeArchetype {
+    /// Number of variants, for per-archetype tables.
+    pub const COUNT: usize = 11;
+
     #[inline]
     pub fn index(&self) -> usize {
         *self as usize
@@ -199,6 +207,7 @@ impl NodeArchetype {
             NodeArchetype::Enum => "ENUM",
             NodeArchetype::Trait => "TRAIT",
             NodeArchetype::File => "FILE",
+            NodeArchetype::Link => "LINK",
         }
     }
 }

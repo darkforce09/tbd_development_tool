@@ -1,4 +1,4 @@
-use crate::extractor::{CodeLang, ExtractedFile, SourceLang};
+use crate::extractor::{CodeLang, ExtractedFile, LinkItem, SourceLang};
 use std::collections::HashMap;
 use std::path::Path;
 use studio_graph::{DataType, FileMemberNode, Graph, NodeArchetype, NodeId, Port, PortDirection, PortId};
@@ -105,11 +105,8 @@ pub fn build_member_nodes(file: &ExtractedFile) -> Vec<FileMemberNode> {
     }
 
     for f in &file.functions {
-        let is_link = f.docs.starts_with("Markdown link");
         let is_code_block = f.name.starts_with("block:");
-        let (archetype, vis, sig) = if is_link {
-            (NodeArchetype::Function, "LNK".to_string(), format!("[{}]", f.name))
-        } else if is_code_block {
+        let (archetype, vis, sig) = if is_code_block {
             (NodeArchetype::Module, "CODE".to_string(), f.name.clone())
         } else {
             let vis = if f.visibility.is_public() { "pub" } else { "" };
@@ -158,8 +155,26 @@ pub fn build_member_nodes(file: &ExtractedFile) -> Vec<FileMemberNode> {
         }
     }
 
+    for link in &file.links {
+        member_nodes.push(FileMemberNode::new(
+            link_member_id(link),
+            &link.label,
+            NodeArchetype::Link,
+            "LNK",
+            format!("[{}]({})", link.label, link.target),
+            link.line,
+            &link.source_code,
+            None,
+        ));
+    }
+
     member_nodes.sort_by_key(|m| m.line_number);
     member_nodes
+}
+
+/// Member id of a documentation link row. Line and target keep it unique within the file.
+pub fn link_member_id(link: &LinkItem) -> String {
+    format!("link:{}:{}", link.line, link.target)
 }
 
 /// Calls made by each callable member, keyed by member id.
@@ -200,12 +215,22 @@ pub fn attach_member_ports(graph: &mut Graph, node_id: NodeId, members: &mut [Fi
     }
 }
 
-/// Name → port lookups used to wire member-level call/link edges between file cards.
+/// Ports of one file member: what it uses comes in, what it provides goes out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemberPorts {
+    pub node: NodeId,
+    pub input: PortId,
+    pub output: PortId,
+}
+
+/// Name → port lookups used to wire member-level edges between file cards.
 #[derive(Default)]
 pub struct MemberPortIndex {
-    pub member_in_ports: HashMap<String, (NodeId, PortId)>,
+    /// Code members by name and by id. Documentation links are keyed by id only, so a call can
+    /// never resolve to a link.
+    pub member_ports: HashMap<String, MemberPorts>,
     pub file_to_node: HashMap<String, NodeId>,
-    pub file_to_in_port: HashMap<NodeId, PortId>,
+    pub file_out_port: HashMap<NodeId, PortId>,
 }
 
 impl MemberPortIndex {
@@ -213,40 +238,46 @@ impl MemberPortIndex {
     pub fn from_graph(graph: &Graph) -> Self {
         let mut index = Self::default();
         for (&node_id, node) in graph.nodes.iter().filter(|(_, n)| n.archetype == NodeArchetype::File) {
-            if let Some(in_port) = node.inputs.first() {
-                index.file_to_in_port.insert(node_id, in_port.id);
+            if let Some(out_port) = node.outputs.first() {
+                index.file_out_port.insert(node_id, out_port.id);
             }
             index.file_to_node.insert(node.title.clone(), node_id);
             if let Some(stem) = Path::new(&node.title).file_stem().and_then(|s| s.to_str()) {
                 index.file_to_node.insert(stem.to_string(), node_id);
             }
-            for m in &node.member_nodes {
-                if let Some(in_pid) = m.in_port_id {
-                    index.member_in_ports.insert(m.name.clone(), (node_id, in_pid));
-                    index.member_in_ports.insert(m.id.clone(), (node_id, in_pid));
-                }
-            }
+            index.register_members(node_id, &node.member_nodes);
         }
         index
     }
 
-    /// Resolves a call/link target name to a member in-port, falling back to a file's in-port.
-    pub fn resolve(&self, target_name: &str) -> Option<(NodeId, PortId)> {
+    pub fn register_members(&mut self, node: NodeId, members: &[FileMemberNode]) {
+        for m in members {
+            let (Some(input), Some(output)) = (m.in_port_id, m.out_port_id) else { continue };
+            let ports = MemberPorts { node, input, output };
+            if m.archetype != NodeArchetype::Link {
+                self.member_ports.insert(m.name.clone(), ports);
+            }
+            self.member_ports.insert(m.id.clone(), ports);
+        }
+    }
+
+    /// Resolves a call target to its provider: a member's out-port, falling back to the out-port of
+    /// a file the call names directly.
+    pub fn resolve_provider(&self, target_name: &str) -> Option<(NodeId, PortId)> {
         let clean = target_name.trim_start_matches("./");
         let short_name = target_name.split([':', '.', '>', '-']).rfind(|s| !s.is_empty()).unwrap_or(target_name);
 
-        self.member_in_ports
+        self.member_ports
             .get(target_name)
-            .or_else(|| self.member_in_ports.get(clean))
-            .or_else(|| self.member_in_ports.get(short_name))
-            .copied()
+            .or_else(|| self.member_ports.get(clean))
+            .or_else(|| self.member_ports.get(short_name))
+            .map(|p| (p.node, p.output))
             .or_else(|| {
-                // A markdown link or call that names a file directly wires to that file's in-port.
                 self.file_to_node
                     .get(target_name)
                     .or_else(|| self.file_to_node.get(clean))
                     .or_else(|| self.file_to_node.get(short_name))
-                    .and_then(|tid| self.file_to_in_port.get(tid).map(|&pid| (*tid, pid)))
+                    .and_then(|tid| self.file_out_port.get(tid).map(|&pid| (*tid, pid)))
             })
     }
 }
