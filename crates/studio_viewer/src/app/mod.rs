@@ -218,7 +218,9 @@ impl App for StudioApp {
                     self.pending_fit_view = false;
                 }
 
+                let started = std::time::Instant::now();
                 CanvasView::new(&mut self.canvas_state, &mut self.graph).show(ui);
+                self.debug.canvas_ms = started.elapsed().as_secs_f32() * 1000.0;
             },
         );
 

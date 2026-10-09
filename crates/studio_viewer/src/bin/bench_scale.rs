@@ -1,7 +1,7 @@
 use egui::{Pos2, Rect};
 use std::path::PathBuf;
 use std::time::Instant;
-use studio_canvas::SpatialHashGrid;
+use studio_canvas::{CanvasState, CanvasView, SpatialHashGrid};
 use studio_graph::{DataType, Graph, NodeArchetype};
 use studio_parser::{
     build_project_graph, clear_project_cache, extract_project, load_project_cache, save_project_cache, scan_project,
@@ -12,16 +12,19 @@ use studio_viewer::telemetry::{TelemetryBudget, TimelineTracker};
 const USAGE: &str = "usage: bench_scale [PROJECT_DIR] [--ram-budget-gb GB] [--target-fps FPS]
   PROJECT_DIR      project to load for the real-world benchmark (default: current directory)
   --ram-budget-gb  RAM ceiling checked by the benchmark (default: half of system RAM)
-  --target-fps     frame rate the render simulation must sustain (default: 60)";
+  --target-fps     frame rate the render simulation must sustain (default: 60)
+  --real-only      only benchmark the project, skip the synthetic suites";
 
 struct BenchArgs {
     project: PathBuf,
     budget: TelemetryBudget,
+    real_only: bool,
 }
 
 fn parse_args() -> Result<BenchArgs, String> {
     let mut budget = TelemetryBudget::for_this_machine();
     let mut project = None;
+    let mut real_only = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let mut number = |flag: &str| -> Result<f64, String> {
@@ -31,6 +34,7 @@ fn parse_args() -> Result<BenchArgs, String> {
         match arg.as_str() {
             "--ram-budget-gb" => budget.ram_bytes = (number("--ram-budget-gb")? * 1_073_741_824.0) as u64,
             "--target-fps" => budget.target_fps = number("--target-fps")?,
+            "--real-only" => real_only = true,
             "-h" | "--help" => return Err(String::new()),
             flag if flag.starts_with('-') => return Err(format!("unknown option {flag}")),
             path if project.is_none() => project = Some(PathBuf::from(path)),
@@ -41,7 +45,7 @@ fn parse_args() -> Result<BenchArgs, String> {
         Some(p) => p,
         None => std::env::current_dir().map_err(|e| format!("no project given and cwd unavailable: {e}"))?,
     };
-    Ok(BenchArgs { project, budget })
+    Ok(BenchArgs { project, budget, real_only })
 }
 
 fn main() {
@@ -66,6 +70,10 @@ fn main() {
 
     // Part 1: Real-world project benchmark
     benchmark_real_project(&mut tracker, &args.project);
+    if args.real_only {
+        tracker.print_timeline_summary();
+        return;
+    }
 
     // Part 2: rkyv Zero-Copy Caching Benchmark
     benchmark_rkyv_caching(&mut tracker);
@@ -246,73 +254,93 @@ fn benchmark_real_project(tracker: &mut TimelineTracker, target_path: &std::path
     }
     println!();
 
-    // 7. Viewport Render Simulation across Zoom Levels (frame budget verification)
-    println!(
-        "  Simulating Real-World Viewport Frames across Zoom Levels ({:.0} FPS budget):",
-        tracker.budget.target_fps
+    // 7. Real canvas frames across zoom levels (frame budget verification)
+    benchmark_canvas_frames(tracker, &mut graph);
+}
+
+/// Times real canvas frames: `CanvasView::show` in a headless egui context plus tessellation,
+/// which is the CPU work of one frame. GPU time is not included.
+fn benchmark_canvas_frames(tracker: &mut TimelineTracker, graph: &mut Graph) {
+    const WARMUP: usize = 3;
+    const FRAMES: usize = 30;
+    println!("  Canvas frames, CPU only ({:.0} FPS budget):", tracker.budget.target_fps);
+    let ctx = egui::Context::default();
+    studio_ui::apply_theme(&ctx);
+    let screen = Rect::from_min_size(Pos2::ZERO, egui::vec2(2560.0, 1440.0));
+    let mut state = CanvasState::default();
+
+    let t_scene = Instant::now();
+    state.spatial_grid.build_from_graph(graph);
+    state.spatial_grid_dirty = false;
+    tracker.record_stage(
+        "Canvas Spatial Index",
+        format!("{:.1} ms", t_scene.elapsed().as_secs_f64() * 1000.0),
+        None,
+        None,
+        Some(graph.nodes.len()),
+        Some(graph.edges.len()),
     );
-    let real_scenarios = [
-        ("Real LOD 0 (High Zoom 200% 2.0x)", 2.0, 500),
-        ("Real LOD 0 (Standard 100% 1.0x)", 1.0, 500),
-        ("Real LOD 0 (Mid Zoom 47% 0.47x)", 0.47, 500),
-        ("Real LOD 2 (Full Project 4.1% 0.041x)", 0.041, 500),
-    ];
-    let screen_w = 2560.0;
-    let screen_h = 1440.0;
-    for (name, zoom, count) in real_scenarios {
-        let mut scenario_us = 0.0;
-        let world_w = screen_w / zoom;
-        let world_h = screen_h / zoom;
-        let center = if let Some(wb) = grid.world_bounds() {
-            Pos2::new((wb[0] + wb[2]) * 0.5 - world_w * 0.5, (wb[1] + wb[3]) * 0.5 - world_h * 0.5)
-        } else {
-            Pos2::new(0.0, 0.0)
-        };
-        let visible_rect = Rect::from_min_size(center, egui::vec2(world_w, world_h));
 
-        let mut sample_nodes = 0;
-        let mut sample_wires = 0;
-
-        for _ in 0..count {
-            let frame_start = Instant::now();
-            let visible_nodes = grid.query_rect(visible_rect);
-            sample_nodes = visible_nodes.len();
-
-            let wire_cull_rect = visible_rect.expand(200.0);
-            let visible_edges = grid.query_edges_rect(wire_cull_rect);
-            sample_wires = visible_edges.len();
-
-            let mut batch = studio_canvas::GpuWireBatch::new([screen_w, screen_h], zoom, 0.0);
-            for &e_id in &visible_edges {
-                if let Some(edge) = graph.get_edge(e_id) {
-                    if let (Some(fn_node), Some(tn_node)) =
-                        (graph.nodes.get(&edge.from_node), graph.nodes.get(&edge.to_node))
-                    {
-                        let p0 = Pos2::new(fn_node.position[0], fn_node.position[1]);
-                        let p3 = Pos2::new(tn_node.position[0], tn_node.position[1]);
-                        batch.push_wire(p0, p3, egui::Color32::WHITE, None, 2.0, 0.0, false);
-                    }
-                }
+    state.zoom_to_fit(graph, screen);
+    let fit = state.transform.zoom;
+    let fit_center = state.transform.screen_to_world(screen.center());
+    let dense = densest_point(graph).unwrap_or(fit_center);
+    for (name, zoom) in [("fit-all", fit), ("2%", 0.02), ("10%", 0.1), ("30%", 0.3), ("100%", 1.0)] {
+        let center = if zoom == fit { fit_center } else { dense };
+        state.transform.center_on_world_pos(center, screen, Some(zoom));
+        let mut total = 0.0;
+        let mut vertices = 0;
+        for frame in 0..WARMUP + FRAMES {
+            let start = Instant::now();
+            let raw = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
+            let output = ctx.run_ui(raw, |ui| {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
+                    CanvasView::new(&mut state, graph).show(ui);
+                });
+            });
+            vertices = ctx
+                .tessellate(output.shapes, output.pixels_per_point)
+                .iter()
+                .map(|p| match &p.primitive {
+                    egui::epaint::Primitive::Mesh(mesh) => mesh.vertices.len(),
+                    egui::epaint::Primitive::Callback(_) => 0,
+                })
+                .sum();
+            if frame >= WARMUP {
+                total += start.elapsed().as_secs_f64();
             }
-
-            let _ = search_index.search("config", 8);
-
-            let frame_us = frame_start.elapsed().as_secs_f64() * 1_000_000.0;
-            scenario_us += frame_us;
         }
-
-        let avg_us = scenario_us / count as f64;
-        let fps = 1_000_000.0 / avg_us.max(0.1);
+        let avg_us = total / FRAMES as f64 * 1_000_000.0;
+        let stats = state.frame_stats;
         tracker.record_stage(
-            name,
-            format!("zoom: {:.3}x | nodes: {} | wires: {}", zoom, sample_nodes, sample_wires),
-            Some(fps),
+            format!("Canvas Frame {name}"),
+            format!(
+                "zoom {:.4} | {:.2} ms | {} nodes, {} wires, {} egui vertices",
+                zoom,
+                avg_us / 1000.0,
+                stats.visible_nodes,
+                stats.visible_wires,
+                vertices
+            ),
+            Some(1_000_000.0 / avg_us.max(0.1)),
             Some(avg_us),
-            Some(sample_nodes),
-            Some(sample_wires),
+            Some(stats.visible_nodes),
+            Some(stats.visible_wires),
         );
     }
     println!();
+}
+
+/// Centre of the 4096-unit cell holding the most cards: where zoomed-in frames are busiest.
+fn densest_point(graph: &Graph) -> Option<Pos2> {
+    const CELL: f32 = 4096.0;
+    let mut counts: std::collections::HashMap<(i32, i32), usize> = std::collections::HashMap::new();
+    for node in graph.nodes.values() {
+        let key = ((node.position[0] / CELL).floor() as i32, (node.position[1] / CELL).floor() as i32);
+        *counts.entry(key).or_default() += 1;
+    }
+    let (&(x, y), _) = counts.iter().max_by_key(|(&key, &n)| (n, std::cmp::Reverse(key)))?;
+    Some(Pos2::new((x as f32 + 0.5) * CELL, (y as f32 + 0.5) * CELL))
 }
 
 fn benchmark_rkyv_caching(tracker: &mut TimelineTracker) {
