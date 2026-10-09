@@ -1,0 +1,11 @@
+[package]
+name = "studio_graph"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+bytemuck = { workspace = true }
+rkyv.workspace = true
+

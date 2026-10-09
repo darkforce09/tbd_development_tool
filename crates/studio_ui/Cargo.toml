@@ -1,0 +1,11 @@
+[package]
+name = "studio_ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+egui.workspace = true
+egui-phosphor.workspace = true
+syntect.workspace = true
+pulldown-cmark.workspace = true

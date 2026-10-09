@@ -1,0 +1,16 @@
+[package]
+name = "studio_canvas"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+studio_ui.workspace = true
+studio_graph.workspace = true
+egui.workspace = true
+egui-phosphor.workspace = true
+bytemuck = { workspace = true }
+rustc-hash = { workspace = true }
+wgpu = { workspace = true }
+egui-wgpu = { workspace = true }
+
