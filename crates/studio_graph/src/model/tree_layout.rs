@@ -80,7 +80,7 @@ impl Graph {
             self.measure(child, children, out);
         }
         let cluster = &self.clusters[idx];
-        if cluster.is_collapsed {
+        if cluster.is_collapsed() {
             out.insert(
                 idx,
                 Measured { size: COLLAPSED_FOLDER_SIZE, node_offsets: Vec::new(), child_offsets: Vec::new() },
@@ -141,7 +141,7 @@ impl Graph {
 
     fn place(&mut self, idx: usize, origin: [f32; 2], depth: usize, measured: &HashMap<usize, Measured>) {
         let m = &measured[&idx];
-        let collapsed = self.clusters[idx].is_collapsed;
+        let collapsed = self.clusters[idx].is_collapsed();
         {
             let cluster = &mut self.clusters[idx];
             cluster.position = origin;

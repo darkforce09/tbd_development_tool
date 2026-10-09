@@ -51,6 +51,10 @@ Cards (files) and folders follow the same rules.
 
 Changing a folder's detail level never reorders the folders around it.
 
+In node view the pins are listed top to bottom on each side: documentation pins first, then code pins, each in alphabetical order of the file whose wires they carry, and each pin is labelled with that file's name. An open folder places the same gates level with what they feed, so the order can differ between levels; the set of gates is the same.
+
+Every folder header has three buttons, one per level (minimised, node view, open); the current level is highlighted. Folders open at level 3, except folders whose contents are not loaded yet (dependencies, build output, version control), which start minimised.
+
 ## Placement of things that are not code flow
 
 - Files with no code wires in their folder sit in a grid below the folder's code columns.

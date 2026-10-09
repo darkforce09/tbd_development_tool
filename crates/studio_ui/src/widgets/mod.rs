@@ -11,5 +11,5 @@ pub use code_card::{paint_code_card, CodeCardLayout, CodeCardProps, PortDisplayI
 pub use context_menu::{paint_node_context_menu, ContextMenuItem, ContextMenuLayout, NodeContextMenuProps};
 pub use file_card::{paint_file_card, FileCardLayout, FileCardMember, FileCardProps};
 pub use floating_toolbar::{paint_floating_toolbar, FloatingToolbarLayout};
-pub use group_cluster::{cluster_tint, paint_group_cluster, GroupClusterLayout, GroupClusterProps};
+pub use group_cluster::{cluster_tint, paint_group_cluster, GroupClusterLayout, GroupClusterProps, DETAIL_ICONS};
 pub use pin_socket::{paint_pin_socket, SocketVisualState};

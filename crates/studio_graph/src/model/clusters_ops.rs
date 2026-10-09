@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use super::cluster::FolderDetail;
 use super::graph::Graph;
 use super::types::NodeId;
 
@@ -35,7 +36,7 @@ impl Graph {
 
         // 3. Process clusters bottom-up
         for &idx in &indices {
-            if self.clusters[idx].is_collapsed {
+            if self.clusters[idx].is_collapsed() {
                 self.clusters[idx].size = [220.0, 38.0];
                 continue;
             }
@@ -86,7 +87,7 @@ impl Graph {
 
     /// Rebuilds the fast lookup cache for collapsed nodes in O(C + N) time.
     pub fn rebuild_collapsed_cache(&mut self) {
-        self.collapsed_clusters_count = self.clusters.iter().filter(|c| c.is_collapsed).count();
+        self.collapsed_clusters_count = self.clusters.iter().filter(|c| c.is_collapsed()).count();
         self.collapsed_node_ids.clear();
         self.hidden_cluster_ids.clear();
         if self.collapsed_clusters_count == 0 {
@@ -95,7 +96,7 @@ impl Graph {
 
         let mut collapsed_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
         for c in &self.clusters {
-            if c.is_collapsed {
+            if c.is_collapsed() {
                 collapsed_ids.insert(c.id.clone());
             }
         }
@@ -126,25 +127,28 @@ impl Graph {
         }
     }
 
-    /// Toggles collapse state for a cluster and updates all cluster bounds.
+    /// Switches a folder between open and minimised, and lays the graph out again.
     pub fn toggle_cluster_collapse(&mut self, cluster_id: &str) -> bool {
-        let mut found = false;
-        for cluster in &mut self.clusters {
-            if cluster.id == cluster_id {
-                cluster.is_collapsed = !cluster.is_collapsed;
-                found = true;
-                break;
-            }
-        }
-        if found {
+        let Some(open) = self.clusters.iter().find(|c| c.id == cluster_id).map(|c| !c.is_collapsed()) else {
+            return false;
+        };
+        self.set_folder_detail(cluster_id, if open { FolderDetail::Minimised } else { FolderDetail::Open })
+    }
+
+    /// Sets a folder's detail level (docs/VISUAL_LANGUAGE.md L5) and lays the graph out again.
+    /// Returns false when there is no such folder.
+    pub fn set_folder_detail(&mut self, cluster_id: &str, detail: FolderDetail) -> bool {
+        let Some(cluster) = self.clusters.iter_mut().find(|c| c.id == cluster_id) else { return false };
+        if cluster.detail != detail {
+            cluster.detail = detail;
             self.rebuild_collapsed_cache();
             self.relayout();
         }
-        found
+        true
     }
 
     pub fn is_cluster_collapsed(&self, cluster_id: &str) -> bool {
-        self.clusters.iter().find(|c| c.id == cluster_id).map(|c| c.is_collapsed).unwrap_or(false)
+        self.clusters.iter().find(|c| c.id == cluster_id).is_some_and(|c| c.is_collapsed())
     }
 
     /// O(1) check if a node is inside a collapsed cluster or any of its collapsed ancestors.

@@ -1,17 +1,17 @@
 use egui::{Pos2, Rect};
-use studio_graph::{Graph, NodeArchetype};
+use studio_graph::{FolderDetail, Graph, NodeArchetype};
 
 use super::layout::calculate_file_node_size;
 use super::types::{CanvasAction, CanvasState, ContextMenuAction, RenderEvents, ZoomAction};
 
 pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph: &mut Graph, rect: Rect) {
-    if let Some(cid) = events.toggle_cluster_id {
-        let unloaded = graph.clusters.iter().any(|c| c.id == cid && c.is_collapsed && c.lazy.is_some());
-        if unloaded {
-            // The host loads the folder's contents, then expands it.
-            state.action_request = Some(CanvasAction::ExpandFolder(cid));
-        } else {
-            graph.toggle_cluster_collapse(&cid);
+    if let Some((cid, detail)) = events.folder_detail {
+        let unloaded = graph.clusters.iter().any(|c| c.id == cid && c.is_collapsed() && c.lazy.is_some());
+        if unloaded && detail != FolderDetail::Minimised {
+            // The host loads the folder's contents, then shows it at that level.
+            state.action_request = Some(CanvasAction::ExpandFolder(cid, detail));
+        } else if !unloaded {
+            graph.set_folder_detail(&cid, detail);
             state.mark_scene_dirty();
         }
     }

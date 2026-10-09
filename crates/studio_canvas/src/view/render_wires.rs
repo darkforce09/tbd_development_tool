@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use egui::{Color32, Painter, Pos2, Rect, Stroke};
-use studio_graph::{EdgeId, Graph};
+use studio_graph::{EdgeId, FolderDetail, Graph};
 use studio_ui::{paint_group_cluster, paint_pin_socket, with_alpha, GroupClusterProps, SocketVisualState};
 
 use crate::gpu::{CanvasFrame, CanvasLayer, CanvasPaint, CardLayer, SceneUniforms};
@@ -104,7 +104,8 @@ fn gpu_layer(painter: &Painter, frame: &Arc<CanvasFrame>, layer: CanvasLayer, re
 
 /// Paints the grid, folders, cycle boxes, wires and gates. With a GPU `frame` the static parts are
 /// drawn by the GPU and egui only adds legible text; without one everything is painted here.
-/// Returns the folder whose collapse button was clicked and the number of wire instances drawn.
+/// Returns the folder detail level picked by a click, if any, and the number of wire instances
+/// drawn.
 #[allow(clippy::too_many_arguments)]
 pub fn render_background_and_wires(
     painter: &Painter,
@@ -115,7 +116,7 @@ pub fn render_background_and_wires(
     pointer_pos: Pos2,
     pointer_clicked: bool,
     frame: Option<&Arc<CanvasFrame>>,
-) -> (Option<String>, usize) {
+) -> (Option<(String, FolderDetail)>, usize) {
     let zoom = state.transform.zoom;
     let to_screen = |p: [f32; 2], size: [f32; 2]| {
         Rect::from_min_max(
@@ -133,7 +134,7 @@ pub fn render_background_and_wires(
     if let Some(f) = frame {
         gpu_layer(painter, f, CanvasLayer::Folders, rect);
     }
-    let mut toggle_cluster_id = None;
+    let mut folder_detail = None;
     for &i in &scene.folder_order {
         let Some(cluster) = graph.clusters.get(i) else { continue };
         let r = to_screen(cluster.position, cluster.size);
@@ -150,14 +151,16 @@ pub fn render_background_and_wires(
                 subtitle: cluster.subtitle.as_deref(),
                 color_index: cluster.color_index,
                 item_count: cluster.node_ids.len(),
-                is_collapsed: cluster.is_collapsed,
+                detail: FolderDetail::ALL.iter().position(|&d| d == cluster.detail).unwrap_or(2),
                 depth: cluster.depth,
                 zoom,
                 frame: !gpu_folders,
             },
         );
-        if pointer_clicked && layout.collapse_button_rect.contains(pointer_pos) {
-            toggle_cluster_id = Some(cluster.id.clone());
+        if pointer_clicked {
+            if let Some(i) = layout.detail_buttons.iter().position(|r| r.contains(pointer_pos)) {
+                folder_detail = Some((cluster.id.clone(), FolderDetail::ALL[i]));
+            }
         }
     }
 
@@ -215,6 +218,24 @@ pub fn render_background_and_wires(
         }
     }
 
+    // Pin names of folders in node view, once they are legible.
+    if zoom >= 0.5 {
+        let font = egui::FontId::proportional((10.0 * zoom).clamp(7.0, 14.0));
+        for label in &scene.pin_labels {
+            let p = state.transform.world_to_screen(Pos2::from(label.at));
+            if !rect.expand(200.0).contains(p) {
+                continue;
+            }
+            let (offset, align) = if label.input {
+                (egui::vec2(10.0 * zoom, 0.0), egui::Align2::LEFT_CENTER)
+            } else {
+                (egui::vec2(-10.0 * zoom, 0.0), egui::Align2::RIGHT_CENTER)
+            };
+            let text = studio_ui::truncate_with_ellipsis(&label.text, 18);
+            painter.text(p + offset, align, text, font.clone(), studio_ui::color_tokens::TEXT_DIM);
+        }
+    }
+
     // Layer B-2: Gates, where wires cross folder and cycle box edges.
     match frame {
         Some(f) => gpu_layer(painter, f, CanvasLayer::Gates, rect),
@@ -249,7 +270,7 @@ pub fn render_background_and_wires(
         paint_pending_wire(painter, *start_screen_pos, *current_screen_pos, wire_color, snapped_target.is_some(), zoom);
     }
 
-    (toggle_cluster_id, drawn_wires)
+    (folder_detail, drawn_wires)
 }
 
 /// Width of a wire on screen, as the wire shader computes it.

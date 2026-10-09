@@ -324,11 +324,14 @@ fn documentation_wires_do_not_change_the_order() {
 fn collapsed_folders_are_leaves_with_middle_gates() {
     let mut g = random_graph(11, 5, 25, 50);
     let target = g.clusters[1].id.clone();
-    g.clusters[1].is_collapsed = true;
+    g.clusters[1].detail = crate::model::FolderDetail::Minimised;
     g.layout_folder_tree();
     let c = g.clusters.iter().find(|c| c.id == target).unwrap();
     assert_eq!(c.size, COLLAPSED_FOLDER_SIZE);
-    for gate in g.flow.as_ref().unwrap().gates.iter().filter(|x| x.container == target && x.kind == GateKind::Code) {
+    let gates: Vec<&Gate> =
+        g.flow.as_ref().unwrap().gates.iter().filter(|x| x.container == target && x.kind == GateKind::Code).collect();
+    assert!(!gates.is_empty(), "wires still reach the minimised folder through its gates");
+    for gate in gates {
         assert!((gate.position[1] - (c.position[1] + COLLAPSED_FOLDER_SIZE[1] * 0.5)).abs() < 0.01);
     }
     assert_providers_left_visible(&g);
@@ -533,7 +536,7 @@ fn documentation_routes_survive_collapsed_folders() {
     for seed in 0..20 {
         let mut g = random_graph(seed, 2 + seed as usize % 6, 10 + seed as usize % 30, 30 + seed as usize);
         let n = g.clusters.len();
-        g.clusters[1 + seed as usize % (n - 1)].is_collapsed = true;
+        g.clusters[1 + seed as usize % (n - 1)].detail = crate::model::FolderDetail::Minimised;
         g.rebuild_collapsed_cache();
         g.layout_folder_tree();
         assert_routes_obey_the_laws(&g);
@@ -697,4 +700,60 @@ fn packing_picks_the_column_count_closest_to_the_target_aspect() {
     let (w, h) = (n as f32 * 220.0 + (n - 1) as f32 * GAP_BASE, rows as f32 * (42.0 + ITEM_GAP));
     assert!((w / h / TARGET_ASPECT).ln().abs() < 0.6, "{n} columns: {w} x {h}");
     assert!(pack_columns(&[], &sizes).is_empty());
+}
+
+#[test]
+fn a_folder_in_node_view_lists_every_gate_as_a_pin() {
+    use crate::model::FolderDetail;
+    for seed in 0..12 {
+        let mut g = random_graph(seed, 4 + seed as usize % 4, 30, 80);
+        g.layout_folder_tree();
+        let flow = g.flow.as_ref().unwrap();
+        // The folder with the most gates, at its open level.
+        let busiest = g
+            .clusters
+            .iter()
+            .filter(|c| c.parent_id.is_some())
+            .max_by_key(|c| (flow.gates.iter().filter(|x| x.container == c.id).count(), c.id.clone()))
+            .unwrap()
+            .id
+            .clone();
+        let open: BTreeSet<(GateSide, GateKind, NodeId)> =
+            flow.gates.iter().filter(|x| x.container == busiest).map(|x| (x.side, x.kind, x.provider)).collect();
+
+        g.set_folder_detail(&busiest, FolderDetail::NodeView);
+        let c = g.clusters.iter().find(|c| c.id == busiest).unwrap().clone();
+        assert_eq!(c.size[0], NODE_VIEW_WIDTH);
+        let gates: Vec<&Gate> = g.flow.as_ref().unwrap().gates.iter().filter(|x| x.container == busiest).collect();
+        let pins: BTreeSet<(GateSide, GateKind, NodeId)> = gates.iter().map(|x| (x.side, x.kind, x.provider)).collect();
+        assert_eq!(pins, open, "node view shows the same gates as the open folder");
+        for side in [GateSide::Input, GateSide::Output] {
+            let mut column: Vec<&&Gate> = gates.iter().filter(|x| x.side == side).collect();
+            column.sort_by(|a, b| a.position[1].total_cmp(&b.position[1]));
+            // Pins one pitch apart, documentation first, each kind in alphabetical order.
+            for w in column.windows(2) {
+                assert!((w[1].position[1] - w[0].position[1] - GATE_PITCH).abs() < 0.01, "pins are one pitch apart");
+                assert!(!(w[0].kind == GateKind::Code && w[1].kind == GateKind::Documentation));
+                if w[0].kind == w[1].kind {
+                    let name = |x: &Gate| g.nodes[&x.provider].title.clone();
+                    assert!(name(w[0]) <= name(w[1]), "pins are listed alphabetically");
+                }
+            }
+            assert!(column.iter().all(|x| x.position[1] > c.position[1] && x.position[1] < c.position[1] + c.size[1]));
+        }
+        assert!(c.node_ids.iter().all(|id| g.is_node_in_collapsed_cluster(*id)), "the inside is hidden");
+        assert_routes_obey_the_laws(&g);
+        assert_nested_without_overlap_visible(&g);
+    }
+}
+
+/// Visible cards and folders never overlap (hidden ones are parked on their folder).
+fn assert_nested_without_overlap_visible(g: &Graph) {
+    let visible: Vec<(NodeId, Rect)> =
+        g.nodes.keys().filter(|id| !g.is_node_in_collapsed_cluster(**id)).map(|&id| (id, node_rect(g, id))).collect();
+    for (i, a) in visible.iter().enumerate() {
+        for b in &visible[i + 1..] {
+            assert!(!overlaps(a.1, b.1), "cards overlap");
+        }
+    }
 }

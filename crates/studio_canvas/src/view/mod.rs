@@ -57,7 +57,7 @@ impl<'a> CanvasView<'a> {
         };
 
         // Layer A, A-2, B, C: Background, Clusters, Wires, Pending wire
-        let (toggle_cluster_id, drawn_wires) = render_background_and_wires(
+        let (folder_detail, drawn_wires) = render_background_and_wires(
             &painter,
             self.state,
             self.graph,
@@ -77,7 +77,7 @@ impl<'a> CanvasView<'a> {
         self.state.frame_stats =
             CanvasFrameStats { visible_nodes: gpu_cards.unwrap_or(visible_node_ids.len()), visible_wires: drawn_wires };
 
-        let mut events = RenderEvents { toggle_cluster_id, ..Default::default() };
+        let mut events = RenderEvents { folder_detail, ..Default::default() };
 
         // Layer D, E: Node cards & sockets
         let mut interactive_rects = Vec::new();

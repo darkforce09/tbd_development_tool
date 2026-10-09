@@ -188,7 +188,7 @@ impl App for StudioApp {
                         self.canvas_state.transform.center_on_world_pos(center_world, ctx.content_rect(), None);
                     }
                 }
-                CanvasAction::ExpandFolder(cluster_id) => self.start_folder_load(cluster_id),
+                CanvasAction::ExpandFolder(cluster_id, detail) => self.start_folder_load(cluster_id, detail),
                 CanvasAction::ToggleMemberWires(id) => {
                     if let Some(n) = self.graph.nodes.get_mut(&id) {
                         n.show_member_wires = !n.show_member_wires;

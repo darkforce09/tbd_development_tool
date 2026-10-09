@@ -170,7 +170,7 @@ fn insert_folder_tree(
             (0, TreeRoot::Existing(existing)) => {
                 if let Some(c) = graph.clusters.iter_mut().find(|c| c.id == *existing) {
                     c.lazy = None;
-                    c.is_collapsed = false;
+                    c.detail = studio_graph::FolderDetail::Open;
                     c.subtitle = Some(subtitle);
                 }
                 cluster_ids.push(existing.to_string());
@@ -178,7 +178,11 @@ fn insert_folder_tree(
             _ => {
                 let mut cluster = GroupCluster::new(&id, label, "Folder", color);
                 cluster.subtitle = Some(subtitle);
-                cluster.is_collapsed = lazy.is_some();
+                cluster.detail = if lazy.is_some() {
+                    studio_graph::FolderDetail::Minimised
+                } else {
+                    studio_graph::FolderDetail::Open
+                };
                 cluster.lazy = lazy;
                 cluster.parent_id = dir.parent.map(|p| cluster_ids[p].clone());
                 if let Some(p) = dir.parent {

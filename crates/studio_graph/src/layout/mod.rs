@@ -44,6 +44,8 @@ const GATE_PITCH: f32 = 14.0;
 const SHELF_GAP: f32 = 30.0;
 const ROOT_GAP: f32 = 80.0;
 const ROOT_ORIGIN: [f32; 2] = [100.0, 140.0];
+/// Width of a folder in node view.
+const NODE_VIEW_WIDTH: f32 = 280.0;
 const SWEEPS: usize = 4;
 
 /// Results of the dataflow layout that the canvas draws besides cards and folders.
@@ -71,7 +73,9 @@ pub struct WireRoute {
     pub points: Vec<[f32; 2]>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize,
+)]
 #[rkyv(derive(Debug, PartialEq, Eq))]
 pub enum GateSide {
     /// Left edge: a provider outside feeds something inside.
@@ -82,7 +86,19 @@ pub enum GateSide {
 
 /// Which wires a gate carries.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Default,
+    Serialize,
+    Deserialize,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
 )]
 #[rkyv(derive(Debug, PartialEq, Eq))]
 pub enum GateKind {
@@ -135,7 +151,10 @@ struct Container {
     kind: Kind,
     parent: Option<usize>,
     items: Vec<Item>,
+    /// Contents hidden: minimised or node view.
     collapsed: bool,
+    /// Node view: every gate listed as a pin (L5 level 2).
+    node_view: bool,
     /// Stable sort key (cluster id).
     key: String,
 }
@@ -196,6 +215,15 @@ pub struct ContainerStats {
     pub in_band: f32,
     pub out_band: f32,
     pub doc_strip: f32,
+}
+
+/// Providers whose wires cross a container's edges, by kind and side.
+#[derive(Debug, Clone, Default)]
+struct GateKeys {
+    code_in: BTreeSet<NodeId>,
+    code_out: BTreeSet<NodeId>,
+    doc_in: BTreeSet<NodeId>,
+    doc_out: BTreeSet<NodeId>,
 }
 
 /// A laid-out container, relative to its own top-left corner.
@@ -286,7 +314,8 @@ impl Tree {
                 kind: Kind::Folder(i),
                 parent: c.parent_id.as_deref().and_then(|p| index.get(p).copied()),
                 items: Vec::new(),
-                collapsed: c.is_collapsed,
+                collapsed: c.is_collapsed(),
+                node_view: c.detail == crate::model::FolderDetail::NodeView,
                 key: c.id.clone(),
             })
             .collect();
@@ -383,6 +412,7 @@ impl Tree {
                     parent: Some(container),
                     items: member_items,
                     collapsed: false,
+                    node_view: false,
                     key,
                 });
             }
@@ -472,9 +502,24 @@ impl Tree {
     ) -> Vec<Placed> {
         let mut order: Vec<usize> = (0..self.containers.len()).collect();
         order.sort_by_key(|&c| std::cmp::Reverse(self.depth(c)));
+        // The gates each container needs, seen from outside: every provider its parent wires into
+        // or out of it. A folder whose contents are hidden has no links of its own to tell.
+        let mut outer = vec![GateKeys::default(); self.containers.len()];
+        for (code, all) in [(true, links), (false, doc_links)] {
+            for (from, to) in all.iter().flatten() {
+                if let From::Item(Item::Sub(s), k) = from {
+                    let keys = &mut outer[*s];
+                    if code { &mut keys.code_out } else { &mut keys.doc_out }.insert(*k);
+                }
+                if let To::Item(Item::Sub(s), k) = to {
+                    let keys = &mut outer[*s];
+                    if code { &mut keys.code_in } else { &mut keys.doc_in }.insert(*k);
+                }
+            }
+        }
         let mut placed: Vec<Placed> = vec![Placed::default(); self.containers.len()];
         for c in order {
-            placed[c] = self.measure_one(graph, c, &links[c], &doc_links[c], &placed);
+            placed[c] = self.measure_one(graph, c, &links[c], &doc_links[c], &outer[c], &placed);
         }
         placed
     }
@@ -485,31 +530,26 @@ impl Tree {
         c: usize,
         links: &BTreeSet<(From, To)>,
         doc_links: &BTreeSet<(From, To)>,
+        outer: &GateKeys,
         placed: &[Placed],
     ) -> Placed {
         let container = &self.containers[c];
+        if container.node_view {
+            return node_view(graph, outer);
+        }
         if container.collapsed {
-            // Minimised: every code gate sits in the middle of its edge, documentation gates
-            // level with a card's documentation port.
+            // Minimised: one input and one output gate. Every code wire meets in the middle of its
+            // edge, every documentation wire level with a card's documentation port.
             let mid = COLLAPSED_FOLDER_SIZE[1] * 0.5;
-            let mut p = Placed { size: COLLAPSED_FOLDER_SIZE, ..Default::default() };
-            for (from, to) in links {
-                if let From::Gate(k) = from {
-                    p.in_gates.insert(*k, mid);
-                }
-                if let To::Gate(k) = to {
-                    p.out_gates.insert(*k, mid);
-                }
-            }
-            for (from, to) in doc_links {
-                if let From::Gate(k) = from {
-                    p.doc_in.insert(*k, DOC_PORT_OFFSET_Y);
-                }
-                if let To::Gate(k) = to {
-                    p.doc_out.insert(*k, DOC_PORT_OFFSET_Y);
-                }
-            }
-            return p;
+            let at = |keys: &BTreeSet<NodeId>, y: f32| keys.iter().map(|&k| (k, y)).collect();
+            return Placed {
+                size: COLLAPSED_FOLDER_SIZE,
+                in_gates: at(&outer.code_in, mid),
+                out_gates: at(&outer.code_out, mid),
+                doc_in: at(&outer.doc_in, DOC_PORT_OFFSET_Y),
+                doc_out: at(&outer.doc_out, DOC_PORT_OFFSET_Y),
+                ..Default::default()
+            };
         }
         let is_cycle = container.kind == Kind::Cycle;
         let doc_providers: BTreeSet<NodeId> = doc_links.iter().map(|(from, _)| from.key()).collect();
@@ -747,6 +787,39 @@ impl Tree {
             }
         }
     }
+}
+
+/// A folder in node view (L5 level 2): every gate listed like the pins of a node, documentation
+/// gates first, each side in alphabetical order of the file whose wires it carries. The inside is
+/// hidden.
+fn node_view(graph: &Graph, outer: &GateKeys) -> Placed {
+    let name = |k: &NodeId| graph.nodes.get(k).map_or("", |n| n.title.as_str());
+    let sorted = |keys: &BTreeSet<NodeId>| {
+        let mut keys: Vec<NodeId> = keys.iter().copied().collect();
+        keys.sort_by(|a, b| name(a).cmp(name(b)).then(a.cmp(b)));
+        keys
+    };
+    let (doc_in, code_in) = (sorted(&outer.doc_in), sorted(&outer.code_in));
+    let (doc_out, code_out) = (sorted(&outer.doc_out), sorted(&outer.code_out));
+    let rows = (doc_in.len() + code_in.len()).max(doc_out.len() + code_out.len());
+    let row_y = |i: usize| PAD_TOP + (i as f32 + 0.5) * GATE_PITCH;
+    let mut p = Placed {
+        size: [NODE_VIEW_WIDTH, (PAD_TOP + rows as f32 * GATE_PITCH + PAD_BOTTOM).max(COLLAPSED_FOLDER_SIZE[1])],
+        ..Default::default()
+    };
+    for (i, k) in doc_in.iter().enumerate() {
+        p.doc_in.insert(*k, row_y(i));
+    }
+    for (i, k) in code_in.iter().enumerate() {
+        p.in_gates.insert(*k, row_y(doc_in.len() + i));
+    }
+    for (i, k) in doc_out.iter().enumerate() {
+        p.doc_out.insert(*k, row_y(i));
+    }
+    for (i, k) in code_out.iter().enumerate() {
+        p.out_gates.insert(*k, row_y(doc_out.len() + i));
+    }
+    p
 }
 
 /// Y offset of a card's file-level ports from its top edge (see `port_world_position`).

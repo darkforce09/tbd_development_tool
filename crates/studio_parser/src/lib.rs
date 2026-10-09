@@ -358,7 +358,7 @@ mod tests {
 
         // node_modules is a collapsed placeholder with totals and no cards yet.
         let nm = graph.clusters.iter().find(|c| c.id == "dir:node_modules").unwrap().clone();
-        assert!(nm.is_collapsed);
+        assert!(nm.is_collapsed());
         assert_eq!(nm.lazy.as_ref().map(|l| l.file_count), Some(2));
         assert!(nm.node_ids.is_empty() && nm.child_cluster_ids.is_empty());
         assert!(graph.clusters.iter().find(|c| c.id == "dir:empty").unwrap().subtitle.as_deref() == Some("empty"));
@@ -368,7 +368,7 @@ mod tests {
         let added = materialize_folder(&mut graph, "dir:node_modules", &subtree, &parsed).unwrap();
         assert_eq!(added, 2);
         let nm = graph.clusters.iter().find(|c| c.id == "dir:node_modules").unwrap();
-        assert!(!nm.is_collapsed && nm.lazy.is_none());
+        assert!(!nm.is_collapsed() && nm.lazy.is_none());
         let pkg = graph.clusters.iter().find(|c| c.id == "dir:node_modules/pkg").expect("nested folder");
         assert_eq!(pkg.parent_id.as_deref(), Some("dir:node_modules"));
         assert_eq!(pkg.node_ids.len(), 2);

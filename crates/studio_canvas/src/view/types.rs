@@ -1,6 +1,6 @@
 use egui::{Color32, Pos2, Rect, Vec2};
 use std::collections::BTreeSet;
-use studio_graph::{DataType, EdgeId, EdgeKind, Graph, NodeArchetype, NodeId};
+use studio_graph::{DataType, EdgeId, EdgeKind, FolderDetail, Graph, NodeArchetype, NodeId};
 use studio_ui::color_tokens::*;
 
 use std::sync::Arc;
@@ -112,8 +112,9 @@ pub enum CanvasAction {
     DeleteNode(NodeId),
     FitGraph,
     ResetGraph,
-    /// Load a collapsed folder whose contents are not in the graph yet (cluster id).
-    ExpandFolder(String),
+    /// Load a minimised folder whose contents are not in the graph yet (cluster id), then show it
+    /// at the given detail level.
+    ExpandFolder(String, FolderDetail),
 }
 
 pub use studio_ui::ContextMenuItem as ContextMenuAction;
@@ -312,7 +313,8 @@ pub enum ZoomAction {
 
 #[derive(Default)]
 pub struct RenderEvents {
-    pub toggle_cluster_id: Option<String>,
+    /// A folder's detail-level button was clicked: (cluster id, level).
+    pub folder_detail: Option<(String, FolderDetail)>,
     pub file_dropdown_toggle_clicked: Option<NodeId>,
     pub file_wires_toggle_clicked: Option<NodeId>,
     pub file_code_expand_clicked: Option<NodeId>,

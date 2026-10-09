@@ -8,7 +8,8 @@ pub struct GroupClusterProps<'a> {
     pub subtitle: Option<&'a str>,
     pub color_index: usize,
     pub item_count: usize,
-    pub is_collapsed: bool,
+    /// Detail level (docs/VISUAL_LANGUAGE.md L5): 0 minimised (a pill), 1 node view, 2 open.
+    pub detail: usize,
     pub depth: usize,
     pub zoom: f32,
     /// Paint the frame (background, borders). False when the GPU already drew it.
@@ -16,7 +17,59 @@ pub struct GroupClusterProps<'a> {
 }
 
 pub struct GroupClusterLayout {
-    pub collapse_button_rect: Rect,
+    /// The three detail-level buttons (minimised, node view, open); `Rect::NOTHING` when the
+    /// header is too small on screen to show them.
+    pub detail_buttons: [Rect; 3],
+}
+
+/// Icons of the detail-level buttons: minimised, node view, open.
+pub const DETAIL_ICONS: [&str; 3] = [
+    egui_phosphor::regular::FOLDER_SIMPLE_MINUS,
+    egui_phosphor::regular::LIST_BULLETS,
+    egui_phosphor::regular::FOLDER_OPEN,
+];
+
+/// Paints the three detail-level buttons right-aligned in `header`, the current one highlighted.
+/// Returns their rects, or `Rect::NOTHING` when the header is too small to hold them and a label.
+fn paint_detail_control(painter: &Painter, header: Rect, detail: usize, z: f32) -> [Rect; 3] {
+    let size = (header.height() * 0.66).clamp(10.0, 24.0);
+    let gap = 2.0;
+    let width = 3.0 * size + 2.0 * gap;
+    let margin = (6.0 * z).clamp(3.0, 8.0);
+    if header.height() < 14.0 || header.width() < width + margin + 60.0 {
+        return [Rect::NOTHING; 3];
+    }
+    let mut rects = [Rect::NOTHING; 3];
+    for (i, icon) in DETAIL_ICONS.iter().enumerate() {
+        let x = header.max.x - margin - width + i as f32 * (size + gap);
+        let r = Rect::from_min_size(Pos2::new(x, header.center().y - size * 0.5), Vec2::splat(size));
+        let selected = i == detail;
+        painter.rect(
+            r,
+            CornerRadius::from(3.0),
+            if selected { CARD_BORDER_SELECTED } else { Color32::from_white_alpha(10) },
+            Stroke::NONE,
+            egui::StrokeKind::Middle,
+        );
+        painter.text(
+            r.center(),
+            egui::Align2::CENTER_CENTER,
+            *icon,
+            FontId::new(size * 0.72, FontFamily::Proportional),
+            if selected { TEXT_PRIMARY } else { TEXT_DIM },
+        );
+        rects[i] = r;
+    }
+    rects
+}
+
+/// Width the detail control takes from the right of a header, for placing text left of it.
+fn detail_control_width(buttons: &[Rect; 3]) -> f32 {
+    if buttons[0] == Rect::NOTHING {
+        0.0
+    } else {
+        buttons[2].max.x - buttons[0].min.x + 6.0
+    }
 }
 
 /// Fill and border colours of a folder: its tint, a little stronger for deeper folders so they
@@ -33,15 +86,15 @@ pub fn cluster_tint(color_index: usize, depth: usize) -> (Color32, Color32) {
     (fill, base_stroke)
 }
 
-/// Paints a CodeSee-style cluster/folder container behind grouped nodes and subfolders.
-/// Supports collapsible states, nested hierarchy depth, subtitles, and child count badges.
+/// Paints a folder: a pill when minimised, otherwise a container with a header tab. The header
+/// carries the folder name, totals and the three detail-level buttons (L5).
 pub fn paint_group_cluster(painter: &Painter, props: GroupClusterProps<'_>) -> GroupClusterLayout {
     let z = props.zoom;
     let (fill_tint, border_stroke_color) = cluster_tint(props.color_index, props.depth);
     let rounding = CornerRadius::from(10.0 * z);
 
-    if props.is_collapsed {
-        // Collapsed Mode: Render sleek compact folder pill
+    if props.detail == 0 {
+        // Minimised: a compact folder pill
         let pill_rect = props.rect;
         if props.frame {
             painter.rect(
@@ -61,17 +114,12 @@ pub fn paint_group_cluster(painter: &Painter, props: GroupClusterProps<'_>) -> G
             ));
         }
 
-        // Chevron ▸ + Folder Icon + Label
-        let font_size = (11.5 * z).max(6.0);
-        let chevron_rect = Rect::from_min_size(pill_rect.min, Vec2::new(28.0 * z, pill_rect.height()));
-        painter.text(
-            chevron_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            egui_phosphor::regular::CARET_RIGHT,
-            FontId::new(font_size * 1.1, FontFamily::Proportional),
-            TEXT_PRIMARY,
-        );
+        let detail_buttons = paint_detail_control(painter, pill_rect, props.detail, z);
+        let reserved = detail_control_width(&detail_buttons);
 
+        // Folder icon + label
+        let font_size = (11.5 * z).max(6.0);
+        let chevron_rect = Rect::from_min_size(pill_rect.min, Vec2::new(10.0 * z, pill_rect.height()));
         let label_text = format!("{}  {}", egui_phosphor::regular::FOLDER, props.label);
         let subtitle = props.subtitle.filter(|s| !s.is_empty());
         let label_y =
@@ -94,12 +142,12 @@ pub fn paint_group_cluster(painter: &Painter, props: GroupClusterProps<'_>) -> G
                 FontId::new((9.0 * z).max(5.0), FontFamily::Monospace),
                 TEXT_DIM,
             );
-            return GroupClusterLayout { collapse_button_rect: pill_rect };
+            return GroupClusterLayout { detail_buttons };
         }
 
         // Count pill
         let count_text = format!("{} items", props.item_count);
-        let count_pos = Pos2::new(pill_rect.max.x - 10.0 * z, pill_rect.center().y);
+        let count_pos = Pos2::new(pill_rect.max.x - 10.0 * z - reserved, pill_rect.center().y);
         painter.text(
             count_pos,
             egui::Align2::RIGHT_CENTER,
@@ -108,7 +156,7 @@ pub fn paint_group_cluster(painter: &Painter, props: GroupClusterProps<'_>) -> G
             TEXT_DIM,
         );
 
-        return GroupClusterLayout { collapse_button_rect: pill_rect };
+        return GroupClusterLayout { detail_buttons };
     }
 
     // Expanded Mode: Full container with header tab
@@ -144,18 +192,11 @@ pub fn paint_group_cluster(painter: &Painter, props: GroupClusterProps<'_>) -> G
         ));
     }
 
-    // Chevron ▾ Button
-    let btn_w = 22.0 * z;
-    let collapse_button_rect = Rect::from_min_size(header_rect.min, Vec2::new(btn_w, header_height));
-
+    let btn_w = 10.0 * z;
     let font_size = (11.5 * z).max(6.0);
-    painter.text(
-        collapse_button_rect.center(),
-        egui::Align2::CENTER_CENTER,
-        egui_phosphor::regular::CARET_DOWN,
-        FontId::new(font_size * 1.1, FontFamily::Proportional),
-        TEXT_PRIMARY,
-    );
+    let control_row = Rect::from_min_size(header_rect.min, Vec2::new(header_width, (32.0 * z).max(18.0)));
+    let detail_buttons = paint_detail_control(painter, control_row, props.detail, z);
+    let reserved = detail_control_width(&detail_buttons);
 
     // Folder Icon + Label
     let label_pos = if has_subtitle {
@@ -191,7 +232,7 @@ pub fn paint_group_cluster(painter: &Painter, props: GroupClusterProps<'_>) -> G
     // Pill badge for category & count
     let pill_text = format!("{} • {}", props.category, props.item_count);
     let pill_font_size = (9.5 * z).max(5.0);
-    let pill_pos = Pos2::new(header_rect.max.x - 10.0 * z, header_rect.min.y + 16.0 * z);
+    let pill_pos = Pos2::new(header_rect.max.x - 10.0 * z - reserved, header_rect.min.y + 16.0 * z);
 
     painter.text(
         pill_pos,
@@ -201,5 +242,5 @@ pub fn paint_group_cluster(painter: &Painter, props: GroupClusterProps<'_>) -> G
         TEXT_DIM,
     );
 
-    GroupClusterLayout { collapse_button_rect }
+    GroupClusterLayout { detail_buttons }
 }

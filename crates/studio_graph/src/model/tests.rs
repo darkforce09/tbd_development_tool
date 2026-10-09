@@ -79,7 +79,7 @@ fn test_hierarchical_cluster_bounds_and_collapse() {
     // Toggle collapse on child
     assert!(graph.toggle_cluster_collapse("child"));
     let child_collapsed = graph.clusters.iter().find(|c| c.id == "child").unwrap();
-    assert!(child_collapsed.is_collapsed);
+    assert!(child_collapsed.is_collapsed());
     assert_eq!(child_collapsed.size, [220.0, 38.0]);
     assert!(graph.is_node_in_collapsed_cluster(n1));
 }

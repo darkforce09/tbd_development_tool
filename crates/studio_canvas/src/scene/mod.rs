@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use bytemuck::{Pod, Zeroable};
 use egui::{Color32, Pos2, Rect};
 use rustc_hash::FxHashSet;
-use studio_graph::{Edge, EdgeId, GateKind, Graph, NodeId};
+use studio_graph::{Edge, EdgeId, FolderDetail, GateKind, GateSide, Graph, NodeId};
 use studio_ui::{cluster_tint, color_tokens::*, with_alpha};
 
 use crate::view::{archetype_color, edge_kind_color, port_world_position, routed_wire_points_into};
@@ -83,6 +83,15 @@ pub struct PinInstance {
     pub ring: [u8; 4],
 }
 
+/// The file name next to a pin of a folder in node view, inside the folder's edge.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PinLabel {
+    pub at: [f32; 2],
+    pub text: String,
+    /// On the left edge (an input); otherwise the right edge.
+    pub input: bool,
+}
+
 /// A run of `segments` whose midpoints fall in one world tile, with the bounds of the run.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WireTile {
@@ -119,6 +128,8 @@ pub struct CanvasScene {
     /// Indices into `graph.flow.cycle_boxes` of the cycle boxes drawn.
     pub cycle_order: Vec<usize>,
     pub gates: Vec<PinInstance>,
+    /// Names next to the pins of folders in node view.
+    pub pin_labels: Vec<PinLabel>,
     /// Wires without a route that carry a label or step badge.
     pub labeled: Vec<EdgeId>,
     /// Whether member wires were drawn individually when the scene was built.
@@ -271,7 +282,7 @@ impl CanvasScene {
             self.folder_order.push(i);
             let (fill, border) = cluster_tint(c.color_index, c.depth);
             let rect = Rect::from_min_size(Pos2::from(c.position), egui::vec2(c.size[0], c.size[1]));
-            if c.is_collapsed {
+            if c.detail == FolderDetail::Minimised {
                 let shadow = rect.translate(egui::vec2(0.0, 2.0));
                 self.boxes.push(boxed(shadow, Color32::from_black_alpha(70), Color32::TRANSPARENT, 8.0, 0.0));
                 self.boxes.push(boxed(rect, CLUSTER_HEADER_BG, border, 8.0, 1.2));
@@ -290,7 +301,7 @@ impl CanvasScene {
         }
         self.cycle_start = self.boxes.len();
         let collapsed: HashSet<&str> =
-            graph.clusters.iter().filter(|c| c.is_collapsed).map(|c| c.id.as_str()).collect();
+            graph.clusters.iter().filter(|c| c.is_collapsed()).map(|c| c.id.as_str()).collect();
         if let Some(flow) = &graph.flow {
             for (i, b) in flow.cycle_boxes.iter().enumerate() {
                 if !container_visible(graph, &collapsed, &b.id) {
@@ -306,7 +317,13 @@ impl CanvasScene {
     fn build_gates(&mut self, graph: &Graph) {
         let Some(flow) = &graph.flow else { return };
         let collapsed: HashSet<&str> =
-            graph.clusters.iter().filter(|c| c.is_collapsed).map(|c| c.id.as_str()).collect();
+            graph.clusters.iter().filter(|c| c.is_collapsed()).map(|c| c.id.as_str()).collect();
+        let node_view: HashSet<&str> = graph
+            .clusters
+            .iter()
+            .filter(|c| c.detail == FolderDetail::NodeView && !graph.hidden_cluster_ids.contains(&c.id))
+            .map(|c| c.id.as_str())
+            .collect();
         let ring = SOCKET_RING_IDLE.to_srgba_unmultiplied();
         for gate in flow.gates.iter().filter(|g| container_visible(graph, &collapsed, &g.container)) {
             let fill = match gate.kind {
@@ -314,6 +331,11 @@ impl CanvasScene {
                 GateKind::Documentation => KIND_DOCUMENTATION,
             };
             self.gates.push(PinInstance { center: gate.position, fill: fill.to_srgba_unmultiplied(), ring });
+            // A folder in node view names the file behind each of its pins.
+            if node_view.contains(gate.container.as_str()) {
+                let title = graph.nodes.get(&gate.provider).map_or_else(String::new, |n| n.title.clone());
+                self.pin_labels.push(PinLabel { at: gate.position, text: title, input: gate.side == GateSide::Input });
+            }
         }
     }
 
