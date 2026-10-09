@@ -1,13 +1,9 @@
-pub mod editor;
-pub mod file_info;
 pub mod folders;
 pub mod left_sidebar;
 pub mod modals;
-pub mod right_inspector;
 pub mod settings;
 pub mod state;
 pub mod top_nav;
-pub mod types;
 
 use eframe::{egui, App, Frame};
 use egui::{Key, Pos2};
@@ -15,13 +11,10 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use studio_canvas::{CanvasAction, CanvasState, CanvasView};
-use studio_graph::{Graph, NodeArchetype, NodeId};
-use studio_parser::{LoaderMessage, ProjectStats, SymbolSearchIndex, ViewGranularity};
+use studio_graph::{Graph, NodeArchetype};
+use studio_parser::{LoaderMessage, ProjectStats, SymbolSearchIndex};
 
-#[allow(unused_imports)]
-pub use types::{FlowDefinition, FlowVariant, StudioViewMode};
-
-/// The primary Studio Viewer desktop application combining CodeSee, Enso, Haystack, and Code Canvas.
+/// The Studio desktop application: one infinite canvas for the whole project.
 pub struct StudioApp {
     pub graph: Graph,
     pub canvas_state: CanvasState,
@@ -34,10 +27,11 @@ pub struct StudioApp {
     // Project state
     pub current_project_path: Option<PathBuf>,
     pub path_input: String,
-    pub granularity: ViewGranularity,
     pub project_stats: Option<ProjectStats>,
     pub pending_fit_view: bool,
     pub is_from_cache: bool,
+    /// Why the last project load failed, shown on the project pill until the next load.
+    pub load_error: Option<String>,
 
     // Non-blocking Asynchronous Background Project Loader
     pub loader_rx: Option<Receiver<LoaderMessage>>,
@@ -47,44 +41,19 @@ pub struct StudioApp {
     pub loading_total_files: usize,
     pub loading_progress: f32,
 
-    // High-performance DDR5 In-Memory Symbol Index
     pub search_index: SymbolSearchIndex,
 
-    // CodeSee View Modes & Panels
-    pub view_mode: StudioViewMode,
     pub left_sidebar_open: bool,
-    pub right_inspector_open: bool,
 
     // Search & Filter State
     pub search_query: String,
     pub category_filters: BTreeMap<NodeArchetype, bool>,
 
-    // Code Canvas Live Code Editor State
-    pub code_editor_expanded: bool,
-    pub code_editor_buffer: String,
-    pub code_editor_node_id: Option<NodeId>,
-    pub code_editor_member_id: Option<String>,
-    pub code_editor_dirty: bool,
-    pub code_editor_status: Option<String>,
-    /// File the buffer is saved to; `None` for in-memory (mock) nodes.
-    pub code_editor_path: Option<PathBuf>,
-    /// Which part of `code_editor_path` the buffer holds.
-    pub code_editor_origin: Option<studio_parser::EditOrigin>,
-    pub pending_editor_switch: Option<editor::PendingEditorSwitch>,
-
     // Collapsed folders being loaded in the background
     pub folder_loads: Vec<folders::FolderLoad>,
-    pub markdown_preview_mode: bool,
-    pub markdown_inspector_tab: usize,
 
-    // Enso Spotlight Palette
     pub spotlight_open: bool,
     pub spotlight_search: String,
-
-    // CodeSee Flows & Traces
-    pub flows: Vec<FlowDefinition>,
-    pub active_flow_index: usize,
-    pub active_variant_index: usize,
 }
 
 impl App for StudioApp {
@@ -127,7 +96,7 @@ impl App for StudioApp {
                             self.pending_fit_view = true;
                             self.is_loading = false;
                             self.canvas_state.status_message = Some(format!(
-                                "Opened '{}' instantly: {} files displayed (enriching source AST & wires in background...)",
+                                "Opened '{}': {} files displayed, parsing in the background",
                                 stats.project_name, stats.file_count
                             ));
                         }
@@ -141,18 +110,13 @@ impl App for StudioApp {
                             if self.is_loading {
                                 self.pending_fit_view = true;
                             }
-                            self.build_project_flows(&stats);
-                            let cache_tag = if from_cache { " [rkyv user cache]" } else { "" };
-                            self.canvas_state.status_message = Some(format!(
-                                "Loaded '{}'{}: {} nodes, {} wires across {} files",
-                                stats.project_name, cache_tag, stats.node_count, stats.wire_count, stats.file_count
-                            ));
+                            self.canvas_state.status_message = Some(format!("Loaded '{}'", stats.project_name));
                             self.is_loading = false;
                             should_clear_rx = true;
                             break;
                         }
                         LoaderMessage::Error(err) => {
-                            self.canvas_state.status_message = Some(format!("Error: {}", err));
+                            self.load_error = Some(err);
                             self.is_loading = false;
                             should_clear_rx = true;
                             break;
@@ -162,8 +126,7 @@ impl App for StudioApp {
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                         should_clear_rx = true;
                         if self.is_loading {
-                            self.canvas_state.status_message =
-                                Some("Loader thread disconnected unexpectedly.".to_string());
+                            self.load_error = Some("Loader thread disconnected unexpectedly.".to_string());
                             self.is_loading = false;
                         }
                         break;
@@ -195,11 +158,6 @@ impl App for StudioApp {
             }
         }
 
-        // Save shortcut in editor
-        if ctx.input(|i| i.modifiers.command && i.key_pressed(Key::S)) {
-            self.save_current_editor_code();
-        }
-
         // Handle canvas external actions
         if let Some(action) = self.canvas_state.action_request.take() {
             match action {
@@ -211,12 +169,11 @@ impl App for StudioApp {
                     self.canvas_state.selected_nodes.clear();
                     self.canvas_state.selected_nodes.insert(node_id);
                     if let Some(node) = self.graph.nodes.get_mut(&node_id) {
-                        node.expanded_member_id = Some(member_id.clone());
+                        node.expanded_member_id = Some(member_id);
                         if node.is_code_expanded {
                             node.expanded_tab = 2;
                         }
                     }
-                    self.request_open_member(node_id, member_id);
                 }
                 CanvasAction::CenterNode(id) => {
                     if let Some(n) = self.graph.nodes.get(&id) {
@@ -240,20 +197,9 @@ impl App for StudioApp {
         self.canvas_state.search_filter = self.search_query.clone();
         self.sync_category_filters();
 
-        // 1. Top Navigation Bar
         self.render_top_nav(root);
-
-        // 2. Bottom Status Strip
-        self.render_bottom_panel(root);
-
-        // 3. Left Sidebar
         self.render_left_sidebar(root);
 
-        // 4. Right Inspector
-        self.sync_editor_with_selection();
-        self.render_right_inspector(root);
-
-        // 5. Central Infinite Canvas Viewport
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(studio_ui::color_tokens::CANVAS_BG)).show(
             root,
             |ui| {
@@ -267,23 +213,12 @@ impl App for StudioApp {
             },
         );
 
-        // 6. Non-blocking Async Loading HUD
         self.render_loading_hud(ctx);
-
-        // 7. Enso Spotlight / Command Palette Modal
         self.render_spotlight_modal(ctx);
-
-        // 8. Unsaved editor changes prompt
-        self.render_unsaved_changes_modal(ctx);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        let settings = settings::PersistedSettings {
-            last_project: self.current_project_path.clone(),
-            granularity: Some(settings::granularity_key(self.granularity).to_string()),
-            left_sidebar_open: Some(self.left_sidebar_open),
-            right_inspector_open: Some(self.right_inspector_open),
-        };
+        let settings = settings::PersistedSettings { last_project: self.current_project_path.clone() };
         eframe::set_value(storage, eframe::APP_KEY, &settings);
     }
 }

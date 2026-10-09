@@ -1,16 +1,17 @@
 # Studio
 
-A desktop code visualizer that lays out a repository as an infinite node canvas. Files, folders, types and functions become cards. Imports and calls become wires. You can read and edit code in place, and saving re-parses the file and updates the graph.
+A desktop code visualizer that lays out a repository as an infinite node canvas. Files, folders, types and functions become cards. Imports and calls become wires.
+
+Studio is under active development. Editing is being moved onto the canvas and is currently unavailable. See the [roadmap](docs/ROADMAP.md) for the plan and the standards every feature follows.
 
 Built in Rust with [egui](https://github.com/emilk/egui) and [wgpu](https://wgpu.rs). Runs on Linux, Windows and macOS.
 
 ## Features
 
-- **Views**: Files & Folders, every item, public API only, or one card per module.
-- **Nothing hidden**: the Files view shows every file and folder on disk, including empty folders, gitignored files, binaries, images, large files and symlinks, laid out as the real nested folder tree. See [What the Files view shows](#what-the-files-view-shows).
+- **One canvas**: the whole project on a single canvas.
+- **Nothing hidden**: the canvas shows every file and folder on disk, including empty folders, gitignored files, binaries, images, large files and symlinks, laid out as the real nested folder tree. See [What the canvas shows](#what-the-canvas-shows).
 - **Polyglot parsing**: Rust through `syn`, 17 more languages through tree-sitter, plus Markdown and Bohemia Enforce Script (Arma Reforger / DayZ). See [Supported languages](#supported-languages).
 - **Wires**: imports, calls and Markdown links between files and between individual members, drawn on the GPU in instanced batches. There is a CPU fallback.
-- **Inspector and editor**: syntax-highlighted source for any file, item or member. Edits to a snippet are spliced back into the file. Saving is refused if the file changed on disk.
 - **Fast reopen**: parsed graphs are cached per project with zero-copy `rkyv`. The cache is invalidated when any source file changes.
 - **Spotlight**: <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd> or <kbd>/</kbd> searches symbols across the project.
 
@@ -40,18 +41,12 @@ To use a specific graphics backend, set `WGPU_BACKEND` (`vulkan`, `metal`, `dx12
 | Pan | right-drag, or <kbd>Space</kbd> + left-drag |
 | Zoom | scroll over the canvas, <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + scroll anywhere, or pinch |
 | Scroll inside an open code card | scroll over the card's code |
-| Select / inspect | click a card or a member row |
-| Save the editor buffer | <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>S</kbd> |
+| Select | click a card or a member row |
 | Spotlight search | <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd> or <kbd>/</kbd> |
 | Close / deselect | <kbd>Esc</kbd> |
 | Collapse / expand a folder | click its header, or the collapsed folder card |
-
-Editing works on whatever the inspector shows: the whole file, or the snippet for a single item or member.
-
-- **Saving a snippet** replaces exactly that text in the file and leaves everything else alone.
-- **If a snippet can't be found**, because the file changed elsewhere or the same text appears twice, the save is refused and nothing is written. Use **Load Full File** to edit the whole file instead.
-- **Every save** goes to a temporary file first, which is then renamed over the original. The file's line endings (LF or CRLF) are kept.
-- **Unsaved changes**: switching to another card asks whether to save, discard or cancel.
+| Filters sidebar | **Filters** in the top bar (hidden when the app opens) |
+| Project stats | click the project name in the top bar |
 
 ## Supported languages
 
@@ -80,17 +75,12 @@ Editing works on whatever the inspector shows: the whole file, or the snippet fo
 
 Other text files (JSON, YAML, configs) appear as plain file cards without parsed members.
 
-## What the Files view shows
+## What the canvas shows
 
 Every folder is a box nested inside its parent, and every file is a card in its folder. Nothing is filtered out.
 
 - **Empty folders** show as empty boxes.
-- **Binary files, images, files over 1.5 MB, symlinks and unreadable files** get a card with their kind and size. They are listed but not parsed. In the inspector:
-  - images are previewed;
-  - large text files show their first 64 KB;
-  - binaries show a hex dump;
-  - symlinks show their target;
-  - every file has **Open in system app** and **Show folder** buttons.
+- **Binary files, images, files over 1.5 MB, symlinks and unreadable files** get a card with their kind and size. They are listed but not parsed.
 - **Heavy folders start collapsed** and show their totals, for example `node_modules · 48,213 files · 312 MB · dependencies`. Click one to load its contents in the background. Heavy folders are:
   - version control (`.git`, `.hg`, `.svn`);
   - folders git ignores;
@@ -123,7 +113,7 @@ Adding a language means two things:
 ## Data locations
 
 - **Graph cache**: the OS cache directory under `tbd_studio/projects/<name>_<hash>/`, for example `~/.cache/tbd_studio` on Linux, `~/Library/Caches/tbd_studio` on macOS, or `%LOCALAPPDATA%\tbd_studio` on Windows. It is safe to delete. The **Force Reparse** button ignores it.
-- **Settings** (last project, view, panel state): eframe's app data directory for `tbd-studio`, for example `~/.local/share/tbd-studio` on Linux.
+- **Settings** (last project): eframe's app data directory for `tbd-studio`, for example `~/.local/share/tbd-studio` on Linux.
 
 ## Benchmark
 
