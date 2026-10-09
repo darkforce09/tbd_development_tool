@@ -95,8 +95,7 @@ impl App for StudioApp {
                             self.graph = graph;
                             self.project_stats = Some(stats.clone());
                             self.search_index = search_index;
-                            self.canvas_state.spatial_grid.build_from_graph(&self.graph);
-                            self.canvas_state.spatial_grid_dirty = false;
+                            self.canvas_state.mark_scene_dirty();
                             self.pending_fit_view = true;
                             self.is_loading = false;
                             self.canvas_state.status_message = Some(format!(
@@ -109,8 +108,7 @@ impl App for StudioApp {
                             self.project_stats = Some(stats.clone());
                             self.search_index = search_index;
                             self.is_from_cache = from_cache;
-                            self.canvas_state.spatial_grid.build_from_graph(&self.graph);
-                            self.canvas_state.spatial_grid_dirty = false;
+                            self.canvas_state.mark_scene_dirty();
                             if self.is_loading {
                                 self.pending_fit_view = true;
                             }

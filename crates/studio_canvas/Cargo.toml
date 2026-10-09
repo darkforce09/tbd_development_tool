@@ -11,6 +11,7 @@ egui.workspace = true
 egui-phosphor.workspace = true
 bytemuck = { workspace = true }
 rustc-hash = { workspace = true }
+rayon.workspace = true
 wgpu = { workspace = true }
 egui-wgpu = { workspace = true }
 

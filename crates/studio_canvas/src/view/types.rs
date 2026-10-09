@@ -3,7 +3,11 @@ use std::collections::BTreeSet;
 use studio_graph::{DataType, EdgeId, EdgeKind, Graph, NodeArchetype, NodeId};
 use studio_ui::color_tokens::*;
 
+use std::sync::Arc;
+
+use crate::gpu::CardLayer;
 use crate::interaction::{HoverState, InteractionMode};
+use crate::scene::CanvasScene;
 use crate::spatial::SpatialHashGrid;
 use crate::transform::CanvasTransform;
 
@@ -124,6 +128,7 @@ pub struct NodeContextMenu {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CanvasFrameStats {
     pub visible_nodes: usize,
+    /// Wire instances submitted: straight segments in visible tiles, curves and highlights.
     pub visible_wires: usize,
 }
 
@@ -145,10 +150,19 @@ pub struct CanvasState {
     pub action_request: Option<CanvasAction>,
     pub context_menu: Option<NodeContextMenu>,
     pub spatial_grid: SpatialHashGrid,
-    pub spatial_grid_dirty: bool,
+    /// Static world-space contents (wires, folder frames, gates), rebuilt when geometry changes.
+    pub scene: Arc<CanvasScene>,
+    /// The layout or a card's size changed: rebuild the spatial grid and the scene next frame.
+    pub scene_dirty: bool,
+    /// Bit n set: wires of kind n (`EdgeKind as u32`) are shown.
+    pub wire_kind_mask: u32,
+    /// Cards as rects for far zoom, and the inputs they were built from.
+    pub card_layer: Option<(u64, CardLayer)>,
     pub interactive_rects: Vec<Rect>,
     pub use_gpu_wires: bool,
     pub frame_stats: CanvasFrameStats,
+    /// Frames drawn, for telling frames apart on the GPU.
+    pub frame_counter: u64,
 }
 
 impl Default for CanvasState {
@@ -168,15 +182,40 @@ impl Default for CanvasState {
             action_request: None,
             context_menu: None,
             spatial_grid: SpatialHashGrid::default(),
-            spatial_grid_dirty: true,
+            scene: Arc::new(CanvasScene::default()),
+            scene_dirty: true,
+            wire_kind_mask: u32::MAX,
+            card_layer: None,
             interactive_rects: Vec::new(),
             use_gpu_wires: true,
             frame_stats: CanvasFrameStats::default(),
+            frame_counter: 0,
         }
     }
 }
 
 impl CanvasState {
+    /// Marks the layout as changed: the spatial grid and the scene are rebuilt before the next
+    /// frame draws.
+    pub fn mark_scene_dirty(&mut self) {
+        self.scene_dirty = true;
+    }
+
+    /// Rebuilds the spatial grid and the scene if the layout changed or the member-wire switch
+    /// differs from the one the scene was built with.
+    pub fn refresh_scene(&mut self, graph: &Graph) {
+        if self.scene_dirty || self.scene.member_wires != self.show_subnode_wires_globally || self.scene.revision == 0 {
+            self.spatial_grid.build_from_graph(graph);
+            self.scene = Arc::new(CanvasScene::build(graph, self.show_subnode_wires_globally));
+            self.scene_dirty = false;
+        }
+    }
+
+    /// Whether wires of this kind are shown.
+    pub fn wire_kind_visible(&self, kind: u32) -> bool {
+        self.wire_kind_mask & (1 << kind) != 0
+    }
+
     pub fn reset_view(&mut self) {
         self.transform.reset();
     }

@@ -12,7 +12,7 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
             state.action_request = Some(CanvasAction::ExpandFolder(cid));
         } else {
             graph.toggle_cluster_collapse(&cid);
-            state.spatial_grid_dirty = true;
+            state.mark_scene_dirty();
         }
     }
 
@@ -28,10 +28,11 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
             if graph.tree_layout {
                 // A taller card shifts its row and every folder below it.
                 graph.layout_folder_tree();
-                state.spatial_grid_dirty = true;
+                state.mark_scene_dirty();
             } else {
                 state.spatial_grid.update(node_id, bounds);
                 graph.update_cluster_bounds();
+                state.mark_scene_dirty();
             }
         }
     }
@@ -55,10 +56,11 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
             if graph.tree_layout {
                 // A taller card shifts its row and every folder below it.
                 graph.layout_folder_tree();
-                state.spatial_grid_dirty = true;
+                state.mark_scene_dirty();
             } else {
                 state.spatial_grid.update(node_id, bounds);
                 graph.update_cluster_bounds();
+                state.mark_scene_dirty();
             }
         }
     }
@@ -156,10 +158,11 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
             if graph.tree_layout {
                 // A taller card shifts its row and every folder below it.
                 graph.layout_folder_tree();
-                state.spatial_grid_dirty = true;
+                state.mark_scene_dirty();
             } else {
                 state.spatial_grid.update(node_id, bounds);
                 graph.update_cluster_bounds();
+                state.mark_scene_dirty();
             }
         }
     }
@@ -214,9 +217,10 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
                 if let Some(bounds) = new_bounds {
                     if graph.tree_layout {
                         graph.layout_folder_tree();
-                        state.spatial_grid_dirty = true;
+                        state.mark_scene_dirty();
                     } else {
                         graph.update_cluster_bounds();
+                        state.mark_scene_dirty();
                         state.spatial_grid.update(id, bounds);
                     }
                 }
@@ -246,9 +250,10 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
                 if let Some(bounds) = new_bounds {
                     if graph.tree_layout {
                         graph.layout_folder_tree();
-                        state.spatial_grid_dirty = true;
+                        state.mark_scene_dirty();
                     } else {
                         graph.update_cluster_bounds();
+                        state.mark_scene_dirty();
                         state.spatial_grid.update(id, bounds);
                     }
                 }
@@ -272,9 +277,10 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
                 if let Some(bounds) = new_bounds {
                     if graph.tree_layout {
                         graph.layout_folder_tree();
-                        state.spatial_grid_dirty = true;
+                        state.mark_scene_dirty();
                     } else {
                         graph.update_cluster_bounds();
+                        state.mark_scene_dirty();
                         state.spatial_grid.update(id, bounds);
                     }
                 }
@@ -283,6 +289,7 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
             CanvasAction::DeleteNode(id) => {
                 graph.remove_node(id);
                 state.selected_nodes.remove(&id);
+                state.mark_scene_dirty();
                 state.action_request = None;
             }
             CanvasAction::FitGraph => {

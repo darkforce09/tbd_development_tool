@@ -84,9 +84,6 @@ fn main() {
     // Part 4: Ultra Scale Verification: 100,000 Folders, 500,000 Files, 5,000,000 Nodes & Wires
     benchmark_ultra_scale_5m(&mut tracker);
 
-    // Part 5: GPU Wire Batching & VRAM Efficiency Verification
-    benchmark_gpu_wire_throughput(&mut tracker);
-
     // Final Timeline Summary Report
     tracker.print_timeline_summary();
 }
@@ -270,11 +267,20 @@ fn benchmark_canvas_frames(tracker: &mut TimelineTracker, graph: &mut Graph) {
     let mut state = CanvasState::default();
 
     let t_scene = Instant::now();
-    state.spatial_grid.build_from_graph(graph);
-    state.spatial_grid_dirty = false;
+    state.refresh_scene(graph);
+    let scene = &state.scene;
     tracker.record_stage(
-        "Canvas Spatial Index",
-        format!("{:.1} ms", t_scene.elapsed().as_secs_f64() * 1000.0),
+        "Canvas Scene Build",
+        format!(
+            "{:.1} ms (scene {:.1} ms): {} segments in {} tiles, {} curves, {} boxes, {} gates",
+            t_scene.elapsed().as_secs_f64() * 1000.0,
+            scene.build_ms,
+            scene.segments.len(),
+            scene.tiles.len(),
+            scene.curves.len(),
+            scene.boxes.len(),
+            scene.gates.len()
+        ),
         None,
         None,
         Some(graph.nodes.len()),
@@ -499,6 +505,7 @@ fn benchmark_extreme_scale(tracker: &mut TimelineTracker) {
 
     let mut spatial_grid = SpatialHashGrid::new(768.0);
     spatial_grid.build_from_graph(&graph);
+    let scene = studio_canvas::CanvasScene::build(&graph, true);
     let search_index = SymbolSearchIndex::build(&graph);
 
     tracker.record_stage(
@@ -541,10 +548,9 @@ fn benchmark_extreme_scale(tracker: &mut TimelineTracker) {
                 let _ = graph.is_node_in_collapsed_cluster(nid);
             }
 
-            // 4. Bezier Wire Curve Spatial Query & Evaluation
+            // 4. Visible wire tiles
             let wire_cull_rect = visible_rect.expand(200.0);
-            let visible_edges = spatial_grid.query_edges_rect(wire_cull_rect);
-            let _ = visible_edges.len();
+            let _ = scene.visible_ranges(wire_cull_rect).len() + scene.visible_curve_ranges(wire_cull_rect).len();
 
             // 5. Spotlight Search query
             let _ = search_index.search("component_node_10", 12);
@@ -556,7 +562,13 @@ fn benchmark_extreme_scale(tracker: &mut TimelineTracker) {
         let avg_us = scenario_us / (count as f64);
         let fps = 1_000_000.0 / avg_us;
         let sample_nodes = spatial_grid.query_rect(visible_rect).len();
-        let sample_wires = spatial_grid.query_edges_rect(visible_rect.expand(200.0)).len();
+        let cull = visible_rect.expand(200.0);
+        let sample_wires: usize = scene
+            .visible_ranges(cull)
+            .into_iter()
+            .chain(scene.visible_curve_ranges(cull))
+            .map(|r| (r.end - r.start) as usize)
+            .sum();
 
         tracker.record_stage(
             name,
@@ -667,6 +679,7 @@ fn benchmark_ultra_scale_5m(tracker: &mut TimelineTracker) {
 
     graph.rebuild_fast_indices();
     spatial_grid.build_from_graph(&graph);
+    let scene = studio_canvas::CanvasScene::build(&graph, true);
 
     tracker.record_stage(
         "Ultra 5M Graph & Spatial Grid",
@@ -728,11 +741,9 @@ fn benchmark_ultra_scale_5m(tracker: &mut TimelineTracker) {
                 let _ = graph.is_node_in_collapsed_cluster(nid);
             }
 
-            // 4. Wire Culling & Evaluation:
-            // Connection wires are active and queried across all zoom levels
+            // 4. Visible wire tiles, at every zoom level
             let wire_cull_rect = visible_rect.expand(200.0);
-            let visible_edges = spatial_grid.query_edges_rect(wire_cull_rect);
-            let _ = visible_edges.len();
+            let _ = scene.visible_ranges(wire_cull_rect).len() + scene.visible_curve_ranges(wire_cull_rect).len();
 
             let frame_us = frame_start.elapsed().as_secs_f64() * 1_000_000.0;
             scenario_us += frame_us;
@@ -745,7 +756,13 @@ fn benchmark_ultra_scale_5m(tracker: &mut TimelineTracker) {
         let avg_us = scenario_us / (count as f64);
         let fps = 1_000_000.0 / avg_us;
         let sample_nodes = if zoom >= 0.005 { spatial_grid.query_rect(visible_rect).len() } else { 0 };
-        let sample_wires = spatial_grid.query_edges_rect(visible_rect.expand(200.0)).len();
+        let cull = visible_rect.expand(200.0);
+        let sample_wires: usize = scene
+            .visible_ranges(cull)
+            .into_iter()
+            .chain(scene.visible_curve_ranges(cull))
+            .map(|r| (r.end - r.start) as usize)
+            .sum();
 
         tracker.record_stage(
             name,
@@ -792,40 +809,4 @@ fn benchmark_ultra_scale_5m(tracker: &mut TimelineTracker) {
         budget.target_fps,
         budget.ram_gb()
     );
-}
-
-fn benchmark_gpu_wire_throughput(tracker: &mut TimelineTracker) {
-    println!("--------------------------------------------------------------------------------");
-    println!(">>> BENCHMARK 5: GPU WIRE BATCHING & VRAM EFFICIENCY VERIFICATION");
-    println!("    Target: Sub-millisecond staging, compact 64B descriptors, {:.0} FPS", tracker.budget.target_fps);
-    println!("--------------------------------------------------------------------------------");
-
-    let wire_counts = [1_000, 10_000, 100_000, 500_000];
-    for count in wire_counts {
-        let t0 = Instant::now();
-        let mut batch = studio_canvas::GpuWireBatch::new([2560.0, 1440.0], 1.0, 123.45);
-        for i in 0..count {
-            let offset = (i as f32) * 1.5;
-            let p0 = Pos2::new(100.0 + offset, 200.0 + offset);
-            let p3 = Pos2::new(500.0 + offset, 400.0 + offset);
-            let is_animated = (i % 8) == 0;
-            let glow = if is_animated { Some(egui::Color32::from_rgba_premultiplied(100, 200, 255, 90)) } else { None };
-            batch.push_wire(p0, p3, egui::Color32::WHITE, glow, 2.0, 6.0, is_animated);
-        }
-        let dur = t0.elapsed();
-        let dur_us = dur.as_secs_f64() * 1_000_000.0;
-        let vram_kb = (count * std::mem::size_of::<studio_canvas::GpuWireInstance>()) as f64 / 1024.0;
-        let ns_per_wire = (dur.as_nanos() as f64) / (count as f64);
-        let fps_equiv = 1_000_000.0 / dur_us.max(0.1);
-
-        tracker.record_stage(
-            format!("GPU Wire Batch ({}k)", count / 1000),
-            format!("{:.1} ns/wire | VRAM: {:.1} KB | Batch: {:.2?}", ns_per_wire, vram_kb, dur),
-            Some(fps_equiv),
-            Some(dur_us),
-            None,
-            Some(count),
-        );
-    }
-    println!();
 }

@@ -100,14 +100,22 @@ pub fn port_world_position(node: &Node, port_id: PortId) -> Option<Pos2> {
 /// World points of a routed wire, with its ends moved to the edge's actual ports (a member row
 /// rather than the card's file-level port). `None` when the wire has no route.
 pub fn routed_wire_points(graph: &Graph, edge: &Edge) -> Option<Vec<Pos2>> {
+    let mut points = Vec::new();
+    routed_wire_points_into(graph, edge, &mut points).then_some(points)
+}
+
+/// [`routed_wire_points`] into a reused buffer. Returns false (and leaves `points` empty) when the
+/// wire has no route.
+pub fn routed_wire_points_into(graph: &Graph, edge: &Edge, points: &mut Vec<Pos2>) -> bool {
+    points.clear();
     if !edge.kind.is_code_flow() {
-        return None;
+        return false;
     }
-    let route = graph.route_for(edge.from_node, edge.to_node)?;
-    let mut points: Vec<Pos2> = route.points.iter().map(|p| Pos2::new(p[0], p[1])).collect();
-    if points.len() < 2 {
-        return None;
+    let Some(route) = graph.route_for(edge.from_node, edge.to_node) else { return false };
+    if route.points.len() < 2 {
+        return false;
     }
+    points.extend(route.points.iter().map(|p| Pos2::new(p[0], p[1])));
     // A card hidden in a collapsed folder is represented by that folder's gate, where the route
     // already ends.
     let port = |node, port| {
@@ -120,8 +128,9 @@ pub fn routed_wire_points(graph: &Graph, edge: &Edge) -> Option<Vec<Pos2>> {
     if points.len() == 2 {
         // A straight route: give the ends room to step to their rows halfway along.
         let mid = (points[0].x + points[1].x) * 0.5;
-        points.insert(1, Pos2::new(mid, points[0].y));
-        points.insert(2, Pos2::new(mid, points[2].y));
+        let (y0, y1) = (points[0].y, points[1].y);
+        points.insert(1, Pos2::new(mid, y0));
+        points.insert(2, Pos2::new(mid, y1));
     }
     let n = points.len();
     if let Some(p) = start {
@@ -132,5 +141,5 @@ pub fn routed_wire_points(graph: &Graph, edge: &Edge) -> Option<Vec<Pos2>> {
         points[n - 1] = p;
         points[n - 2].y = p.y;
     }
-    Some(points)
+    true
 }

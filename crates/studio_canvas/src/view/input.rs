@@ -1,11 +1,9 @@
 use egui::{Key, PointerButton, Pos2, Rect, Ui, Vec2};
-use std::collections::HashSet;
 use studio_graph::{can_connect, Graph, NodeId, PortDirection};
 
 use crate::interaction::{HoverState, InteractionMode};
-use crate::wire::{compute_bezier_control_points, distance_to_bezier};
 
-use super::layout::{port_world_position, routed_wire_points};
+use super::layout::port_world_position;
 use super::types::{CanvasAction, CanvasState, NodeContextMenu};
 
 pub fn handle_canvas_input(state: &mut CanvasState, graph: &mut Graph, ui: &mut Ui, rect: Rect) {
@@ -100,14 +98,8 @@ pub fn handle_canvas_input(state: &mut CanvasState, graph: &mut Graph, ui: &mut 
     // Reset hover state before hit-testing
     let mut new_hover = HoverState::default();
 
-    // 2. Ensure spatial grid is initialized
-    if state.spatial_grid_dirty
-        || (state.spatial_grid.get_bounds(graph.nodes.keys().next().copied().unwrap_or(NodeId(0))).is_none()
-            && !graph.nodes.is_empty())
-    {
-        state.spatial_grid.build_from_graph(graph);
-        state.spatial_grid_dirty = false;
-    }
+    // 2. Spatial grid and scene follow the layout
+    state.refresh_scene(graph);
 
     // 3. Fast Spatial Hit-Testing: Query only nodes near the mouse cursor
     let pointer_world = state.transform.screen_to_world(pointer_pos);
@@ -164,88 +156,10 @@ pub fn handle_canvas_input(state: &mut CanvasState, graph: &mut Graph, ui: &mut 
         }
     }
 
-    // Routed wires near the pointer, wherever their cards are.
+    // Wires near the pointer, wherever their cards are.
     if state.show_wires && new_hover.hovered_port.is_none() && new_hover.hovered_node.is_none() {
         let reach = 7.0 / state.transform.zoom.max(1e-4);
-        let world = state.transform.screen_to_world(pointer_pos);
-        let near = Rect::from_center_size(world, Vec2::splat(reach * 2.0));
-        for edge_id in state.spatial_grid.query_edges_rect(near) {
-            let Some(edge) = graph.get_edge(edge_id) else { continue };
-            let Some(points) = routed_wire_points(graph, edge) else { continue };
-            let hit = points.windows(2).any(|w| distance_to_segment(world, w[0], w[1]) <= reach);
-            if hit {
-                new_hover.hovered_edge = Some(edge.id);
-                break;
-            }
-        }
-    }
-
-    // Test curved edges touching candidate nodes
-    if state.show_wires
-        && new_hover.hovered_port.is_none()
-        && new_hover.hovered_node.is_none()
-        && new_hover.hovered_edge.is_none()
-    {
-        let mut checked_edges = HashSet::new();
-        for &node_id in &candidate_nodes {
-            if let Some(cand_node) = graph.nodes.get(&node_id) {
-                let mut node_edge_ids = Vec::new();
-                for p in cand_node.inputs.iter().chain(cand_node.outputs.iter()) {
-                    node_edge_ids.extend(graph.get_port_edges(node_id, p.id));
-                }
-                for edge_id in node_edge_ids {
-                    if !checked_edges.insert(edge_id) {
-                        continue;
-                    }
-                    if let Some(edge) = graph.get_edge(edge_id) {
-                        if let (Some(from_node), Some(to_node)) =
-                            (graph.nodes.get(&edge.from_node), graph.nodes.get(&edge.to_node))
-                        {
-                            let from_is_member = from_node
-                                .member_nodes
-                                .iter()
-                                .any(|m| m.in_port_id == Some(edge.from_port) || m.out_port_id == Some(edge.from_port));
-                            let to_is_member = to_node
-                                .member_nodes
-                                .iter()
-                                .any(|m| m.in_port_id == Some(edge.to_port) || m.out_port_id == Some(edge.to_port));
-                            if from_is_member || to_is_member {
-                                let from_active = from_is_member
-                                    && from_node.is_dropdown_expanded
-                                    && (from_node.show_member_wires || state.show_subnode_wires_globally);
-                                let to_active = to_is_member
-                                    && to_node.is_dropdown_expanded
-                                    && (to_node.show_member_wires || state.show_subnode_wires_globally);
-                                if !from_active && !to_active {
-                                    continue;
-                                }
-                            }
-                            let p0_w = port_world_position(from_node, edge.from_port).unwrap_or_else(|| {
-                                Pos2::new(
-                                    from_node.position[0] + from_node.size[0],
-                                    from_node.position[1] + from_node.size[1] * 0.5,
-                                )
-                            });
-                            let p3_w = port_world_position(to_node, edge.to_port).unwrap_or_else(|| {
-                                Pos2::new(to_node.position[0], to_node.position[1] + to_node.size[1] * 0.5)
-                            });
-
-                            let p0 = state.transform.world_to_screen(p0_w);
-                            let p3 = state.transform.world_to_screen(p3_w);
-                            let (c1, c2) = compute_bezier_control_points(p0, p3, state.transform.zoom);
-                            let dist = distance_to_bezier(pointer_pos, p0, c1, c2, p3);
-                            if dist <= 7.0 {
-                                new_hover.hovered_edge = Some(edge.id);
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            if new_hover.hovered_edge.is_some() {
-                break;
-            }
-        }
+        new_hover.hovered_edge = state.scene.hit_test(pointer_world, reach, |kind| state.wire_kind_visible(kind));
     }
 
     state.hover = new_hover;
@@ -337,8 +251,9 @@ pub fn handle_canvas_input(state: &mut CanvasState, graph: &mut Graph, ui: &mut 
                     state.selected_nodes.insert(n_id);
                 }
                 state.interaction = InteractionMode::Idle;
-            } else if is_primary_down && pointer_pos.distance(s_screen) >= 4.0 {
+            } else if is_primary_down && pointer_pos.distance(s_screen) >= 4.0 && graph.flow.is_none() {
                 // User held click and dragged >= 4px at the same time: ACTIVATE DRAG!
+                // Cards placed by the dataflow layout stay where the layout puts them.
                 if !state.selected_nodes.contains(&n_id) {
                     if !shift {
                         state.selected_nodes.clear();
@@ -381,6 +296,7 @@ pub fn handle_canvas_input(state: &mut CanvasState, graph: &mut Graph, ui: &mut 
                     }
                 }
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                state.scene_dirty = true;
             }
 
             if pointer_released || !is_primary_down {
@@ -396,6 +312,7 @@ pub fn handle_canvas_input(state: &mut CanvasState, graph: &mut Graph, ui: &mut 
                     }
                 }
                 graph.update_cluster_bounds();
+                state.scene_dirty = true;
                 state.interaction = InteractionMode::Idle;
             }
         }
@@ -456,6 +373,7 @@ pub fn handle_canvas_input(state: &mut CanvasState, graph: &mut Graph, ui: &mut 
                         // A hand-drawn wire replaces whatever fed that input.
                         graph.disconnect_input(dst_n, dst_p);
                         graph.connect(src_n, src_p, dst_n, dst_p);
+                        state.mark_scene_dirty();
                         state.status_message = Some("Connected nodes".to_string());
                     }
                 }
@@ -473,10 +391,12 @@ pub fn handle_canvas_input(state: &mut CanvasState, graph: &mut Graph, ui: &mut 
                     if let Some((n_id, p_id)) = state.hover.hovered_port {
                         let severed = graph.disconnect_port(n_id, p_id);
                         if !severed.is_empty() {
+                            state.mark_scene_dirty();
                             state.status_message = Some(format!("Disconnected {} wire(s)", severed.len()));
                         }
                     } else if let Some(e_id) = state.hover.hovered_edge {
                         if graph.disconnect_edge(e_id) {
+                            state.mark_scene_dirty();
                             state.status_message = Some("Severed connection wire".to_string());
                         }
                     } else if let Some(n_id) = state.hover.hovered_node {
@@ -496,16 +416,8 @@ pub fn handle_canvas_input(state: &mut CanvasState, graph: &mut Graph, ui: &mut 
         let to_remove: Vec<NodeId> = state.selected_nodes.iter().copied().collect();
         for id in to_remove {
             graph.remove_node(id);
-            state.spatial_grid.remove(id);
+            state.mark_scene_dirty();
         }
         state.selected_nodes.clear();
     }
-}
-
-/// Distance from `p` to the segment `a`–`b`.
-fn distance_to_segment(p: Pos2, a: Pos2, b: Pos2) -> f32 {
-    let ab = b - a;
-    let len_sq = ab.length_sq();
-    let t = if len_sq > 0.0 { ((p - a).dot(ab) / len_sq).clamp(0.0, 1.0) } else { 0.0 };
-    (a + ab * t - p).length()
 }

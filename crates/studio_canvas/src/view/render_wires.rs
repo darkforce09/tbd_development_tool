@@ -1,17 +1,112 @@
-use egui::{Color32, Painter, Pos2, Rect};
-use studio_graph::Graph;
+use std::sync::Arc;
+
+use egui::{Color32, Painter, Pos2, Rect, Stroke};
+use studio_graph::{EdgeId, Graph};
 use studio_ui::{
     color_tokens::*, paint_group_cluster, paint_pin_socket, with_alpha, GroupClusterProps, SocketVisualState,
 };
 
-use crate::gpu::GpuWireBatch;
+use crate::gpu::{CanvasFrame, CanvasLayer, CanvasPaint, CardLayer, SceneUniforms};
 use crate::grid::paint_infinite_grid;
 use crate::interaction::InteractionMode;
-use crate::wire::{paint_bezier_wire, paint_pending_wire, paint_wire_badge_and_label, WireRenderProps};
+use crate::scene::{
+    self, build_card_layer, build_overlay, curve_ends, world_control_points, WireInstance, CARD_LAYER_ZOOM, CYCLE_BOX,
+    FOLDER_LAYER_ZOOM, GATE_MIN_ZOOM, WIRE_ACTIVE, WIRE_HIGHLIGHT,
+};
+use crate::wire::{paint_pending_wire, paint_wire_badge_and_label};
 
-use super::layout::{port_world_position, routed_wire_points};
-use super::types::{data_type_color, edge_kind_color, CanvasState};
+use super::render_nodes::is_dimmed;
+use super::types::{data_type_color, CanvasState};
 
+/// Smallest on-screen folder, in points, that gets its name drawn while the GPU draws frames.
+const FOLDER_LABEL_MIN: [f32; 2] = [80.0, 12.0];
+
+/// What this frame draws on the GPU: the camera, the visible wire tiles, the highlighted wires
+/// and, when zoomed far out, the card layer. Only the highlighted edges are looked at per frame.
+pub fn prepare_frame(state: &mut CanvasState, graph: &Graph, view_world: Rect, anim_time: f64) -> Arc<CanvasFrame> {
+    state.frame_counter += 1;
+    let zoom = state.transform.zoom;
+    let margin = 12.0 / zoom.max(1e-4);
+    let view = view_world.expand(margin);
+    let (wire_ranges, curve_ranges, (overlay, overlay_curves_start)) = if state.show_wires {
+        (
+            state.scene.visible_ranges(view),
+            state.scene.visible_curve_ranges(view),
+            build_overlay(graph, highlighted_edges(state, graph)),
+        )
+    } else {
+        (Vec::new(), Vec::new(), (Vec::new(), 0))
+    };
+    let cards = (zoom < CARD_LAYER_ZOOM).then(|| card_layer(state, graph));
+    Arc::new(CanvasFrame {
+        id: state.frame_counter,
+        uniforms: SceneUniforms {
+            screen_size: [0.0; 2],
+            pan: [state.transform.pan.x, state.transform.pan.y],
+            zoom,
+            time: (anim_time % 3600.0) as f32,
+            kind_mask: state.wire_kind_mask,
+            flags: state.active_flow_edges.is_some() as u32,
+        },
+        scene: state.scene.clone(),
+        wire_ranges,
+        curve_ranges,
+        show_wires: state.show_wires,
+        overlay,
+        overlay_curves_start,
+        folders: zoom < FOLDER_LAYER_ZOOM,
+        gates: state.show_wires && zoom >= GATE_MIN_ZOOM,
+        cards,
+    })
+}
+
+/// Hovered edge, the edges of selected cards, and the active flow.
+fn highlighted_edges(state: &CanvasState, graph: &Graph) -> Vec<(EdgeId, u32)> {
+    let mut out: Vec<(EdgeId, u32)> = state.hover.hovered_edge.map(|e| (e, WIRE_HIGHLIGHT)).into_iter().collect();
+    for id in &state.selected_nodes {
+        let Some(node) = graph.nodes.get(id) else { continue };
+        for port in node.inputs.iter().chain(&node.outputs) {
+            if let Some(edges) = graph.port_edges.get(&(*id, port.id)) {
+                out.extend(edges.iter().map(|&e| (e, WIRE_HIGHLIGHT)));
+            }
+        }
+    }
+    if let Some(active) = &state.active_flow_edges {
+        out.extend(active.iter().map(|&e| (e, WIRE_ACTIVE)));
+    }
+    out
+}
+
+/// The far-zoom card layer, rebuilt only when the scene, search, filters or selection change.
+fn card_layer(state: &mut CanvasState, graph: &Graph) -> CardLayer {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    state.scene.revision.hash(&mut hasher);
+    state.search_filter.hash(&mut hasher);
+    state.category_filter.hash(&mut hasher);
+    state.selected_nodes.hash(&mut hasher);
+    let key = hasher.finish();
+    if let Some((k, layer)) = &state.card_layer {
+        if *k == key {
+            return layer.clone();
+        }
+    }
+    let query = state.search_filter.trim().to_lowercase();
+    let dimmed = |n: &studio_graph::Node| is_dimmed(n, &query, &state.category_filter);
+    let boxes = build_card_layer(graph, dimmed, &state.selected_nodes);
+    let layer = CardLayer { revision: scene::next_revision(), boxes: Arc::new(boxes) };
+    state.card_layer = Some((key, layer.clone()));
+    layer
+}
+
+/// Draws one layer of the frame on the GPU, in egui's paint order.
+fn gpu_layer(painter: &Painter, frame: &Arc<CanvasFrame>, layer: CanvasLayer, rect: Rect) {
+    painter.add(CanvasPaint { layer, frame: frame.clone() }.into_paint_callback(rect));
+}
+
+/// Paints the grid, folders, cycle boxes, wires and gates. With a GPU `frame` the static parts are
+/// drawn by the GPU and egui only adds legible text; without one everything is painted here.
+/// Returns the folder whose collapse button was clicked and the number of wire instances drawn.
 #[allow(clippy::too_many_arguments)]
 pub fn render_background_and_wires(
     painter: &Painter,
@@ -21,40 +116,37 @@ pub fn render_background_and_wires(
     visible_world_rect: Rect,
     pointer_pos: Pos2,
     pointer_clicked: bool,
-    anim_time: f64,
+    frame: Option<&Arc<CanvasFrame>>,
 ) -> (Option<String>, usize) {
-    let mut toggle_cluster_id = None;
     let zoom = state.transform.zoom;
+    let to_screen = |p: [f32; 2], size: [f32; 2]| {
+        Rect::from_min_max(
+            state.transform.world_to_screen(Pos2::from(p)),
+            state.transform.world_to_screen(Pos2::new(p[0] + size[0], p[1] + size[1])),
+        )
+    };
+    let scene = &state.scene;
 
     // Layer A: Infinite dot grid
     paint_infinite_grid(painter, rect, &state.transform);
 
-    // Layer A-2: Group Clusters (CodeSee Crate & Directory Clusters)
-    let mut sorted_clusters: Vec<&studio_graph::GroupCluster> = graph.clusters.iter().collect();
-    sorted_clusters.sort_by_key(|c| c.depth);
-
-    for cluster in sorted_clusters {
-        if cluster.size[0] <= 1.0 || cluster.size[1] <= 1.0 || graph.hidden_cluster_ids.contains(&cluster.id) {
-            continue;
-        }
-        let min_world = Pos2::new(cluster.position[0], cluster.position[1]);
-        let max_world = Pos2::new(cluster.position[0] + cluster.size[0], cluster.position[1] + cluster.size[1]);
-        // Frustum cull clusters
-        if min_world.x > visible_world_rect.max.x
-            || max_world.x < visible_world_rect.min.x
-            || min_world.y > visible_world_rect.max.y
-            || max_world.y < visible_world_rect.min.y
+    // Layer A-2: Folders. From far away the GPU draws the frames and egui only the names that fit.
+    let gpu_folders = frame.is_some_and(|f| f.folders);
+    if let Some(f) = frame {
+        gpu_layer(painter, f, CanvasLayer::Folders, rect);
+    }
+    let mut toggle_cluster_id = None;
+    for &i in &scene.folder_order {
+        let Some(cluster) = graph.clusters.get(i) else { continue };
+        let r = to_screen(cluster.position, cluster.size);
+        if !r.intersects(rect) || (gpu_folders && (r.width() < FOLDER_LABEL_MIN[0] || r.height() < FOLDER_LABEL_MIN[1]))
         {
             continue;
         }
-        let min_screen = state.transform.world_to_screen(min_world);
-        let max_screen = state.transform.world_to_screen(max_world);
-        let cluster_rect = Rect::from_min_max(min_screen, max_screen);
-
-        let cluster_layout = paint_group_cluster(
+        let layout = paint_group_cluster(
             painter,
             GroupClusterProps {
-                rect: cluster_rect,
+                rect: r,
                 label: &cluster.label,
                 category: &cluster.category,
                 subtitle: cluster.subtitle.as_deref(),
@@ -63,33 +155,33 @@ pub fn render_background_and_wires(
                 is_collapsed: cluster.is_collapsed,
                 depth: cluster.depth,
                 zoom,
+                frame: !gpu_folders,
             },
         );
-
-        if pointer_clicked && cluster_layout.collapse_button_rect.contains(pointer_pos) {
+        if pointer_clicked && layout.collapse_button_rect.contains(pointer_pos) {
             toggle_cluster_id = Some(cluster.id.clone());
         }
     }
 
     // Layer A-3: Cycle boxes, around items that depend on each other in a loop.
-    let collapsed: std::collections::HashSet<&str> =
-        graph.clusters.iter().filter(|c| c.is_collapsed).map(|c| c.id.as_str()).collect();
-    let container_visible = |id: &str| container_visible(graph, &collapsed, id);
+    if let Some(f) = frame {
+        gpu_layer(painter, f, CanvasLayer::CycleBoxes, rect);
+    }
     if let Some(flow) = &graph.flow {
-        for b in flow.cycle_boxes.iter().filter(|b| container_visible(&b.id)) {
-            let min = state.transform.world_to_screen(Pos2::new(b.position[0], b.position[1]));
-            let max = state.transform.world_to_screen(Pos2::new(b.position[0] + b.size[0], b.position[1] + b.size[1]));
-            let r = Rect::from_min_max(min, max);
+        for b in scene.cycle_order.iter().filter_map(|&i| flow.cycle_boxes.get(i)) {
+            let r = to_screen(b.position, b.size);
             if !r.intersects(rect) {
                 continue;
             }
-            painter.rect(
-                r,
-                egui::CornerRadius::from(8.0 * zoom),
-                with_alpha(CYCLE_BOX, 14),
-                egui::Stroke::new((1.5 * zoom).clamp(1.0, 2.0), with_alpha(CYCLE_BOX, 170)),
-                egui::StrokeKind::Inside,
-            );
+            if frame.is_none() {
+                painter.rect(
+                    r,
+                    egui::CornerRadius::from(8.0 * zoom),
+                    with_alpha(CYCLE_BOX, 14),
+                    Stroke::new((1.5 * zoom).clamp(1.0, 2.0), with_alpha(CYCLE_BOX, 170)),
+                    egui::StrokeKind::Inside,
+                );
+            }
             if zoom >= 0.3 {
                 painter.text(
                     r.min + egui::vec2(10.0 * zoom, 8.0 * zoom),
@@ -102,173 +194,43 @@ pub fn render_background_and_wires(
         }
     }
 
-    // Layer B: Graph Connection Wires (Always Bezier curves, rendered at every zoom level)
-    let wire_cull_rect = visible_world_rect.expand(200.0);
-    let visible_edge_ids =
-        if state.show_wires { state.spatial_grid.query_edges_rect(wire_cull_rect) } else { Vec::new() };
-    let mut drawn_wires = 0;
-
-    // Track bundled connections between collapsed cards to avoid redundant overdraw
-    let mut bundled_pairs: std::collections::HashSet<(studio_graph::NodeId, studio_graph::NodeId)> =
-        std::collections::HashSet::new();
-
-    let mut gpu_batch = if state.use_gpu_wires {
-        Some(GpuWireBatch::new([rect.width(), rect.height()], zoom, anim_time as f32))
-    } else {
-        None
+    // Layer B: Wires
+    let drawn_wires = match frame {
+        Some(f) => {
+            gpu_layer(painter, f, CanvasLayer::Wires, rect);
+            if f.show_wires {
+                f.wire_ranges.iter().chain(&f.curve_ranges).map(|r| (r.end - r.start) as usize).sum::<usize>()
+                    + f.overlay.len()
+            } else {
+                0
+            }
+        }
+        None => paint_wires_cpu(painter, state, graph, visible_world_rect),
     };
-
-    // Card pairs (and kind) already drawn along their route.
-    let mut drawn_pairs: std::collections::HashSet<(
-        studio_graph::NodeId,
-        studio_graph::NodeId,
-        studio_graph::EdgeKind,
-    )> = std::collections::HashSet::new();
-    // Card pairs already drawn as one route into or out of a collapsed folder.
-    let mut hidden_pairs: std::collections::HashSet<(studio_graph::NodeId, studio_graph::NodeId)> =
-        std::collections::HashSet::new();
-
-    for edge_id in visible_edge_ids {
-        let Some(edge) = graph.get_edge(edge_id) else { continue };
-        if graph.is_node_in_collapsed_cluster(edge.from_node) || graph.is_node_in_collapsed_cluster(edge.to_node) {
-            // The route ends at the collapsed folder's gate; draw it once per card pair.
-            let Some(points) = routed_wire_points(graph, edge) else { continue };
-            if hidden_pairs.insert((edge.from_node, edge.to_node)) {
-                let screen: Vec<Pos2> = points.iter().map(|&p| state.transform.world_to_screen(p)).collect();
-                let style = WireStyle::new(edge_kind_color(edge.kind), false, false, zoom);
-                drawn_wires += draw_route(painter, gpu_batch.as_mut(), &screen, style, |_| false) as usize;
-            }
-            continue;
-        }
-        let Some(from_node) = graph.nodes.get(&edge.from_node) else { continue };
-        let Some(to_node) = graph.nodes.get(&edge.to_node) else { continue };
-
-        let from_is_member = from_node
-            .member_nodes
-            .iter()
-            .any(|m| m.in_port_id == Some(edge.from_port) || m.out_port_id == Some(edge.from_port));
-        let to_is_member = to_node
-            .member_nodes
-            .iter()
-            .any(|m| m.in_port_id == Some(edge.to_port) || m.out_port_id == Some(edge.to_port));
-
-        // When both cards are collapsed and global subnode wire mode is not active:
-        // Bundle connections between the same pair into a single visible card-level line
-        let both_collapsed = !from_node.is_dropdown_expanded && !to_node.is_dropdown_expanded;
-        if (from_is_member || to_is_member)
-            && both_collapsed
-            && !state.show_subnode_wires_globally
-            && !bundled_pairs.insert((from_node.id, to_node.id))
-        {
-            continue;
-        }
-
-        let p0_w = port_world_position(from_node, edge.from_port).unwrap_or_else(|| {
-            Pos2::new(from_node.position[0] + from_node.size[0], from_node.position[1] + from_node.size[1] * 0.5)
-        });
-        let p3_w = port_world_position(to_node, edge.to_port)
-            .unwrap_or_else(|| Pos2::new(to_node.position[0], to_node.position[1] + to_node.size[1] * 0.5));
-
-        drawn_wires += 1;
-        let is_flow_active =
-            if let Some(ref active_edges) = state.active_flow_edges { active_edges.contains(&edge.id) } else { false };
-
-        let is_hovered = state.hover.hovered_edge == Some(edge.id);
-        let is_selected =
-            state.selected_nodes.contains(&edge.from_node) || state.selected_nodes.contains(&edge.to_node);
-
-        let p0 = state.transform.world_to_screen(p0_w);
-        let p3 = state.transform.world_to_screen(p3_w);
-
-        let base_color = edge_kind_color(edge.kind);
-
-        let edge_color =
-            if state.active_flow_edges.is_none() || is_flow_active { base_color } else { with_alpha(base_color, 45) };
-
-        let routed = edge.kind.is_code_flow() && graph.route_index.contains_key(&(edge.from_node, edge.to_node));
-        let highlighted = is_hovered || is_selected || is_flow_active;
-        if routed {
-            // Between two closed cards every wire of the pair has the same path: draw it once,
-            // unless this one is highlighted.
-            let opened = |n: &studio_graph::Node| n.is_dropdown_expanded || n.is_code_expanded;
-            if !opened(from_node)
-                && !opened(to_node)
-                && !highlighted
-                && !drawn_pairs.insert((edge.from_node, edge.to_node, edge.kind))
-            {
-                continue;
-            }
-        }
-        if let Some(points) = routed.then(|| routed_wire_points(graph, edge)).flatten() {
-            let screen: Vec<Pos2> = points.iter().map(|&p| state.transform.world_to_screen(p)).collect();
-            let style = WireStyle::new(edge_color, is_hovered || is_selected, is_flow_active, zoom);
-            // Middle segments another route already draws are skipped; the two segments at each
-            // end follow this edge's own ports and are always drawn.
-            let shared =
-                graph.route_shared_segments(edge.from_node, edge.to_node).filter(|s| s.len() + 1 == points.len());
-            let skip = |i: usize| !highlighted && i >= 2 && i + 2 < screen.len() - 1 && shared.is_some_and(|s| s[i]);
-            draw_route(painter, gpu_batch.as_mut(), &screen, style, skip);
-            continue;
-        }
-
-        if let Some(ref mut batch) = gpu_batch {
-            let core_width = if is_hovered || is_selected {
-                (3.0 * zoom).clamp(2.0, 5.0)
-            } else if zoom < 0.35 {
-                (2.2 * zoom).clamp(1.4, 2.6)
-            } else {
-                (2.4 * zoom).clamp(1.8, 3.8)
-            };
-
-            let (glow_width, glow_color) = if is_hovered || is_flow_active || is_selected {
-                let gw = (if is_hovered || is_selected { 6.0 } else { 4.5 } * zoom).clamp(2.5, 8.0);
-                let gc = with_alpha(edge_color, if is_hovered || is_selected { 90 } else { 40 });
-                (gw, Some(gc))
-            } else {
-                (0.0, None)
-            };
-
-            batch.push_wire(
-                p0,
-                p3,
-                edge_color,
-                glow_color,
-                core_width,
-                glow_width,
-                is_flow_active || is_hovered || is_selected,
-            );
-
-            if zoom >= 0.35 && (edge.step_number.is_some() || edge.label.is_some()) {
+    if state.show_wires && zoom >= 0.35 {
+        for edge in scene.labeled.iter().filter_map(|&id| graph.get_edge(id)) {
+            let (a, b) = curve_ends(graph, edge);
+            let (p0, p3) = (state.transform.world_to_screen(a), state.transform.world_to_screen(b));
+            if Rect::from_two_pos(p0, p3).intersects(rect) {
                 paint_wire_badge_and_label(painter, p0, p3, zoom, edge.step_number, edge.label.as_deref());
             }
-        } else {
-            paint_bezier_wire(
-                painter,
-                WireRenderProps {
-                    p0,
-                    p3,
-                    color: edge_color,
-                    is_active: is_flow_active,
-                    is_hovered: is_hovered || is_selected,
-                    zoom,
-                    anim_time,
-                    label: if zoom >= 0.35 { edge.label.as_deref() } else { None },
-                    step_number: if zoom >= 0.35 { edge.step_number } else { None },
-                },
-            );
         }
     }
 
     // Layer B-2: Gates, where wires cross folder and cycle box edges.
-    if let (Some(flow), true) = (&graph.flow, state.show_wires && zoom >= 0.2) {
-        let visible = rect.expand(10.0);
-        for gate in flow.gates.iter().filter(|g| container_visible(&g.container)) {
-            let p = state.transform.world_to_screen(Pos2::new(gate.position[0], gate.position[1]));
-            if visible.contains(p) {
-                let state = SocketVisualState { is_hovered: false, is_connected: true, is_snapped: false };
-                paint_pin_socket(painter, p, KIND_IMPORT, state, zoom * 0.8);
+    match frame {
+        Some(f) => gpu_layer(painter, f, CanvasLayer::Gates, rect),
+        None if state.show_wires && zoom >= GATE_MIN_ZOOM => {
+            let visible = rect.expand(10.0);
+            for gate in &scene.gates {
+                let p = state.transform.world_to_screen(Pos2::from(gate.center));
+                if visible.contains(p) {
+                    let socket = SocketVisualState { is_hovered: false, is_connected: true, is_snapped: false };
+                    paint_pin_socket(painter, p, KIND_IMPORT, socket, zoom * 0.8);
+                }
             }
         }
+        None => {}
     }
 
     // Layer C: Pending connection wire preview
@@ -281,130 +243,70 @@ pub fn render_background_and_wires(
         ..
     } = &state.interaction
     {
-        let wire_color =
-            graph.find_port(*from_node, *from_port).map(|p| data_type_color(&p.data_type)).unwrap_or(WIRE_ACTIVE);
-
-        if let Some(ref mut batch) = gpu_batch {
-            let core_width = (2.4 * zoom).clamp(1.2, 5.0);
-            let glow_width = (5.0 * zoom).clamp(2.0, 9.0);
-            let glow_color = Some(with_alpha(wire_color, 60));
-            batch.push_wire(
-                *start_screen_pos,
-                *current_screen_pos,
-                wire_color,
-                glow_color,
-                core_width,
-                glow_width,
-                false,
-            );
-
-            // Target indicator dot
-            painter.add(egui::epaint::CircleShape {
-                center: *current_screen_pos,
-                radius: (if snapped_target.is_some() { 6.0 } else { 4.0 } * zoom).clamp(2.0, 8.0),
-                fill: if snapped_target.is_some() { wire_color } else { egui::Color32::WHITE },
-                stroke: egui::Stroke::new((1.5 * zoom).clamp(1.0, 3.0), egui::Color32::BLACK),
-            });
-        } else {
-            paint_pending_wire(
-                painter,
-                *start_screen_pos,
-                *current_screen_pos,
-                wire_color,
-                snapped_target.is_some(),
-                zoom,
-            );
-        }
-    }
-
-    // Submit GPU batch callback to egui painter
-    if let Some(batch) = gpu_batch {
-        if !batch.is_empty() {
-            painter.add(batch.into_paint_callback(rect));
-        }
+        let wire_color = graph
+            .find_port(*from_node, *from_port)
+            .map(|p| data_type_color(&p.data_type))
+            .unwrap_or(studio_ui::color_tokens::WIRE_ACTIVE);
+        paint_pending_wire(painter, *start_screen_pos, *current_screen_pos, wire_color, snapped_target.is_some(), zoom);
     }
 
     (toggle_cluster_id, drawn_wires)
 }
 
-/// Colours and widths of one wire, from its state and the zoom.
-#[derive(Clone, Copy)]
-struct WireStyle {
-    color: Color32,
-    glow: Option<Color32>,
-    core_width: f32,
-    glow_width: f32,
-    animated: bool,
+/// Width of a wire on screen, as the wire shader computes it.
+fn wire_width(zoom: f32, highlighted: bool) -> f32 {
+    if highlighted {
+        (3.0 * zoom).clamp(2.0, 5.0)
+    } else if zoom < 0.35 {
+        (2.2 * zoom).clamp(1.4, 2.6)
+    } else {
+        (2.4 * zoom).clamp(1.8, 3.8)
+    }
 }
 
-impl WireStyle {
-    fn new(color: Color32, highlighted: bool, active: bool, zoom: f32) -> Self {
-        let core_width = if highlighted {
-            (3.0 * zoom).clamp(2.0, 5.0)
-        } else if zoom < 0.35 {
-            (2.2 * zoom).clamp(1.4, 2.6)
+/// Paints the scene's wires with egui, for when no GPU is available. Correct, not fast.
+fn paint_wires_cpu(painter: &Painter, state: &CanvasState, graph: &Graph, view_world: Rect) -> usize {
+    if !state.show_wires {
+        return 0;
+    }
+    let zoom = state.transform.zoom;
+    let scene = &state.scene;
+    let dim = state.active_flow_edges.is_some();
+    let screen = |p: [f32; 2]| state.transform.world_to_screen(Pos2::from(p));
+    let paint = |w: &WireInstance, highlighted: bool| {
+        let [r, g, b, a] = w.color;
+        let alpha = if dim && !highlighted { (a as u16 * 45 / 255) as u8 } else { a };
+        let stroke = Stroke::new(wire_width(zoom, highlighted), Color32::from_rgba_unmultiplied(r, g, b, alpha));
+        if w.is_curve() {
+            let (c1, c2) = world_control_points(Pos2::from(w.p0), Pos2::from(w.p1));
+            let points =
+                [screen(w.p0), state.transform.world_to_screen(c1), state.transform.world_to_screen(c2), screen(w.p1)];
+            painter.add(egui::epaint::CubicBezierShape::from_points_stroke(
+                points,
+                false,
+                Color32::TRANSPARENT,
+                stroke,
+            ));
         } else {
-            (2.4 * zoom).clamp(1.8, 3.8)
-        };
-        let (glow_width, glow) = if highlighted || active {
-            let gw = (if highlighted { 6.0 } else { 4.5 } * zoom).clamp(2.5, 8.0);
-            (gw, Some(with_alpha(color, if highlighted { 90 } else { 40 })))
-        } else {
-            (0.0, None)
-        };
-        Self { color, glow, core_width, glow_width, animated: highlighted || active }
-    }
-}
-
-/// Draws a routed wire as straight segments (GPU when available). Returns false when the route
-/// is entirely off screen.
-fn draw_route(
-    painter: &Painter,
-    gpu: Option<&mut GpuWireBatch>,
-    points: &[Pos2],
-    style: WireStyle,
-    skip_segment: impl Fn(usize) -> bool,
-) -> bool {
-    let clip = painter.clip_rect().expand(20.0);
-    let bounds = Rect::from_points(points);
-    if !bounds.intersects(clip) {
-        return false;
-    }
-    match gpu {
-        Some(batch) => {
-            for (i, w) in points.windows(2).enumerate() {
-                if !skip_segment(i) && Rect::from_two_pos(w[0], w[1]).intersects(clip) {
-                    batch.push_segment(
-                        w[0],
-                        w[1],
-                        style.color,
-                        style.glow,
-                        style.core_width,
-                        style.glow_width,
-                        style.animated,
-                    );
-                }
-            }
+            painter.line_segment([screen(w.p0), screen(w.p1)], stroke);
         }
-        None => {
-            if let Some(glow) = style.glow {
-                painter.add(egui::Shape::line(points.to_vec(), egui::Stroke::new(style.glow_width, glow)));
-            }
-            painter.add(egui::Shape::line(points.to_vec(), egui::Stroke::new(style.core_width, style.color)));
-        }
-    }
-    true
-}
-
-/// Outline colour of cycle boxes.
-const CYCLE_BOX: Color32 = Color32::from_rgb(0xfb, 0xbf, 0x24);
-
-/// Whether a folder (cluster id) or a cycle box (`cycle:<folder>:<n>`) is on screen: not inside
-/// a collapsed folder, and for a cycle box, its folder is not collapsed either.
-fn container_visible(graph: &Graph, collapsed: &std::collections::HashSet<&str>, id: &str) -> bool {
-    let folder = match id.strip_prefix("cycle:").and_then(|rest| rest.rsplit_once(':')) {
-        Some((folder, _)) => folder,
-        None => return !graph.hidden_cluster_ids.contains(id),
     };
-    !graph.hidden_cluster_ids.contains(folder) && !collapsed.contains(folder)
+    let mut drawn = 0;
+    let view = view_world.expand(12.0 / zoom.max(1e-4));
+    let segments =
+        scene.visible_ranges(view).into_iter().flat_map(|r| &scene.segments[r.start as usize..r.end as usize]);
+    let curves =
+        scene.visible_curve_ranges(view).into_iter().flat_map(|r| &scene.curves[r.start as usize..r.end as usize]);
+    for w in segments.chain(curves) {
+        if state.wire_kind_visible(w.kind_index()) {
+            paint(w, false);
+            drawn += 1;
+        }
+    }
+    let (overlay, _) = build_overlay(graph, highlighted_edges(state, graph));
+    for w in overlay.iter().filter(|w| state.wire_kind_visible(w.kind_index())) {
+        paint(w, true);
+        drawn += 1;
+    }
+    drawn
 }

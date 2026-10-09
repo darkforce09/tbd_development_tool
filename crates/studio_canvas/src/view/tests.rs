@@ -417,7 +417,7 @@ fn test_wires_toggle_hides_every_wire() {
     graph.rebuild_fast_indices();
     assert!(!graph.edges.is_empty());
     let mut state = CanvasState::default();
-    state.spatial_grid.build_from_graph(&graph);
+    state.refresh_scene(&graph);
     let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1600.0, 1000.0));
     state.zoom_to_fit(&graph, rect);
     state.use_gpu_wires = false;
@@ -436,7 +436,7 @@ fn test_wires_toggle_hides_every_wire() {
                 world,
                 rect.center(),
                 false,
-                0.0,
+                None,
             )
             .1;
         });

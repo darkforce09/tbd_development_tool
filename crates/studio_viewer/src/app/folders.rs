@@ -52,8 +52,7 @@ impl StudioApp {
             };
             match materialize_folder(&mut self.graph, &load.cluster_id, &tree, &parsed) {
                 Ok(added) => {
-                    self.canvas_state.spatial_grid.build_from_graph(&self.graph);
-                    self.canvas_state.spatial_grid_dirty = false;
+                    self.canvas_state.mark_scene_dirty();
                     self.search_index = SymbolSearchIndex::build(&self.graph);
                     self.canvas_state.status_message = Some(format!("Loaded {}: {} files", load.label, added));
                 }

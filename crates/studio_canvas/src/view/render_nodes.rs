@@ -48,6 +48,26 @@ fn build_members_ui<'a>(member_nodes: &'a [studio_graph::FileMemberNode]) -> Vec
         .collect()
 }
 
+/// Whether a card is dimmed because it does not match the search (`query`, lowercase) or the
+/// category filter.
+pub fn is_dimmed(
+    node: &studio_graph::Node,
+    query: &str,
+    categories: &std::collections::BTreeSet<NodeArchetype>,
+) -> bool {
+    let matches_search = query.is_empty()
+        || node.title.to_lowercase().contains(query)
+        || node.description.to_lowercase().contains(query)
+        || node.crate_name.as_deref().is_some_and(|c| c.to_lowercase().contains(query));
+    let matches_category = categories.is_empty() || categories.contains(&node.archetype);
+    !matches_search || !matches_category
+}
+
+/// The first wire on a port, through the port index.
+fn first_port_edge(graph: &Graph, node: NodeId, port: studio_graph::PortId) -> Option<&studio_graph::Edge> {
+    graph.port_edges.get(&(node, port)).and_then(|edges| edges.first()).and_then(|&e| graph.get_edge(e))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn render_nodes_and_sockets(
     painter: &Painter,
@@ -86,14 +106,7 @@ pub fn render_nodes_and_sockets(
 
         let is_hovered = state.hover.hovered_node == Some(node_id);
 
-        let matches_search = search_query.is_empty()
-            || node.title.to_lowercase().contains(&search_query)
-            || node.description.to_lowercase().contains(&search_query)
-            || node.crate_name.as_deref().map(|c| c.to_lowercase().contains(&search_query)).unwrap_or(false);
-
-        let matches_category = state.category_filter.is_empty() || state.category_filter.contains(&node.archetype);
-
-        let is_dimmed = !matches_search || !matches_category;
+        let is_dimmed = is_dimmed(node, &search_query, &state.category_filter);
         let arch_color = archetype_color(node.archetype);
 
         if zoom < 0.03 {
@@ -159,7 +172,7 @@ pub fn render_nodes_and_sockets(
                     .inputs
                     .iter()
                     .map(|p| {
-                        let connected_edge = graph.edges.iter().find(|e| e.to_node == node_id && e.to_port == p.id);
+                        let connected_edge = first_port_edge(graph, node_id, p.id);
                         let connected_node = connected_edge.and_then(|e| graph.nodes.get(&e.from_node));
                         PortDisplayInfo {
                             id: p.id.0,
@@ -176,7 +189,7 @@ pub fn render_nodes_and_sockets(
                     .outputs
                     .iter()
                     .map(|p| {
-                        let connected_edge = graph.edges.iter().find(|e| e.from_node == node_id && e.from_port == p.id);
+                        let connected_edge = first_port_edge(graph, node_id, p.id);
                         let connected_node = connected_edge.and_then(|e| graph.nodes.get(&e.to_node));
                         PortDisplayInfo {
                             id: p.id.0,
@@ -295,11 +308,12 @@ pub fn render_nodes_and_sockets(
                 }
             } else if node.archetype == NodeArchetype::File {
                 let ext = node.badge.as_deref().unwrap_or("rs");
-                let step_number = graph
-                    .edges
+                let step_number = node
+                    .outputs
                     .iter()
-                    .find(|e| e.from_node == node_id && e.step_number.is_some())
-                    .and_then(|e| e.step_number);
+                    .flat_map(|p| graph.port_edges.get(&(node_id, p.id)).into_iter().flatten())
+                    .filter_map(|&e| graph.get_edge(e))
+                    .find_map(|e| e.step_number);
 
                 let members_ui = build_members_ui(&node.member_nodes);
 

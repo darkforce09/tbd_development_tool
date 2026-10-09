@@ -235,6 +235,7 @@ impl StudioApp {
     fn debug_canvas(&self, ui: &mut egui::Ui) {
         section(ui, "CANVAS");
         let stats = self.canvas_state.frame_stats;
+        let scene = &self.canvas_state.scene;
         rows(
             ui,
             "debug_canvas",
@@ -242,7 +243,17 @@ impl StudioApp {
                 ("Zoom", format!("{:.1}%", self.canvas_state.transform.zoom * 100.0)),
                 ("Canvas CPU", format!("{:.2} ms", self.debug.canvas_ms)),
                 ("Visible nodes", stats.visible_nodes.to_string()),
-                ("Visible wires", stats.visible_wires.to_string()),
+                ("Wires drawn", stats.visible_wires.to_string()),
+                (
+                    "Scene",
+                    format!(
+                        "{} segments, {} curves, {} gates",
+                        scene.segments.len(),
+                        scene.curves.len(),
+                        scene.gates.len()
+                    ),
+                ),
+                ("Scene build", format!("{:.1} ms", scene.build_ms)),
             ],
         );
     }

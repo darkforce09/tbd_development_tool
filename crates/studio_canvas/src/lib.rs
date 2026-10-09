@@ -1,14 +1,16 @@
 pub mod gpu;
 pub mod grid;
 pub mod interaction;
+pub mod scene;
 pub mod spatial;
 pub mod transform;
 pub mod view;
 pub mod wire;
 
-pub use gpu::{GpuWireBatch, GpuWireCallback, GpuWireInstance, GpuWirePipeline};
+pub use gpu::{CanvasFrame, CanvasGpu, CanvasLayer, CanvasPaint, SceneUniforms};
 pub use grid::paint_infinite_grid;
 pub use interaction::{HoverState, InteractionMode};
+pub use scene::CanvasScene;
 pub use spatial::SpatialHashGrid;
 pub use transform::{screen_to_world, world_to_screen, CanvasTransform};
 pub use view::{

@@ -11,47 +11,55 @@ pub struct GroupClusterProps<'a> {
     pub is_collapsed: bool,
     pub depth: usize,
     pub zoom: f32,
+    /// Paint the frame (background, borders). False when the GPU already drew it.
+    pub frame: bool,
 }
 
 pub struct GroupClusterLayout {
     pub collapse_button_rect: Rect,
 }
 
+/// Fill and border colours of a folder: its tint, a little stronger for deeper folders so they
+/// stand out from their parent.
+pub fn cluster_tint(color_index: usize, depth: usize) -> (Color32, Color32) {
+    let (base_fill, base_stroke) = CLUSTER_TINTS[color_index % CLUSTER_TINTS.len()];
+    let boost = (depth.min(255) as u8).saturating_mul(15);
+    let fill = Color32::from_rgba_premultiplied(
+        base_fill.r().saturating_add(boost / 2),
+        base_fill.g().saturating_add(boost / 2),
+        base_fill.b().saturating_add(boost / 2),
+        base_fill.a().saturating_add(boost),
+    );
+    (fill, base_stroke)
+}
+
 /// Paints a CodeSee-style cluster/folder container behind grouped nodes and subfolders.
 /// Supports collapsible states, nested hierarchy depth, subtitles, and child count badges.
 pub fn paint_group_cluster(painter: &Painter, props: GroupClusterProps<'_>) -> GroupClusterLayout {
     let z = props.zoom;
-    let (base_fill, base_stroke) = CLUSTER_TINTS[props.color_index % CLUSTER_TINTS.len()];
-
-    // Deeper folders get slightly higher opacity so they clearly stand out from their parent
-    let depth_alpha_boost = (props.depth as u8).saturating_mul(15);
-    let fill_tint = Color32::from_rgba_premultiplied(
-        base_fill.r().saturating_add(depth_alpha_boost / 2),
-        base_fill.g().saturating_add(depth_alpha_boost / 2),
-        base_fill.b().saturating_add(depth_alpha_boost / 2),
-        base_fill.a().saturating_add(depth_alpha_boost),
-    );
-    let border_stroke_color = base_stroke;
+    let (fill_tint, border_stroke_color) = cluster_tint(props.color_index, props.depth);
     let rounding = CornerRadius::from(10.0 * z);
 
     if props.is_collapsed {
         // Collapsed Mode: Render sleek compact folder pill
         let pill_rect = props.rect;
-        painter.rect(
-            pill_rect.translate(Vec2::new(0.0, 2.0 * z)),
-            CornerRadius::from(8.0 * z),
-            Color32::from_black_alpha(70),
-            Stroke::NONE,
-            egui::StrokeKind::Middle,
-        );
+        if props.frame {
+            painter.rect(
+                pill_rect.translate(Vec2::new(0.0, 2.0 * z)),
+                CornerRadius::from(8.0 * z),
+                Color32::from_black_alpha(70),
+                Stroke::NONE,
+                egui::StrokeKind::Middle,
+            );
 
-        painter.add(RectShape::new(
-            pill_rect,
-            CornerRadius::from(8.0 * z),
-            CLUSTER_HEADER_BG,
-            Stroke::new((1.2 * z).max(1.0), border_stroke_color),
-            egui::StrokeKind::Middle,
-        ));
+            painter.add(RectShape::new(
+                pill_rect,
+                CornerRadius::from(8.0 * z),
+                CLUSTER_HEADER_BG,
+                Stroke::new((1.2 * z).max(1.0), border_stroke_color),
+                egui::StrokeKind::Middle,
+            ));
+        }
 
         // Chevron ▸ + Folder Icon + Label
         let font_size = (11.5 * z).max(6.0);
@@ -105,13 +113,15 @@ pub fn paint_group_cluster(painter: &Painter, props: GroupClusterProps<'_>) -> G
 
     // Expanded Mode: Full container with header tab
     // 1. Shaded background container
-    painter.add(RectShape::new(
-        props.rect,
-        rounding,
-        fill_tint,
-        Stroke::new((1.5 * z).clamp(1.0, 3.0), border_stroke_color),
-        egui::StrokeKind::Middle,
-    ));
+    if props.frame {
+        painter.add(RectShape::new(
+            props.rect,
+            rounding,
+            fill_tint,
+            Stroke::new((1.5 * z).clamp(1.0, 3.0), border_stroke_color),
+            egui::StrokeKind::Middle,
+        ));
+    }
 
     // 2. Top Folder Header Tab
     let has_subtitle = props.subtitle.map(|s| !s.is_empty()).unwrap_or(false);
@@ -124,13 +134,15 @@ pub fn paint_group_cluster(painter: &Painter, props: GroupClusterProps<'_>) -> G
     let tab_rounding =
         CornerRadius { nw: (10.0 * z).round() as u8, ne: (6.0 * z).round() as u8, sw: 0, se: (8.0 * z).round() as u8 };
 
-    painter.add(RectShape::new(
-        header_rect,
-        tab_rounding,
-        CLUSTER_HEADER_BG,
-        Stroke::new((1.0 * z).max(0.75), border_stroke_color),
-        egui::StrokeKind::Middle,
-    ));
+    if props.frame {
+        painter.add(RectShape::new(
+            header_rect,
+            tab_rounding,
+            CLUSTER_HEADER_BG,
+            Stroke::new((1.0 * z).max(0.75), border_stroke_color),
+            egui::StrokeKind::Middle,
+        ));
+    }
 
     // Chevron ▾ Button
     let btn_w = 22.0 * z;
