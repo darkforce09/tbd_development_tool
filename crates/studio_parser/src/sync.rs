@@ -1,207 +1,194 @@
-use std::collections::HashMap;
-use std::path::Path;
-use quote::ToTokens;
-use studio_graph::{FileMemberNode, Graph, NodeArchetype};
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use studio_graph::{EdgeId, Graph, NodeArchetype, NodeId, PortId};
 
-/// Saves edited code to disk and dynamically hot-reloads node metadata in the active Graph.
-/// Supports Rust, Markdown, Enforce Script, and universal polyglot code files.
-pub fn save_and_reparse(path: &Path, new_content: &str, graph: &mut Graph) -> Result<usize, String> {
-    // 1. Write updated content to disk
+use crate::builder::members::{attach_member_ports, build_member_nodes, member_calls, MemberPortIndex};
+use crate::extractor::{extract_source, ExtractedFile};
+
+/// Outcome of a save + re-parse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SaveReport {
+    /// Graph nodes whose content was refreshed.
+    pub updated_nodes: usize,
+    /// An item card no longer matches any item in the file; a project reload is needed to re-layout.
+    pub needs_reload: bool,
+}
+
+/// Saves edited code to disk atomically and refreshes the nodes that belong to that file, using the
+/// same extraction and member-building code as a full project load.
+pub fn save_and_reparse(path: &Path, new_content: &str, graph: &mut Graph) -> Result<SaveReport, String> {
     crate::edit::atomic_write(path, new_content.as_bytes())
         .map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
 
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-    let path_str = path.to_string_lossy().to_string();
-    let mut updated_count = 0;
+    let extracted = extract_source(path, path, new_content);
+    let mut report = SaveReport::default();
+    let mut item_nodes = Vec::new();
 
-    let mut item_sources: HashMap<String, String> = HashMap::new();
-    let mut new_member_nodes: Vec<FileMemberNode> = Vec::new();
-
-    if ext == "rs" {
-        if let Ok(syn_file) = syn::parse_file(new_content) {
-            for item in &syn_file.items {
-                match item {
-                    syn::Item::Fn(f) => {
-                        let name = format!("fn {}", f.sig.ident);
-                        let src = f.to_token_stream().to_string();
-                        item_sources.insert(name.clone(), src.clone());
-                        item_sources.insert(f.sig.ident.to_string(), src.clone());
-                        new_member_nodes.push(FileMemberNode::new(
-                            format!("fn:{}", f.sig.ident),
-                            f.sig.ident.to_string(),
-                            NodeArchetype::Function,
-                            "",
-                            format!("fn {}", f.sig.ident),
-                            1,
-                            src,
-                            None,
-                        ));
-                    }
-                    syn::Item::Struct(s) => {
-                        let name = format!("struct {}", s.ident);
-                        let src = s.to_token_stream().to_string();
-                        item_sources.insert(name.clone(), src.clone());
-                        item_sources.insert(s.ident.to_string(), src.clone());
-                        new_member_nodes.push(FileMemberNode::new(
-                            format!("struct:{}", s.ident),
-                            s.ident.to_string(),
-                            NodeArchetype::Struct,
-                            "",
-                            format!("struct {}", s.ident),
-                            1,
-                            src,
-                            None,
-                        ));
-                    }
-                    syn::Item::Enum(e) => {
-                        let name = format!("enum {}", e.ident);
-                        let src = e.to_token_stream().to_string();
-                        item_sources.insert(name.clone(), src.clone());
-                        item_sources.insert(e.ident.to_string(), src.clone());
-                        new_member_nodes.push(FileMemberNode::new(
-                            format!("enum:{}", e.ident),
-                            e.ident.to_string(),
-                            NodeArchetype::Enum,
-                            "",
-                            format!("enum {}", e.ident),
-                            1,
-                            src,
-                            None,
-                        ));
-                    }
-                    syn::Item::Trait(t) => {
-                        let name = format!("trait {}", t.ident);
-                        let src = t.to_token_stream().to_string();
-                        item_sources.insert(name.clone(), src.clone());
-                        item_sources.insert(t.ident.to_string(), src.clone());
-                        new_member_nodes.push(FileMemberNode::new(
-                            format!("trait:{}", t.ident),
-                            t.ident.to_string(),
-                            NodeArchetype::Trait,
-                            "",
-                            format!("trait {}", t.ident),
-                            1,
-                            src,
-                            None,
-                        ));
-                    }
-                    _ => {}
-                }
+    for node_id in nodes_for_path(graph, path) {
+        match graph.nodes[&node_id].archetype {
+            NodeArchetype::File => {
+                refresh_file_node(graph, node_id, &extracted, new_content);
+                report.updated_nodes += 1;
             }
-        }
-    } else if ext == "md" || ext == "markdown" {
-        let extracted = crate::extractor::markdown::extract_markdown_file(path, path, new_content);
-        for s in &extracted.structs {
-            let tag = s.derives.first().cloned().unwrap_or_else(|| "H1".to_string());
-            new_member_nodes.push(FileMemberNode::new(
-                format!("heading:{}", s.name),
-                &s.name,
-                NodeArchetype::Module,
-                tag,
-                &s.name,
-                s.line,
-                &s.source_code,
-                None,
-            ));
-        }
-        for f in &extracted.functions {
-            new_member_nodes.push(FileMemberNode::new(
-                format!("link:{}", f.name),
-                &f.name,
-                NodeArchetype::Function,
-                "LNK",
-                &f.name,
-                f.line,
-                &f.source_code,
-                None,
-            ));
-        }
-    } else if crate::extractor::enforce::is_enforce_script(path, new_content) {
-        let extracted = crate::extractor::enforce::extract_enforce_script_file(path, path, new_content);
-        for s in &extracted.structs {
-            let is_modded = s.derives.contains(&"modded".to_string());
-            let vis = if is_modded { "MOD" } else { "CLS" };
-            new_member_nodes.push(FileMemberNode::new(
-                format!("class:{}", s.name),
-                &s.name,
-                NodeArchetype::Struct,
-                vis,
-                format!("class {}", s.name),
-                s.line,
-                &s.source_code,
-                None,
-            ));
-            item_sources.insert(s.name.clone(), s.source_code.clone());
-        }
-        for imp in &extracted.impls {
-            for m in &imp.methods {
-                new_member_nodes.push(FileMemberNode::new(
-                    format!("method:{}::{}", imp.target_type, m.name),
-                    format!("{}::{}", imp.target_type, m.name),
-                    NodeArchetype::Function,
-                    "FN",
-                    &m.name,
-                    m.line,
-                    &m.source_code,
-                    None,
-                ));
-                item_sources.insert(m.name.clone(), m.source_code.clone());
+            NodeArchetype::Struct | NodeArchetype::Enum | NodeArchetype::Trait | NodeArchetype::Function => {
+                item_nodes.push(node_id);
             }
-        }
-    } else {
-        let extracted = crate::extractor::universal::extract_universal_file(path, path, new_content);
-        for s in &extracted.structs {
-            new_member_nodes.push(FileMemberNode::new(
-                format!("struct:{}", s.name),
-                &s.name,
-                NodeArchetype::Struct,
-                "CLS",
-                &s.name,
-                s.line,
-                &s.source_code,
-                None,
-            ));
-            item_sources.insert(s.name.clone(), s.source_code.clone());
-        }
-        for f in &extracted.functions {
-            new_member_nodes.push(FileMemberNode::new(
-                format!("fn:{}", f.name),
-                &f.name,
-                NodeArchetype::Function,
-                "FN",
-                &f.name,
-                f.line,
-                &f.source_code,
-                None,
-            ));
-            item_sources.insert(f.name.clone(), f.source_code.clone());
+            // Module cards summarise the file and hold no editable source.
+            _ => {}
         }
     }
 
-    // 3. Update existing graph nodes belonging to this file in-place
-    for node in graph.nodes.values_mut() {
-        let is_matching_file = node
-            .file_path
-            .as_ref()
-            .map(|p| p == &path_str || path_str.ends_with(p) || p.ends_with(&path_str))
-            .unwrap_or(false);
+    let (updated, needs_reload) = refresh_item_nodes(graph, &item_nodes, &extracted);
+    report.updated_nodes += updated;
+    report.needs_reload = needs_reload;
+    graph.rebuild_fast_indices();
+    Ok(report)
+}
 
-        if is_matching_file {
-            if node.archetype == NodeArchetype::File {
-                node.source_code = Some(new_content.to_string());
-                if !new_member_nodes.is_empty() {
-                    node.member_nodes = new_member_nodes.clone();
-                }
-                updated_count += 1;
-            } else if let Some(new_src) = item_sources.get(&node.title) {
-                node.source_code = Some(new_src.clone());
-                updated_count += 1;
-            } else if node.source_code.is_some() {
-                node.source_code = Some(new_content.to_string());
-                updated_count += 1;
+/// Graph nodes whose `file_path` refers to the same file as `path`.
+fn nodes_for_path(graph: &Graph, path: &Path) -> Vec<NodeId> {
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let file_name = path.file_name();
+    let mut canonical_cache: HashMap<&str, PathBuf> = HashMap::new();
+
+    graph
+        .nodes
+        .iter()
+        .filter(|(_, n)| {
+            let Some(p) = n.file_path.as_deref() else { return false };
+            if Path::new(p) == path {
+                return true;
             }
+            if Path::new(p).file_name() != file_name {
+                return false;
+            }
+            let resolved = canonical_cache
+                .entry(p)
+                .or_insert_with(|| std::fs::canonicalize(p).unwrap_or_else(|_| PathBuf::from(p)));
+            *resolved == canonical
+        })
+        .map(|(&id, _)| id)
+        .collect()
+}
+
+/// Rebuilds a file card's members, keeping port ids for members that still exist so their edges
+/// survive, and re-wires the card's outgoing member call edges.
+fn refresh_file_node(graph: &mut Graph, node_id: NodeId, extracted: &ExtractedFile, content: &str) {
+    let mut members = build_member_nodes(extracted);
+    let old_ports: HashMap<String, (Option<PortId>, Option<PortId>)> = graph.nodes[&node_id]
+        .member_nodes
+        .iter()
+        .map(|m| (m.id.clone(), (m.in_port_id, m.out_port_id)))
+        .collect();
+
+    for m in &mut members {
+        if let Some(&(in_pid, out_pid)) = old_ports.get(&m.id) {
+            m.in_port_id = in_pid;
+            m.out_port_id = out_pid;
         }
     }
 
-    Ok(updated_count)
+    let kept: HashSet<&str> = members.iter().map(|m| m.id.as_str()).collect();
+    let vanished: Vec<PortId> = old_ports
+        .iter()
+        .filter(|(id, _)| !kept.contains(id.as_str()))
+        .flat_map(|(_, &(i, o))| [i, o])
+        .flatten()
+        .collect();
+    for pid in &vanished {
+        graph.disconnect_port(node_id, *pid);
+    }
+    if let Some(node) = graph.nodes.get_mut(&node_id) {
+        node.inputs.retain(|p| !vanished.contains(&p.id));
+        node.outputs.retain(|p| !vanished.contains(&p.id));
+    }
+
+    attach_member_ports(graph, node_id, &mut members);
+
+    let out_port_by_member: HashMap<String, PortId> =
+        members.iter().filter_map(|m| Some((m.id.clone(), m.out_port_id?))).collect();
+    if let Some(node) = graph.nodes.get_mut(&node_id) {
+        if node.source_code.is_some() {
+            node.source_code = Some(content.to_string());
+        }
+        node.member_nodes = members;
+    }
+
+    rewire_member_calls(graph, node_id, extracted, &out_port_by_member);
+}
+
+/// Re-wires the card's outgoing member call edges from the new extraction, in the same order and
+/// with the same input-port semantics as the Files builder, so a save matches a fresh load.
+fn rewire_member_calls(
+    graph: &mut Graph,
+    node_id: NodeId,
+    extracted: &ExtractedFile,
+    out_port_by_member: &HashMap<String, PortId>,
+) {
+    let member_out_ports: HashSet<PortId> = out_port_by_member.values().copied().collect();
+    let stale: Vec<EdgeId> = graph
+        .edges
+        .iter()
+        .filter(|e| e.from_node == node_id && member_out_ports.contains(&e.from_port))
+        .map(|e| e.id)
+        .collect();
+    for edge_id in stale {
+        graph.disconnect_edge(edge_id);
+    }
+
+    let index = MemberPortIndex::from_graph(graph);
+    let mut step = graph.edges.iter().filter_map(|e| e.step_number).max().unwrap_or(0) + 1;
+    let mut connected: HashSet<(PortId, NodeId, PortId)> = HashSet::new();
+    for (member_id, calls) in member_calls(extracted) {
+        let Some(&out_port) = out_port_by_member.get(&member_id) else { continue };
+        for call in calls {
+            let Some((target_node, in_port)) = index.resolve(call) else { continue };
+            if (target_node != node_id || in_port != out_port) && connected.insert((out_port, target_node, in_port)) {
+                graph.connect_labeled(node_id, out_port, target_node, in_port, Some("call".to_string()), Some(step), None);
+                step += 1;
+            }
+        }
+    }
+}
+
+/// Updates per-item cards (Items / Public API views) in place. Each card is matched to the item with
+/// the same title nearest its previous line. Returns (updated, needs_reload).
+fn refresh_item_nodes(graph: &mut Graph, node_ids: &[NodeId], extracted: &ExtractedFile) -> (usize, bool) {
+    let mut candidates: HashMap<String, Vec<(usize, &str, &str)>> = HashMap::new();
+    for s in &extracted.structs {
+        candidates.entry(format!("struct {}", s.name)).or_default().push((s.line, &s.source_code, &s.docs));
+    }
+    for e in &extracted.enums {
+        candidates.entry(format!("enum {}", e.name)).or_default().push((e.line, &e.source_code, &e.docs));
+    }
+    for t in &extracted.traits {
+        candidates.entry(format!("trait {}", t.name)).or_default().push((t.line, &t.source_code, &t.docs));
+    }
+    for f in extracted.functions.iter().chain(extracted.impls.iter().flat_map(|i| i.methods.iter())) {
+        candidates.entry(format!("fn {}", f.name)).or_default().push((f.line, &f.source_code, &f.docs));
+    }
+
+    let mut updated = 0;
+    let mut needs_reload = false;
+    let mut used: HashSet<(String, usize)> = HashSet::new();
+    for &node_id in node_ids {
+        let Some(node) = graph.nodes.get_mut(&node_id) else { continue };
+        let old_line = node.line_number.unwrap_or(0);
+        let best = candidates.get(&node.title).and_then(|list| {
+            list.iter()
+                .filter(|(line, _, _)| !used.contains(&(node.title.clone(), *line)))
+                .min_by_key(|(line, _, _)| line.abs_diff(old_line))
+        });
+        match best {
+            Some(&(line, src, docs)) => {
+                used.insert((node.title.clone(), line));
+                node.line_number = Some(line);
+                node.source_code = Some(src.to_string());
+                node.doc_comment = if docs.is_empty() { None } else { Some(docs.to_string()) };
+                updated += 1;
+            }
+            None => needs_reload = true,
+        }
+    }
+    (updated, needs_reload)
 }

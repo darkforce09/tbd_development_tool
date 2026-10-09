@@ -1,6 +1,7 @@
 pub mod common;
 pub mod files;
 pub mod items;
+pub mod members;
 pub mod modules;
 
 use studio_graph::Graph;

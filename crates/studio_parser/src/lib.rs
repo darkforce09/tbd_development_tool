@@ -15,7 +15,7 @@ pub use builder::{
     build_files_graph, build_items_graph, build_modules_graph, build_project_graph,
     build_skeleton_files_graph, ProjectStats, ViewGranularity,
 };
-pub use sync::save_and_reparse;
+pub use sync::{save_and_reparse, SaveReport};
 pub use edit::{apply_edit, atomic_write, content_hash, EditError, EditOrigin};
 pub use search_index::{SearchItem, SymbolSearchIndex};
 pub use cache::{
@@ -235,8 +235,8 @@ mod tests {
     #[test]
     fn test_save_and_reparse() {
         use std::io::Write;
-        let temp_dir = std::env::temp_dir().join("studio_test_save_reparse");
-        let _ = std::fs::create_dir_all(&temp_dir);
+        let temp_dir_guard = tempfile::tempdir().unwrap();
+        let temp_dir = temp_dir_guard.path().to_path_buf();
         let test_file = temp_dir.join("sample.rs");
 
         let initial_code = "pub fn add_numbers(a: i32, b: i32) -> i32 { a + b }";
@@ -267,7 +267,7 @@ mod tests {
         let updated_code = "pub fn add_numbers(a: i32, b: i32) -> i32 { a + b + 10 }";
         let result = save_and_reparse(&test_file, updated_code, &mut graph);
         assert!(result.is_ok(), "save_and_reparse should succeed");
-        assert_eq!(result.unwrap(), 1, "Should update 1 node");
+        assert_eq!(result.unwrap().updated_nodes, 1, "Should update 1 node");
 
         let updated_node = graph.nodes.get(&node_id).unwrap();
         assert!(
@@ -277,8 +277,6 @@ mod tests {
 
         let disk_content = std::fs::read_to_string(&test_file).unwrap();
         assert_eq!(disk_content, updated_code, "Disk file must match saved content");
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
@@ -303,6 +301,54 @@ mod tests {
         let saved = std::fs::read_to_string(&lib).unwrap();
         assert!(saved.contains("pub fn alpha() -> i32 {\n    1\n}"), "other items must survive: {saved}");
         assert!(saved.contains("    20\n"));
+    }
+
+    /// Member list + call edges of a file card, by name, for comparing a saved graph with a fresh load.
+    fn file_card_shape(graph: &Graph, title: &str) -> (Vec<(String, String, String, usize)>, Vec<(String, String)>) {
+        let node = graph.nodes.values().find(|n| n.title == title).expect("file card");
+        let members = node
+            .member_nodes
+            .iter()
+            .map(|m| (m.id.clone(), m.visibility.clone(), m.signature.clone(), m.line_number))
+            .collect();
+        let port_owner = |port: studio_graph::PortId| {
+            graph.nodes.values().flat_map(|n| n.member_nodes.iter()).find(|m| m.in_port_id == Some(port) || m.out_port_id == Some(port)).map(|m| m.id.clone())
+        };
+        let mut calls: Vec<(String, String)> = graph
+            .edges
+            .iter()
+            .filter(|e| e.from_node == node.id)
+            .filter_map(|e| Some((port_owner(e.from_port)?, port_owner(e.to_port)?)))
+            .collect();
+        calls.sort();
+        (members, calls)
+    }
+
+    #[test]
+    fn test_save_matches_fresh_load() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n").unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/b.rs"), "pub fn beta() {}\npub fn delta() {}\n").unwrap();
+        let a = dir.path().join("src/a.rs");
+        std::fs::write(&a, "pub fn alpha() {\n    beta();\n}\n").unwrap();
+
+        let (mut graph, _) = load_rust_project(dir.path(), ViewGranularity::FilesAndFolders).unwrap();
+        let edited = "/// doc\npub fn gamma() {\n    delta();\n}\n\nfn alpha() {\n    beta();\n    delta();\n}\n\nimpl S {\n    fn m(&self) { beta(); }\n}\n";
+        save_and_reparse(&a, edited, &mut graph).unwrap();
+
+        let (fresh, _) = load_rust_project(dir.path(), ViewGranularity::FilesAndFolders).unwrap();
+        let saved_shape = file_card_shape(&graph, "a.rs");
+        assert_eq!(saved_shape, file_card_shape(&fresh, "a.rs"));
+        assert!(saved_shape.1.iter().any(|(_, to)| to == "fn:delta"), "new call wired: {saved_shape:?}");
+        assert!(saved_shape.0.iter().any(|m| m.0 == "method:S::m"), "impl methods are kept: {saved_shape:?}");
+
+        let card = graph.nodes.values().find(|n| n.title == "a.rs").unwrap();
+        let port_ids: std::collections::HashSet<_> = card.inputs.iter().chain(card.outputs.iter()).map(|p| p.id).collect();
+        for m in &card.member_nodes {
+            assert!(port_ids.contains(&m.in_port_id.unwrap()) && port_ids.contains(&m.out_port_id.unwrap()));
+        }
+        assert_eq!(card.inputs.len(), card.member_nodes.len() + 1, "stale member ports removed");
     }
 
     #[test]
@@ -390,8 +436,8 @@ mod tests {
 
     #[test]
     fn test_parse_mixed_project_with_markdown_and_enforce_script() {
-        let temp_dir = std::env::temp_dir().join("studio_test_mixed_polyglot");
-        let _ = std::fs::remove_dir_all(&temp_dir);
+        let temp_dir_guard = tempfile::tempdir().unwrap();
+        let temp_dir = temp_dir_guard.path().to_path_buf();
         let _ = std::fs::create_dir_all(temp_dir.join("scripts"));
 
         let readme_path = temp_dir.join("README.md");
@@ -451,14 +497,12 @@ Link back: [Hub](../README.md)
 
         // Verify wires exist connecting markdown links to destination files
         assert!(!graph.edges.is_empty(), "Should connect wires between linked files");
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
     fn test_save_and_reparse_markdown_and_enforce() {
-        let temp_dir = std::env::temp_dir().join("studio_test_save_polyglot");
-        let _ = std::fs::create_dir_all(&temp_dir);
+        let temp_dir_guard = tempfile::tempdir().unwrap();
+        let temp_dir = temp_dir_guard.path().to_path_buf();
 
         let md_file = temp_dir.join("spec.md");
         let initial_md = "# Initial Spec\n[Target](target.md)\n";
@@ -471,14 +515,12 @@ Link back: [Hub](../README.md)
         let updated_md = "# Updated Spec\n## New Heading\n";
         let res = save_and_reparse(&md_file, updated_md, &mut graph);
         assert!(res.is_ok(), "Should reparse markdown without error");
-        assert_eq!(res.unwrap(), 1);
+        assert_eq!(res.unwrap().updated_nodes, 1);
 
         let updated_node = graph.nodes.get(&nid).unwrap();
         assert_eq!(updated_node.source_code.as_deref(), Some(updated_md));
         assert!(updated_node.member_nodes.iter().any(|m| m.name == "Updated Spec"));
         assert!(updated_node.member_nodes.iter().any(|m| m.name == "New Heading"));
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
 

@@ -22,15 +22,24 @@ impl StudioApp {
         let path = node.file_path.as_ref().map(PathBuf::from).filter(|p| p.is_file());
         let preloaded = node.source_code.clone().filter(|s| !s.is_empty());
 
+        // A preloaded snippet is only editable in place if it is verbatim file text; otherwise
+        // (e.g. module summary cards) fall back to the whole file.
+        let disk = path.as_ref().and_then(|p| std::fs::read_to_string(p).ok());
+        let preloaded = match (&preloaded, &disk) {
+            (Some(src), Some(disk)) if disk.replace("\r\n", "\n").contains(src.as_str()) => preloaded,
+            (Some(_), Some(_)) => None,
+            _ => preloaded,
+        };
+
         let (buffer, origin) = match (preloaded, &path) {
             (Some(src), Some(_)) => (src.clone(), Some(EditOrigin::Snippet { original: src })),
             (Some(src), None) => (src, None),
-            (None, Some(p)) => match std::fs::read_to_string(p) {
-                Ok(content) => {
+            (None, Some(_)) => match disk {
+                Some(content) => {
                     let disk_hash = content_hash(&content);
                     (content, Some(EditOrigin::FullFile { disk_hash }))
                 }
-                Err(_) => (node.description.clone(), None),
+                None => (node.description.clone(), None),
             },
             (None, None) => (node.description.clone(), None),
         };
@@ -163,13 +172,17 @@ impl StudioApp {
         };
 
         match save_and_reparse(&path, &new_content, &mut self.graph) {
-            Ok(count) => {
+            Ok(report) => {
                 self.code_editor_origin = Some(match origin {
                     EditOrigin::FullFile { .. } => EditOrigin::FullFile { disk_hash: content_hash(&new_content) },
                     EditOrigin::Snippet { .. } => EditOrigin::Snippet { original: self.code_editor_buffer.clone() },
                 });
                 self.code_editor_dirty = false;
-                self.code_editor_status = Some(format!("✔ Saved to disk! ({} node updated)", count));
+                self.code_editor_status = Some(if report.needs_reload {
+                    format!("✔ Saved ({} nodes updated). Items changed; reload the project to refresh the layout.", report.updated_nodes)
+                } else {
+                    format!("✔ Saved to disk! ({} nodes updated)", report.updated_nodes)
+                });
                 self.canvas_state.status_message = Some(format!("Hot reloaded {}", path.display()));
                 true
             }

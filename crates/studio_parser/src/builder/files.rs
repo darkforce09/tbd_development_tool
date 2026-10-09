@@ -1,10 +1,9 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
-use studio_graph::{
-    DataType, FileMemberNode, Graph, GroupCluster, NodeArchetype, NodeId, Port, PortDirection, PortId,
-};
+use studio_graph::{DataType, Graph, GroupCluster, NodeArchetype, NodeId, PortId};
 use crate::extractor::ExtractedProject;
 
+use super::members::{attach_member_ports, build_member_nodes, file_ext, is_enforce_file, MemberPortIndex};
 use super::ProjectStats;
 
 /// Builds a compact, hierarchical File/Folder architecture graph.
@@ -118,10 +117,10 @@ pub fn build_files_graph(project: &ExtractedProject) -> (Graph, ProjectStats) {
                 let file_pos_x = dir_layout_x + 24.0 + (col as f32 * (card_w + card_gap_x));
                 let file_pos_y = dir_layout_y + 44.0 + (row as f32 * (card_h + card_gap_y));
 
-                let ext = file.relative_path.extension().and_then(|e| e.to_str()).unwrap_or("rs").to_lowercase();
+                let ext = file_ext(file);
                 let file_name = file.relative_path.file_name().and_then(|f| f.to_str()).unwrap_or("file");
                 let is_markdown = ext == "md" || ext == "markdown";
-                let is_enforce = ext == "ens" || ext == "es" || (ext == "c" && file.structs.iter().any(|s| s.derives.contains(&"modded".to_string()) || s.source_code.contains("class ")));
+                let is_enforce = is_enforce_file(file, &ext);
 
                 let badge = if is_markdown {
                     "MD".to_string()
@@ -160,151 +159,14 @@ pub fn build_files_graph(project: &ExtractedProject) -> (Graph, ProjectStats) {
                 );
 
                 // Extract file's internal nodes (functions, structs, enums, traits, methods)
-                let mut member_nodes = Vec::new();
-
-                for s in &file.structs {
-                    let is_heading = s.derives.first().map(|d| d.starts_with('H')).unwrap_or(false);
-                    let is_modded = s.derives.contains(&"modded".to_string());
-                    let (archetype, vis, sig) = if is_heading {
-                        let lvl = s.derives.first().cloned().unwrap_or_else(|| "H1".to_string());
-                        (NodeArchetype::Module, lvl, s.name.clone())
-                    } else if is_modded {
-                        (NodeArchetype::Struct, "MOD".to_string(), format!("modded class {}", s.name))
-                    } else if is_enforce || s.source_code.contains("class ") {
-                        let base = s.derives.first().map(|b| format!(" : {}", b)).unwrap_or_default();
-                        (NodeArchetype::Struct, "CLS".to_string(), format!("class {}{}", s.name, base))
-                    } else {
-                        let vis = if s.visibility.is_public() { "pub" } else { "" };
-                        (NodeArchetype::Struct, vis.to_string(), format!("struct {} ({} fields)", s.name, s.fields.len()))
-                    };
-
-                    member_nodes.push(FileMemberNode::new(
-                        format!("struct:{}", s.name),
-                        &s.name,
-                        archetype,
-                        vis,
-                        sig,
-                        s.line,
-                        &s.source_code,
-                        if s.docs.is_empty() { None } else { Some(s.docs.clone()) },
-                    ));
-                }
-
-                for e in &file.enums {
-                    let vis = if e.visibility.is_public() { "pub" } else { "" };
-                    member_nodes.push(FileMemberNode::new(
-                        format!("enum:{}", e.name),
-                        &e.name,
-                        NodeArchetype::Enum,
-                        vis,
-                        format!("enum {} ({} variants)", e.name, e.variants.len()),
-                        e.line,
-                        &e.source_code,
-                        if e.docs.is_empty() { None } else { Some(e.docs.clone()) },
-                    ));
-                }
-
-                for t in &file.traits {
-                    let vis = if t.visibility.is_public() { "pub" } else { "" };
-                    let kind_label = if ext == "ts" || ext == "tsx" || ext == "java" || ext == "cs" || ext == "go" {
-                        "interface"
-                    } else {
-                        "trait"
-                    };
-                    member_nodes.push(FileMemberNode::new(
-                        format!("trait:{}", t.name),
-                        &t.name,
-                        NodeArchetype::Trait,
-                        vis,
-                        format!("{} {} ({} methods)", kind_label, t.name, t.methods.len()),
-                        t.line,
-                        &t.source_code,
-                        if t.docs.is_empty() { None } else { Some(t.docs.clone()) },
-                    ));
-                }
-
-                for f in &file.functions {
-                    let is_link = f.docs.starts_with("Markdown link");
-                    let is_code_block = f.name.starts_with("block:");
-                    let (archetype, vis, sig) = if is_link {
-                        (NodeArchetype::Function, "LNK".to_string(), format!("[{}]", f.name))
-                    } else if is_code_block {
-                        (NodeArchetype::Module, "CODE".to_string(), f.name.clone())
-                    } else {
-                        let vis = if f.visibility.is_public() { "pub" } else { "" };
-                        let params_sig = f.inputs.iter().map(|p| format!("{}: {}", p.name, p.type_str)).collect::<Vec<_>>().join(", ");
-                        let ret_sig = f.output.as_ref().map(|o| format!(" -> {}", o)).unwrap_or_default();
-                        let prefix = if ext == "py" {
-                            if f.is_async { "async def " } else { "def " }
-                        } else if ext == "go" {
-                            "func "
-                        } else if ext == "sh" || ext == "bash" {
-                            "sh "
-                        } else if f.is_async {
-                            "async fn "
-                        } else {
-                            "fn "
-                        };
-                        (NodeArchetype::Function, vis.to_string(), format!("{}{}({}){}", prefix, f.name, params_sig, ret_sig))
-                    };
-
-                    member_nodes.push(FileMemberNode::new(
-                        format!("fn:{}", f.name),
-                        &f.name,
-                        archetype,
-                        vis,
-                        sig,
-                        f.line,
-                        &f.source_code,
-                        if f.docs.is_empty() { None } else { Some(f.docs.clone()) },
-                    ));
-                }
-
-                for imp in &file.impls {
-                    for m in &imp.methods {
-                        let vis = if is_enforce { "FN" } else if m.visibility.is_public() { "pub" } else { "" };
-                        let params_sig = m.inputs.iter().map(|p| format!("{}: {}", p.name, p.type_str)).collect::<Vec<_>>().join(", ");
-                        let ret_sig = m.output.as_ref().map(|o| format!(" -> {}", o)).unwrap_or_default();
-                        let prefix = if m.is_async { "async fn " } else { "fn " };
-                        member_nodes.push(FileMemberNode::new(
-                            format!("method:{}::{}", imp.target_type, m.name),
-                            format!("{}::{}", imp.target_type, m.name),
-                            NodeArchetype::Function,
-                            vis,
-                            format!("{}{}({}){}", prefix, m.name, params_sig, ret_sig),
-                            m.line,
-                            &m.source_code,
-                            if m.docs.is_empty() { None } else { Some(m.docs.clone()) },
-                        ));
-                    }
-                }
-
-                member_nodes.sort_by_key(|m| m.line_number);
-
-                for m in &mut member_nodes {
-                    let in_pid = PortId(graph.next_raw_id());
-                    let out_pid = PortId(graph.next_raw_id());
-                    m.in_port_id = Some(in_pid);
-                    m.out_port_id = Some(out_pid);
-
-                    member_in_ports.insert(m.name.clone(), (node_id, in_pid));
-                    member_out_ports.insert(m.name.clone(), (node_id, out_pid));
-                    member_in_ports.insert(m.id.clone(), (node_id, in_pid));
-                    member_out_ports.insert(m.id.clone(), (node_id, out_pid));
-
-                    if let Some(n) = graph.nodes.get_mut(&node_id) {
-                        n.inputs.push(Port {
-                            id: in_pid,
-                            name: format!("{}:in", m.name),
-                            data_type: DataType::RustFlow,
-                            direction: PortDirection::Input,
-                        });
-                        n.outputs.push(Port {
-                            id: out_pid,
-                            name: format!("{}:out", m.name),
-                            data_type: DataType::RustFlow,
-                            direction: PortDirection::Output,
-                        });
+                let mut member_nodes = build_member_nodes(file);
+                attach_member_ports(&mut graph, node_id, &mut member_nodes);
+                for m in &member_nodes {
+                    if let (Some(in_pid), Some(out_pid)) = (m.in_port_id, m.out_port_id) {
+                        member_in_ports.insert(m.name.clone(), (node_id, in_pid));
+                        member_out_ports.insert(m.name.clone(), (node_id, out_pid));
+                        member_in_ports.insert(m.id.clone(), (node_id, in_pid));
+                        member_out_ports.insert(m.id.clone(), (node_id, out_pid));
                     }
                 }
 
@@ -485,28 +347,10 @@ pub fn build_files_graph(project: &ExtractedProject) -> (Graph, ProjectStats) {
     }
 
     // Connect fine-grained sub-node dependencies between individual function/method/link member ports
+    let port_index = MemberPortIndex { member_in_ports, file_to_node, file_to_in_port };
     let mut connected_subnode_pairs: HashSet<(NodeId, PortId, NodeId, PortId)> = HashSet::new();
     for (src_file, caller_out_port, target_name, label) in pending_subnode_deps {
-        let clean = target_name.trim_start_matches("./");
-        let short_name = target_name
-            .split([':', '.', '>', '-'])
-            .filter(|s| !s.is_empty())
-            .last()
-            .unwrap_or(&target_name);
-
-        let target = member_in_ports.get(&target_name)
-            .or_else(|| member_in_ports.get(clean))
-            .or_else(|| member_in_ports.get(short_name))
-            .copied()
-            .or_else(|| {
-                // If a markdown link or call references a file directly, connect caller port to target file's in_port!
-                file_to_node.get(&target_name)
-                    .or_else(|| file_to_node.get(clean))
-                    .or_else(|| file_to_node.get(short_name))
-                    .and_then(|tid| file_to_in_port.get(tid).map(|&pid| (*tid, pid)))
-            });
-
-        if let Some((target_file, callee_in_port)) = target {
+        if let Some((target_file, callee_in_port)) = port_index.resolve(&target_name) {
             if (src_file != target_file || caller_out_port != callee_in_port)
                 && connected_subnode_pairs.insert((src_file, caller_out_port, target_file, callee_in_port))
             {

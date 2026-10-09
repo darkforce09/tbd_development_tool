@@ -1,14 +1,16 @@
 use std::collections::hash_map::DefaultHasher;
 use std::fs::File;
 use std::hash::{Hash, Hasher};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use memmap2::Mmap;
 use studio_graph::Graph;
 use crate::builder::{ProjectStats, ViewGranularity};
 
 /// 16-byte magic identifier and format version header
-pub const CACHE_MAGIC: &[u8; 16] = b"TBD_RKYV_V3\0\0\0\0\0";
+pub const CACHE_MAGIC: &[u8; 16] = b"TBD_RKYV_V4\0\0\0\0\0";
+/// Bump whenever extraction or graph building changes output, so cached graphs are rebuilt.
+pub const EXTRACTOR_VERSION: u32 = 1;
 const HEADER_SIZE: usize = 32;
 
 /// Serializable wrapper combining the architecture graph and project metrics
@@ -83,8 +85,8 @@ pub fn cache_file_path(project_root: &Path, granularity: ViewGranularity) -> Pat
     user_cache_dir_for_project(project_root).join(format!("graph_cache_g{}.rkyv", granularity as u8))
 }
 
-/// Computes a fast fingerprint of the workspace files and settings to detect staleness.
-/// Checks git refs, workspace manifests, and top-level directory mtimes in < 1ms.
+/// Computes a fingerprint of the workspace to detect staleness: extractor version, git refs,
+/// workspace manifests, and the size + mtime of every source file.
 pub fn compute_workspace_fingerprint(project_root: &Path, granularity: ViewGranularity) -> u64 {
     let mut hasher = DefaultHasher::new();
 
@@ -95,6 +97,7 @@ pub fn compute_workspace_fingerprint(project_root: &Path, granularity: ViewGranu
         project_root.hash(&mut hasher);
     }
     (granularity as u8).hash(&mut hasher);
+    EXTRACTOR_VERSION.hash(&mut hasher);
 
     // 1. Hash Git HEAD / ref if present (instant git tree fingerprint)
     let git_head = project_root.join(".git/HEAD");
@@ -125,36 +128,17 @@ pub fn compute_workspace_fingerprint(project_root: &Path, granularity: ViewGranu
         }
     }
 
-    // 3. Fast scan of top-level directories and member crate manifests
-    if let Ok(entries) = std::fs::read_dir(project_root) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let file_name = entry.file_name().to_string_lossy().to_string();
-            if file_name.starts_with('.')
-                || file_name == "target"
-                || file_name == "node_modules"
-                || file_name == "vendor"
-                || file_name == "out"
-                || file_name == "dist"
-                || file_name == "build"
-            {
-                continue;
-            }
-            if let Ok(meta) = entry.metadata() {
-                if let Ok(mtime) = meta.modified() {
-                    mtime.hash(&mut hasher);
-                }
-            }
-            if path.is_dir() {
-                for sub_manifest in &["Cargo.toml", "package.json", "go.mod"] {
-                    let sub_p = path.join(sub_manifest);
-                    if let Ok(sub_meta) = sub_p.metadata() {
-                        sub_meta.len().hash(&mut hasher);
-                        if let Ok(mtime) = sub_meta.modified() {
-                            mtime.hash(&mut hasher);
-                        }
-                    }
-                }
+    // 3. Size + mtime of every discovered source file, so edits anywhere in the tree invalidate
+    //    the cache (sorted for a stable order across git / walkdir discovery).
+    let mut files = crate::project::discover_all_repository_files(project_root);
+    files.sort();
+    files.len().hash(&mut hasher);
+    for path in &files {
+        path.strip_prefix(project_root).unwrap_or(path).hash(&mut hasher);
+        if let Ok(meta) = path.metadata() {
+            meta.len().hash(&mut hasher);
+            if let Ok(mtime) = meta.modified() {
+                mtime.hash(&mut hasher);
             }
         }
     }
@@ -196,14 +180,7 @@ pub fn save_project_cache(
     buffer.extend_from_slice(&payload_len.to_le_bytes());
     buffer.extend_from_slice(rkyv_payload);
 
-    // Atomic write via temp file in the same directory to avoid partial writes
-    let temp_file = cache_dir.join(format!("graph_cache_g{}.rkyv.tmp", granularity as u8));
-    {
-        let mut f = File::create(&temp_file)?;
-        f.write_all(&buffer)?;
-        f.flush()?;
-    }
-    std::fs::rename(temp_file, &cache_file)?;
+    crate::edit::atomic_write(&cache_file, &buffer)?;
 
     Ok(cache_file)
 }
@@ -296,9 +273,26 @@ mod tests {
     }
 
     #[test]
+    fn test_nested_file_edit_invalidates_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("a/b/c");
+        std::fs::create_dir_all(&nested).unwrap();
+        let deep_file = nested.join("deep.rs");
+        std::fs::write(&deep_file, "pub fn deep() {}").unwrap();
+
+        let granularity = ViewGranularity::FilesAndFolders;
+        save_project_cache(dir.path(), granularity, &Graph::new(), &ProjectStats::default()).unwrap();
+        assert!(load_project_cache(dir.path(), granularity).unwrap().is_some());
+
+        std::fs::write(&deep_file, "pub fn deep() { let changed = 1; }").unwrap();
+        assert!(load_project_cache(dir.path(), granularity).unwrap().is_none(), "nested edit must invalidate");
+        clear_project_cache(dir.path()).unwrap();
+    }
+
+    #[test]
     fn test_save_and_load_cache_roundtrip() {
-        let temp_proj = std::env::temp_dir().join("tbd_test_project_cache_roundtrip");
-        let _ = std::fs::create_dir_all(&temp_proj);
+        let temp_proj_guard = tempfile::tempdir().unwrap();
+        let temp_proj = temp_proj_guard.path().to_path_buf();
         let sample_file = temp_proj.join("lib.rs");
         std::fs::write(&sample_file, "pub fn foo() {}").unwrap();
 
@@ -346,6 +340,5 @@ mod tests {
 
         // Clean up
         let _ = clear_project_cache(&temp_proj);
-        let _ = std::fs::remove_dir_all(&temp_proj);
     }
 }

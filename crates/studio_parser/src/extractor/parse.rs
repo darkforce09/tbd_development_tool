@@ -50,8 +50,8 @@ pub fn extract_file(file_path: &Path, rel_path: &Path) -> ExtractedFile {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "mod".to_string());
 
-    let content = match std::fs::read_to_string(file_path) {
-        Ok(c) => c,
+    match std::fs::read_to_string(file_path) {
+        Ok(content) => extract_source(file_path, rel_path, &content),
         Err(e) => {
             return ExtractedFile {
                 file_path: file_path.to_path_buf(),
@@ -64,27 +64,35 @@ pub fn extract_file(file_path: &Path, rel_path: &Path) -> ExtractedFile {
                 impls: Vec::new(),
                 uses: Vec::new(),
                 parse_error: Some(format!("Failed to read file: {}", e)),
-            };
+            }
         }
-    };
+    }
+}
+
+/// Extracts items from in-memory file content. Shared by project loading and save/re-parse.
+pub fn extract_source(file_path: &Path, rel_path: &Path, content: &str) -> ExtractedFile {
+    let module_name = file_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "mod".to_string());
 
     let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
     if ext == "md" || ext == "markdown" {
-        return super::markdown::extract_markdown_file(file_path, rel_path, &content);
+        return super::markdown::extract_markdown_file(file_path, rel_path, content);
     }
 
-    if super::enforce::is_enforce_script(file_path, &content) {
-        return super::enforce::extract_enforce_script_file(file_path, rel_path, &content);
+    if super::enforce::is_enforce_script(file_path, content) {
+        return super::enforce::extract_enforce_script_file(file_path, rel_path, content);
     }
 
     if ext != "rs" {
-        return super::universal::extract_universal_file(file_path, rel_path, &content);
+        return super::universal::extract_universal_file(file_path, rel_path, content);
     }
 
-    let syn_file = match syn::parse_file(&content) {
+    let syn_file = match syn::parse_file(content) {
         Ok(sf) => sf,
         Err(e) => {
-            let mut fallback = super::universal::extract_universal_file(file_path, rel_path, &content);
+            let mut fallback = super::universal::extract_universal_file(file_path, rel_path, content);
             fallback.parse_error = Some(format!("Syntax error: {}", e));
             return fallback;
         }
