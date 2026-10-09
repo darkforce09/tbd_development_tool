@@ -37,7 +37,7 @@ impl StudioApp {
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
-                                RichText::new("RTX 3070 • DDR5")
+                                RichText::new(&self.gpu_label)
                                     .font(FontId::new(10.0, FontFamily::Monospace))
                                     .color(Color32::from_rgb(52, 211, 153)),
                             );

@@ -15,4 +15,9 @@ egui-phosphor.workspace = true
 eframe.workspace = true
 egui-wgpu = { workspace = true }
 wgpu = { workspace = true }
+sysinfo = { workspace = true }
+pollster = { workspace = true }
+serde = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

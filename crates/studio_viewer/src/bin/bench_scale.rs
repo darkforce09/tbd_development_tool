@@ -7,19 +7,65 @@ use studio_parser::{
     build_project_graph, clear_project_cache, extract_project, load_project_cache,
     save_project_cache, scan_project, ProjectStats, SymbolSearchIndex, ViewGranularity,
 };
-use studio_viewer::telemetry::{TimelineTracker, RAM_BUDGET_BYTES, TARGET_165_FPS_US};
+use studio_viewer::telemetry::{TelemetryBudget, TimelineTracker};
+
+const USAGE: &str = "usage: bench_scale [PROJECT_DIR] [--ram-budget-gb GB] [--target-fps FPS]
+  PROJECT_DIR      project to load for the real-world benchmark (default: current directory)
+  --ram-budget-gb  RAM ceiling checked by the benchmark (default: half of system RAM)
+  --target-fps     frame rate the render simulation must sustain (default: 60)";
+
+struct BenchArgs {
+    project: PathBuf,
+    budget: TelemetryBudget,
+}
+
+fn parse_args() -> Result<BenchArgs, String> {
+    let mut budget = TelemetryBudget::for_this_machine();
+    let mut project = None;
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        let mut number = |flag: &str| -> Result<f64, String> {
+            let value = args.next().ok_or(format!("{flag} needs a value"))?;
+            value.parse::<f64>().ok().filter(|v| *v > 0.0).ok_or(format!("{flag}: '{value}' is not a positive number"))
+        };
+        match arg.as_str() {
+            "--ram-budget-gb" => budget.ram_bytes = (number("--ram-budget-gb")? * 1_073_741_824.0) as u64,
+            "--target-fps" => budget.target_fps = number("--target-fps")?,
+            "-h" | "--help" => return Err(String::new()),
+            flag if flag.starts_with('-') => return Err(format!("unknown option {flag}")),
+            path if project.is_none() => project = Some(PathBuf::from(path)),
+            extra => return Err(format!("unexpected argument {extra}")),
+        }
+    }
+    let project = match project {
+        Some(p) => p,
+        None => std::env::current_dir().map_err(|e| format!("no project given and cwd unavailable: {e}"))?,
+    };
+    Ok(BenchArgs { project, budget })
+}
 
 fn main() {
+    let args = match parse_args() {
+        Ok(a) => a,
+        Err(msg) => {
+            if !msg.is_empty() {
+                eprintln!("error: {msg}");
+            }
+            eprintln!("{USAGE}");
+            std::process::exit(if msg.is_empty() { 0 } else { 2 });
+        }
+    };
+
     println!("================================================================================");
-    println!("     STUDIO HIGH-SCALE 165 FPS PERFORMANCE & SCALE VERIFICATION SUITE           ");
+    println!("     STUDIO HIGH-SCALE PERFORMANCE & SCALE VERIFICATION SUITE                   ");
     println!("================================================================================\n");
 
-    let mut tracker = TimelineTracker::new();
-    println!("  Detected GPU: {} [{}] ({})", tracker.gpu.model, tracker.gpu.pci_slot, tracker.gpu.driver_version);
-    println!("  Hardware Constraints: RAM ≤ 12.00 GB | Locked 165 FPS (≤ 6.06 ms / 6060 µs per frame)\n");
+    let mut tracker = TimelineTracker::new(args.budget);
+    println!("  GPU:    {}", tracker.gpu_summary());
+    println!("  Budget: {}\n", tracker.budget.describe());
 
-    // Part 1: Real-world TBD-Reforger benchmark
-    benchmark_real_project(&mut tracker);
+    // Part 1: Real-world project benchmark
+    benchmark_real_project(&mut tracker, &args.project);
 
     // Part 2: rkyv Zero-Copy Caching Benchmark
     benchmark_rkyv_caching(&mut tracker);
@@ -37,11 +83,7 @@ fn main() {
     tracker.print_timeline_summary();
 }
 
-fn benchmark_real_project(tracker: &mut TimelineTracker) {
-    let target_path = std::env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/run/media/system/Disk_2/Projects/TBD-Reforger"));
+fn benchmark_real_project(tracker: &mut TimelineTracker, target_path: &std::path::Path) {
     if !target_path.exists() {
         println!("[-] Target path does not exist: {}", target_path.display());
         return;
@@ -51,7 +93,7 @@ fn benchmark_real_project(tracker: &mut TimelineTracker) {
 
     // 1. Scanning
     let t0 = Instant::now();
-    let scanned = scan_project(&target_path).expect("Failed to scan project");
+    let scanned = scan_project(target_path).expect("Failed to scan project");
     let scan_dur = t0.elapsed();
     let total_files: usize = scanned.crates.iter().map(|c| c.source_files.len()).sum();
     tracker.record_stage(
@@ -160,8 +202,8 @@ fn benchmark_real_project(tracker: &mut TimelineTracker) {
     }
     println!();
 
-    // 7. Viewport Render Simulation across Zoom Levels (Locked 165 FPS Verification)
-    println!("  Simulating Real-World Viewport Frames across Zoom Levels (Locked 165 FPS Budget):");
+    // 7. Viewport Render Simulation across Zoom Levels (frame budget verification)
+    println!("  Simulating Real-World Viewport Frames across Zoom Levels ({:.0} FPS budget):", tracker.budget.target_fps);
     let real_scenarios = [
         ("Real LOD 0 (High Zoom 200% 2.0x)", 2.0, 500),
         ("Real LOD 0 (Standard 100% 1.0x)", 1.0, 500),
@@ -326,7 +368,7 @@ fn benchmark_extreme_scale(tracker: &mut TimelineTracker) {
     println!("--------------------------------------------------------------------------------");
     println!(">>> BENCHMARK 3: 10X EXTREME SCALE SYNTHETIC STRESS TEST");
     println!("    Target: 212,640 Components, 106,700 Active Wires, 50,000x50,000px World");
-    println!("    Hardware: Max RAM ≤ 12.0 GB, NVIDIA RTX 3070, locked 165 FPS (< 6.06ms)");
+    println!("    Budget: {} on {}", tracker.budget.describe(), tracker.gpu_summary());
     println!("--------------------------------------------------------------------------------");
 
     let target_nodes = 212_640;
@@ -456,7 +498,7 @@ fn benchmark_ultra_scale_5m(tracker: &mut TimelineTracker) {
     println!("--------------------------------------------------------------------------------");
     println!(">>> BENCHMARK 4: ULTRA-SCALE 5,000,000 NODES VERIFICATION");
     println!("    Target: 100,000 Folders, 500,000 Files, 5,000,000 Nodes with Lines");
-    println!("    Hardware Budget: Max RAM ≤ 12.0 GB, Locked 165 FPS (≤ 6.06 ms / 6060 µs)");
+    println!("    Budget: {}", tracker.budget.describe());
     println!("--------------------------------------------------------------------------------");
 
     let num_folders = 100_000;
@@ -571,10 +613,16 @@ fn benchmark_ultra_scale_5m(tracker: &mut TimelineTracker) {
     // Verify RAM budget
     let last_event = tracker.events.last().unwrap();
     let current_ram_gb = last_event.rss_end_mb / 1024.0;
-    println!("  [✓] Verified RAM: {:.2} GB / {:.2} GB [Max Budget: 12.00 GB]", current_ram_gb, RAM_BUDGET_BYTES as f64 / 1_073_741_824.0);
-    assert!(current_ram_gb <= 12.0, "RAM exceeded 12.0 GB budget ceiling!");
+    let budget = tracker.budget;
+    println!("  [✓] Verified RAM: {:.2} GB / {:.2} GB budget", current_ram_gb, budget.ram_gb());
+    assert!(current_ram_gb <= budget.ram_gb(), "RAM exceeded the {:.2} GB budget", budget.ram_gb());
 
-    println!("\n  Simulating 5,000 UI Render Frames at 165 FPS budget (6.06 ms / 6060 µs max):");
+    println!(
+        "\n  Simulating 5,000 UI Render Frames at {:.0} FPS budget ({:.2} ms / {:.0} µs max):",
+        budget.target_fps,
+        budget.frame_budget_us() / 1000.0,
+        budget.frame_budget_us()
+    );
 
     let screen_w = 2560.0;
     let screen_h = 1440.0;
@@ -654,21 +702,21 @@ fn benchmark_ultra_scale_5m(tracker: &mut TimelineTracker) {
     println!("\n================================================================================");
     println!("     ULTRA-SCALE RESULTS (100,000 FOLDERS, 500,000 FILES, 5,000,000 NODES)     ");
     println!("================================================================================");
-    println!("  Budget Target:         6.06 ms (6,060 µs) for 165 FPS");
+    println!("  Budget Target:         {:.2} ms ({:.0} µs) for {:.0} FPS", budget.frame_budget_us() / 1000.0, budget.frame_budget_us(), budget.target_fps);
     println!("  Average Frame Time:    {:.2} µs ({:.3} ms)", overall_avg_us, overall_avg_us / 1000.0);
     println!("  Peak Max Frame Time:   {:.2} µs ({:.3} ms)", max_frame_us, max_frame_us / 1000.0);
-    println!("  Achieved Throughput:   {:.0} FPS (Locked 165 FPS headroom: {:.1}x)", overall_fps, TARGET_165_FPS_US / overall_avg_us);
-    println!("  Resident RAM:          {:.2} GB (Max Budget: 12.00 GB)", current_ram_gb);
+    println!("  Achieved Throughput:   {:.0} FPS ({:.1}x headroom vs {:.0} FPS)", overall_fps, budget.frame_budget_us() / overall_avg_us, budget.target_fps);
+    println!("  Resident RAM:          {:.2} GB (budget {:.2} GB)", current_ram_gb, budget.ram_gb());
     println!("================================================================================\n");
 
-    assert!(overall_avg_us < TARGET_165_FPS_US, "Ultra scale frame time exceeded 165 FPS budget!");
-    println!("[SUCCESS] Application satisfies locked 165 FPS on 5,000,000 nodes within 12 GB RAM!\n");
+    assert!(overall_avg_us < budget.frame_budget_us(), "Ultra scale frame time exceeded the {:.0} FPS budget", budget.target_fps);
+    println!("[SUCCESS] {:.0} FPS sustained on 5,000,000 nodes within {:.2} GB RAM\n", budget.target_fps, budget.ram_gb());
 }
 
 fn benchmark_gpu_wire_throughput(tracker: &mut TimelineTracker) {
     println!("--------------------------------------------------------------------------------");
     println!(">>> BENCHMARK 5: GPU WIRE BATCHING & VRAM EFFICIENCY VERIFICATION");
-    println!("    Target: Sub-millisecond staging, compact 64B descriptors, locked 165 FPS");
+    println!("    Target: Sub-millisecond staging, compact 64B descriptors, {:.0} FPS", tracker.budget.target_fps);
     println!("--------------------------------------------------------------------------------");
 
     let wire_counts = [1_000, 10_000, 100_000, 500_000];

@@ -9,6 +9,7 @@ use studio_parser::{
 };
 use studio_ui::apply_theme;
 
+use super::settings::{granularity_from_key, PersistedSettings};
 use super::types::{FlowDefinition, FlowVariant, StudioViewMode};
 use super::StudioApp;
 
@@ -28,7 +29,16 @@ impl StudioApp {
         category_filters.insert(NodeArchetype::State, true);
         category_filters.insert(NodeArchetype::Egress, true);
 
+        let saved: PersistedSettings = cc
+            .storage
+            .and_then(|storage| eframe::get_value(storage, eframe::APP_KEY))
+            .unwrap_or_default();
+
         let mut canvas_state = CanvasState::default();
+        let gpu_label = cc.wgpu_render_state.as_ref().map_or_else(
+            || "CPU wire rendering".to_string(),
+            |rs| crate::telemetry::GpuDeviceInfo::from_adapter_info(&rs.adapter.get_info()).name,
+        );
         if let Some(render_state) = &cc.wgpu_render_state {
             let pipeline = studio_canvas::GpuWirePipeline::new(
                 &render_state.device,
@@ -50,6 +60,7 @@ impl StudioApp {
             frame_counter: 0,
             last_frame_time: 0.0,
             fps: 60.0,
+            gpu_label,
             current_project_path: None,
             path_input: String::new(),
             granularity: ViewGranularity::FilesAndFolders,
@@ -86,7 +97,15 @@ impl StudioApp {
             active_variant_index: 0,
         };
 
-        if let Some(path) = initial_path {
+        if let Some(g) = saved.granularity.as_deref().and_then(granularity_from_key) {
+            app.granularity = g;
+        }
+        app.left_sidebar_open = saved.left_sidebar_open.unwrap_or(app.left_sidebar_open);
+        app.right_inspector_open = saved.right_inspector_open.unwrap_or(app.right_inspector_open);
+
+        // Explicit path, else the last project, else a Cargo project in the cwd, else the showcase.
+        let last_project = saved.last_project.filter(|p| p.is_dir());
+        if let Some(path) = initial_path.or(last_project) {
             app.load_project(&path);
         } else if let Ok(dir) = std::env::current_dir() {
             if dir.join("Cargo.toml").exists() {

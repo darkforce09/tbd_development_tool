@@ -5,6 +5,7 @@ use crate::extractor::ExtractedProject;
 
 use super::members::{attach_member_ports, build_member_nodes, file_ext, MemberPortIndex};
 use crate::extractor::{detect_language_by_path, SourceLang};
+use super::common::slash_path;
 use super::ProjectStats;
 
 /// Builds a compact, hierarchical File/Folder architecture graph.
@@ -64,7 +65,7 @@ pub fn build_files_graph(project: &ExtractedProject) -> (Graph, ProjectStats) {
             stats.function_count += file.functions.len() + file.impls.iter().map(|i| i.methods.len()).sum::<usize>();
             stats.type_count += file.structs.len() + file.enums.len() + file.traits.len();
 
-            let parent_dir = file.relative_path.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+            let parent_dir = file.relative_path.parent().map(slash_path).unwrap_or_default();
             dir_to_files.entry(parent_dir).or_default().push(file);
         }
 
@@ -201,7 +202,7 @@ pub fn build_files_graph(project: &ExtractedProject) -> (Graph, ProjectStats) {
                     file_to_out_port.insert(node_id, out_port.id);
                 }
 
-                file_to_node.insert(file.relative_path.to_string_lossy().to_string(), node_id);
+                file_to_node.insert(slash_path(&file.relative_path), node_id);
                 file_to_node.insert(file_name.to_string(), node_id);
                 if let Some(stem) = file.relative_path.file_stem().and_then(|s| s.to_str()) {
                     file_to_node.insert(stem.to_string(), node_id);
@@ -428,7 +429,7 @@ pub fn build_skeleton_files_graph(project: &crate::project::RustProject) -> (Gra
         for file_path in &krate.source_files {
             stats.file_count += 1;
             let rel_path = file_path.strip_prefix(&krate.root_path).unwrap_or(file_path);
-            let parent_dir = rel_path.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+            let parent_dir = rel_path.parent().map(slash_path).unwrap_or_default();
             dir_to_files.entry(parent_dir).or_default().push(file_path.as_path());
         }
 

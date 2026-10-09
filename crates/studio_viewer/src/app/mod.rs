@@ -2,6 +2,7 @@ pub mod editor;
 pub mod left_sidebar;
 pub mod modals;
 pub mod right_inspector;
+pub mod settings;
 pub mod state;
 pub mod top_nav;
 pub mod types;
@@ -25,6 +26,8 @@ pub struct StudioApp {
     pub frame_counter: u64,
     pub last_frame_time: f64,
     pub fps: f32,
+    /// Name of the GPU adapter rendering the canvas, or why there is none.
+    pub gpu_label: String,
 
     // Project state
     pub current_project_path: Option<PathBuf>,
@@ -130,7 +133,7 @@ impl App for StudioApp {
                             self.build_project_flows(&stats);
                             let cache_tag = if from_cache { " [rkyv user cache]" } else { "" };
                             self.canvas_state.status_message = Some(format!(
-                                "Loaded '{}'{}: {} nodes, {} wires across {} files (165 FPS ready)",
+                                "Loaded '{}'{}: {} nodes, {} wires across {} files",
                                 stats.project_name, cache_tag, stats.node_count, stats.wire_count, stats.file_count
                             ));
                             self.is_loading = false;
@@ -256,5 +259,15 @@ impl App for StudioApp {
 
         // 8. Unsaved editor changes prompt
         self.render_unsaved_changes_modal(ctx);
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        let settings = settings::PersistedSettings {
+            last_project: self.current_project_path.clone(),
+            granularity: Some(settings::granularity_key(self.granularity).to_string()),
+            left_sidebar_open: Some(self.left_sidebar_open),
+            right_inspector_open: Some(self.right_inspector_open),
+        };
+        eframe::set_value(storage, eframe::APP_KEY, &settings);
     }
 }
