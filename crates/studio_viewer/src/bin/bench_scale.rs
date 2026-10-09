@@ -13,18 +13,21 @@ const USAGE: &str = "usage: bench_scale [PROJECT_DIR] [--ram-budget-gb GB] [--ta
   PROJECT_DIR      project to load for the real-world benchmark (default: current directory)
   --ram-budget-gb  RAM ceiling checked by the benchmark (default: half of system RAM)
   --target-fps     frame rate the render simulation must sustain (default: 60)
-  --real-only      only benchmark the project, skip the synthetic suites";
+  --real-only      only benchmark the project, skip the synthetic suites
+  --layout-report  print the shape of the project's layout: size, aspect, widest and tallest folders";
 
 struct BenchArgs {
     project: PathBuf,
     budget: TelemetryBudget,
     real_only: bool,
+    layout_report: bool,
 }
 
 fn parse_args() -> Result<BenchArgs, String> {
     let mut budget = TelemetryBudget::for_this_machine();
     let mut project = None;
     let mut real_only = false;
+    let mut layout_report = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let mut number = |flag: &str| -> Result<f64, String> {
@@ -35,6 +38,7 @@ fn parse_args() -> Result<BenchArgs, String> {
             "--ram-budget-gb" => budget.ram_bytes = (number("--ram-budget-gb")? * 1_073_741_824.0) as u64,
             "--target-fps" => budget.target_fps = number("--target-fps")?,
             "--real-only" => real_only = true,
+            "--layout-report" => layout_report = true,
             "-h" | "--help" => return Err(String::new()),
             flag if flag.starts_with('-') => return Err(format!("unknown option {flag}")),
             path if project.is_none() => project = Some(PathBuf::from(path)),
@@ -45,7 +49,7 @@ fn parse_args() -> Result<BenchArgs, String> {
         Some(p) => p,
         None => std::env::current_dir().map_err(|e| format!("no project given and cwd unavailable: {e}"))?,
     };
-    Ok(BenchArgs { project, budget, real_only })
+    Ok(BenchArgs { project, budget, real_only, layout_report })
 }
 
 fn main() {
@@ -69,7 +73,7 @@ fn main() {
     println!("  Budget: {}\n", tracker.budget.describe());
 
     // Part 1: Real-world project benchmark
-    benchmark_real_project(&mut tracker, &args.project);
+    benchmark_real_project(&mut tracker, &args.project, args.layout_report);
     if args.real_only {
         tracker.print_timeline_summary();
         return;
@@ -88,7 +92,7 @@ fn main() {
     tracker.print_timeline_summary();
 }
 
-fn benchmark_real_project(tracker: &mut TimelineTracker, target_path: &std::path::Path) {
+fn benchmark_real_project(tracker: &mut TimelineTracker, target_path: &std::path::Path, layout_report: bool) {
     if !target_path.exists() {
         println!("[-] Target path does not exist: {}", target_path.display());
         return;
@@ -214,6 +218,10 @@ fn benchmark_real_project(tracker: &mut TimelineTracker, target_path: &std::path
         Some(stats.node_count),
         Some(stats.wire_count),
     );
+
+    if layout_report {
+        print_layout_report(&graph);
+    }
 
     // 5. Symbol Search Index (Trigram DDR5)
     let t4 = Instant::now();
@@ -351,6 +359,71 @@ fn benchmark_canvas_frames(tracker: &mut TimelineTracker, graph: &mut Graph) {
             Some(stats.visible_wires),
         );
     }
+    println!();
+}
+
+/// Prints the overall size and aspect of the layout, and the folders that make it that size.
+fn print_layout_report(graph: &Graph) {
+    let roots: Vec<&studio_graph::GroupCluster> = graph.clusters.iter().filter(|c| c.parent_id.is_none()).collect();
+    let (mut min, mut max) = ([f32::MAX; 2], [f32::MIN; 2]);
+    for c in &roots {
+        min = [min[0].min(c.position[0]), min[1].min(c.position[1])];
+        max = [max[0].max(c.position[0] + c.size[0]), max[1].max(c.position[1] + c.size[1])];
+    }
+    let (w, h) = (max[0] - min[0], max[1] - min[1]);
+    let stats = &graph.layout_stats;
+    println!("\n  LAYOUT REPORT");
+    println!(
+        "    world: {w:.0} x {h:.0} (aspect {:.1}:1), {} roots, {} containers",
+        w / h.max(1.0),
+        roots.len(),
+        stats.len()
+    );
+    let sum = |f: fn(&studio_graph::ContainerStats) -> f32| stats.iter().map(f).sum::<f32>();
+    println!(
+        "    totals: columns {:.0}, gaps {:.0}, gate bands {:.0}, documentation strips {:.0} high",
+        sum(|s| s.columns_width),
+        sum(|s| s.gaps_width),
+        sum(|s| s.in_band + s.out_band),
+        sum(|s| s.doc_strip)
+    );
+    let row = |s: &studio_graph::ContainerStats| {
+        let name: String = s.id.chars().rev().take(44).collect::<String>().chars().rev().collect();
+        println!(
+            "    {:<44} d{:<2} {:>8.0} x {:>7.0} ({:>5.1}:1) | {:>3} layers, {:>4} wired (max {:>3}/col, {:>4} lanes, col h {:>6.0}) | shelf {:>4} in {:>3} rows | cols {:>7.0} gaps {:>7.0} (max {:>3} tracks) | gates {:>4} in {:>4} out {:>4} doc, bands {:>5.0}+{:<5.0} strip {:>4.0}",
+            name,
+            s.depth,
+            s.size[0],
+            s.size[1],
+            s.size[0] / s.size[1].max(1.0),
+            s.layers,
+            s.column_items,
+            s.max_column_items,
+            s.max_column_lanes,
+            s.max_column_height,
+            s.shelf_items,
+            s.shelf_rows,
+            s.columns_width,
+            s.gaps_width,
+            s.max_gap_tracks,
+            s.in_gates,
+            s.out_gates,
+            s.doc_gates,
+            s.in_band,
+            s.out_band,
+            s.doc_strip
+        );
+    };
+    let mut sorted: Vec<&studio_graph::ContainerStats> = stats.iter().collect();
+    sorted.sort_by(|a, b| b.size[0].total_cmp(&a.size[0]));
+    println!("    widest:");
+    sorted.iter().take(15).for_each(|s| row(s));
+    sorted.sort_by(|a, b| b.size[1].total_cmp(&a.size[1]));
+    println!("    tallest:");
+    sorted.iter().take(10).for_each(|s| row(s));
+    sorted.sort_by_key(|s| std::cmp::Reverse(s.in_gates + s.out_gates));
+    println!("    most gates:");
+    sorted.iter().take(10).for_each(|s| row(s));
     println!();
 }
 

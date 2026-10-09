@@ -165,6 +165,39 @@ impl From {
     }
 }
 
+/// What the layout made of one container, for diagnosing its size and shape (bench_scale
+/// `--layout-report`). Not saved.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ContainerStats {
+    /// Folder cluster id or cycle box id.
+    pub id: String,
+    pub depth: usize,
+    pub size: [f32; 2],
+    /// Items in columns (wired) and on the shelf (unwired).
+    pub column_items: usize,
+    pub shelf_items: usize,
+    pub shelf_rows: usize,
+    pub layers: usize,
+    /// Most items (cards, subfolders, wire lanes excluded) in one column.
+    pub max_column_items: usize,
+    /// Most wire lanes in one column.
+    pub max_column_lanes: usize,
+    /// Height of the tallest column, including lanes.
+    pub max_column_height: f32,
+    /// Sum of column widths and of the gaps between them.
+    pub columns_width: f32,
+    pub gaps_width: f32,
+    /// Most vertical wire tracks in one gap between columns.
+    pub max_gap_tracks: usize,
+    pub in_gates: usize,
+    pub out_gates: usize,
+    pub doc_gates: usize,
+    /// Widths of the input and output gate bands.
+    pub in_band: f32,
+    pub out_band: f32,
+    pub doc_strip: f32,
+}
+
 /// A laid-out container, relative to its own top-left corner.
 #[derive(Debug, Clone, Default)]
 struct Placed {
@@ -178,6 +211,7 @@ struct Placed {
     doc_in: BTreeMap<NodeId, f32>,
     doc_out: BTreeMap<NodeId, f32>,
     doc_routes: BTreeMap<(From, To), Vec<[f32; 2]>>,
+    stats: ContainerStats,
 }
 
 impl Graph {
@@ -193,6 +227,16 @@ impl Graph {
         let (mut flow, origins) = tree.place(self, &placed);
         flow.routes = tree.compose_routes(&pairs, &placed, &origins, |p| &p.routes);
         flow.doc_routes = tree.compose_routes(&doc_pairs, &placed, &origins, |p| &p.doc_routes);
+        self.layout_stats = placed
+            .into_iter()
+            .enumerate()
+            .map(|(c, p)| ContainerStats {
+                id: tree.containers[c].key.clone(),
+                depth: tree.depth(c),
+                size: p.size,
+                ..p.stats
+            })
+            .collect();
         self.flow = Some(flow);
         self.rebuild_route_index();
         self.rebuild_collapsed_cache();
@@ -484,7 +528,7 @@ impl Tree {
                 }
             }
         };
-        let mut lay = ColumnLayout::new(&container.items, links, &size_of, &port_y);
+        let mut lay = ColumnLayout::new(&container.items, links, &size_of, &port_y, is_cycle);
         lay.order();
         lay.coordinates();
 
@@ -550,6 +594,14 @@ impl Tree {
         let width = right.max(content_left + lay.content_width + lay.out_band) + pad_x;
         p.size = [width.max(min[0]), (bottom + pad_bottom).max(min[1])];
         p.routes = lay.routes([content_left, pad_top], p.size[0], back_top);
+        p.stats = lay.stats();
+        p.stats.shelf_items = lay.isolated.len();
+        p.stats.shelf_rows = rows.len();
+        p.stats.in_gates = p.in_gates.len();
+        p.stats.out_gates = p.out_gates.len();
+        p.stats.doc_gates =
+            doc_links.iter().filter(|(f, t)| matches!(f, From::Gate(_)) || matches!(t, To::Gate(_))).count();
+        p.stats.doc_strip = strip;
 
         // Documentation: gates on the provider's strip track, routes through the free channels.
         let tracks = docs::strip_tracks(&doc_providers, strip_top, strip);
@@ -777,6 +829,7 @@ impl ColumnLayout {
         links: &BTreeSet<(From, To)>,
         size_of: &dyn Fn(Item) -> [f32; 2],
         port_y: &dyn Fn(Item, NodeId, bool) -> f32,
+        is_cycle: bool,
     ) -> Self {
         let pos: HashMap<Item, usize> = items.iter().enumerate().map(|(i, &it)| (it, i)).collect();
         let n = items.len();
@@ -839,6 +892,22 @@ impl ColumnLayout {
                 layer[u] = m.saturating_sub(1).max(layer[u]);
             }
         }
+
+        // Shape the columns towards TARGET_ASPECT. Inside a cycle box the order cannot hold
+        // anyway, so the items are packed into columns in their acyclic order; elsewhere a column
+        // much taller than the rest is split into side-by-side columns (L1 still holds: items in
+        // one layer never wire to each other).
+        let sizes: Vec<[f32; 2]> = items.iter().map(|&it| size_of(it)).collect();
+        let layer = if is_cycle {
+            let seq: Vec<usize> = order.iter().copied().filter(|&i| connected[i]).collect();
+            let mut packed = vec![0usize; n];
+            for (&i, column) in seq.iter().zip(pack_columns(&seq, &sizes)) {
+                packed[i] = column;
+            }
+            packed
+        } else {
+            wrap_tall_layers(&layer, &connected, &sizes)
+        };
 
         let mut lay = ColumnLayout {
             nodes: Vec::new(),
@@ -1217,6 +1286,33 @@ impl ColumnLayout {
 }
 
 impl ColumnLayout {
+    /// Shape of the columns, for the layout report.
+    fn stats(&self) -> ContainerStats {
+        let layers = self.layers.len();
+        let count = |l: &Vec<usize>, items: bool| l.iter().filter(|&&n| self.nodes[n].item.is_some() == items).count();
+        let height = |l: &Vec<usize>| l.iter().map(|&n| self.nodes[n].h + gap_after(&self.nodes[n])).sum::<f32>();
+        ContainerStats {
+            column_items: self.nodes.iter().filter(|n| n.item.is_some()).count(),
+            layers,
+            max_column_items: self.layers.iter().map(|l| count(l, true)).max().unwrap_or(0),
+            max_column_lanes: self.layers.iter().map(|l| count(l, false)).max().unwrap_or(0),
+            max_column_height: self.layers.iter().map(height).fold(0.0, f32::max),
+            columns_width: self.col_w.iter().sum(),
+            gaps_width: self.content_width - self.col_w.iter().sum::<f32>(),
+            max_gap_tracks: self
+                .tracks
+                .iter()
+                .skip(1)
+                .take(layers.saturating_sub(1))
+                .map(|t| t.len())
+                .max()
+                .unwrap_or(0),
+            in_band: self.in_band,
+            out_band: self.out_band,
+            ..Default::default()
+        }
+    }
+
     /// Points of every wire in the container, relative to its top-left corner. `origin` is where
     /// column 0 and y = 0 of the content sit; `back_top` is the top of the rows for backward wires.
     fn routes(&self, origin: [f32; 2], width: f32, back_top: f32) -> BTreeMap<(From, To), Vec<[f32; 2]>> {
@@ -1280,6 +1376,85 @@ impl ColumnLayout {
         }
         out
     }
+}
+
+/// Width over height the layout aims for when it has a choice: inside cycle boxes and when
+/// splitting very tall columns.
+const TARGET_ASPECT: f32 = 1.6;
+/// A column is split when it is this many times taller than the container's target height.
+const TALL_COLUMN: f32 = 1.5;
+
+/// Height a column of these items takes when stacked.
+fn stack_height(items: impl Iterator<Item = [f32; 2]>) -> f32 {
+    items.map(|s| s[1] + ITEM_GAP).sum()
+}
+
+/// Column of each item of `seq` (in that order) when the sequence is cut into consecutive
+/// columns, choosing the number of columns that brings the block closest to TARGET_ASPECT.
+fn pack_columns(seq: &[usize], sizes: &[[f32; 2]]) -> Vec<usize> {
+    let total = stack_height(seq.iter().map(|&i| sizes[i]));
+    let mut best: Option<(f32, Vec<usize>)> = None;
+    for k in 1..=seq.len().max(1) {
+        let limit = total / k as f32;
+        let (mut columns, mut column, mut height) = (Vec::with_capacity(seq.len()), 0, 0.0f32);
+        let (mut widths, mut tallest) = (vec![0.0f32], 0.0f32);
+        for &i in seq {
+            let h = sizes[i][1] + ITEM_GAP;
+            if height > 0.0 && height + h > limit + 0.5 {
+                column += 1;
+                height = 0.0;
+                widths.push(0.0);
+            }
+            height += h;
+            tallest = tallest.max(height);
+            widths[column] = widths[column].max(sizes[i][0]);
+            columns.push(column);
+        }
+        let width = widths.iter().sum::<f32>() + GAP_BASE * column as f32;
+        let score = (width / tallest.max(1.0) / TARGET_ASPECT).ln().abs();
+        if best.as_ref().is_none_or(|(b, _)| score < *b - 1e-4) {
+            best = Some((score, columns));
+        }
+        if column + 1 < k {
+            // More columns were asked for than the items fill: later k change nothing.
+            break;
+        }
+    }
+    best.map_or_else(Vec::new, |(_, c)| c)
+}
+
+/// Splits layers whose stack is far taller than the container's target height into consecutive
+/// side-by-side layers, shifting later layers right. Items keep their order within a layer.
+fn wrap_tall_layers(layer: &[usize], connected: &[bool], sizes: &[[f32; 2]]) -> Vec<usize> {
+    let layers = layer.iter().zip(connected).filter(|(_, &c)| c).map(|(&l, _)| l + 1).max().unwrap_or(0);
+    let mut members: Vec<Vec<usize>> = vec![Vec::new(); layers];
+    for (i, &l) in layer.iter().enumerate() {
+        if connected[i] {
+            members[l].push(i);
+        }
+    }
+    let area: f32 = members.iter().flatten().map(|&i| (sizes[i][0] + GAP_BASE) * (sizes[i][1] + ITEM_GAP)).sum();
+    let tallest_item = members.iter().flatten().map(|&i| sizes[i][1] + ITEM_GAP).fold(0.0, f32::max);
+    let target = (area / TARGET_ASPECT).sqrt().max(tallest_item);
+    let mut out = layer.to_vec();
+    let mut shift = 0;
+    for column in &members {
+        let height = stack_height(column.iter().map(|&i| sizes[i]));
+        let parts = if height > target * TALL_COLUMN { (height / target).ceil() as usize } else { 1 };
+        let limit = height / parts as f32;
+        let (mut part, mut h) = (0, 0.0f32);
+        for &i in column {
+            let ih = sizes[i][1] + ITEM_GAP;
+            if h > 0.0 && h + ih > limit + 0.5 && part + 1 < parts {
+                part += 1;
+                h = 0.0;
+            }
+            h += ih;
+            out[i] = layer[i] + shift + part;
+        }
+        shift += part;
+    }
+    out
 }
 
 /// Drops points that lie on a straight line between their neighbours (a wire passing straight

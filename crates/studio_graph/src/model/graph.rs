@@ -58,6 +58,10 @@ pub struct Graph {
     #[serde(skip)]
     #[rkyv(with = rkyv::with::Skip)]
     pub doc_route_index: HashMap<(NodeId, NodeId), usize>,
+    /// Shape of every container from the last dataflow layout, for the layout report.
+    #[serde(skip)]
+    #[rkyv(with = rkyv::with::Skip)]
+    pub layout_stats: Vec<crate::layout::ContainerStats>,
 }
 
 impl Graph {
@@ -80,6 +84,7 @@ impl Graph {
             hidden_cluster_ids: HashSet::new(),
             route_index: HashMap::new(),
             doc_route_index: HashMap::new(),
+            layout_stats: Vec::new(),
         }
     }
 

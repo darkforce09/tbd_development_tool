@@ -39,7 +39,7 @@ Cards (files) and folders follow the same rules.
 - **One output gate per distinct inside item feeding out.** If one inside file feeds three files outside, that is one gate that fans out outside.
 - **Documentation has its own gates.** They sit on the same edges (inputs left, outputs right) but at the top of the folder, in its documentation strip, one per documentation file whose links cross that edge. They are sky blue like documentation wires.
 
-**L4. Loops are boxed.** When files depend on each other in a loop (A uses B, B uses A), "provider left of consumer" cannot hold. The files in a loop are grouped into a marked **cycle box** that is placed as one unit. Everything outside the box stays strictly left to right. Inside a box, wires that run backwards are routed around the cards, never through them.
+**L4. Loops are boxed.** When files depend on each other in a loop (A uses B, B uses A), "provider left of consumer" cannot hold. The files in a loop are grouped into a marked **cycle box** that is placed as one unit. Everything outside the box stays strictly left to right. Inside a box, wires that run backwards are routed around the cards, never through them. Since order cannot hold inside a box anyway, its contents are packed into a compact block of columns (in loop order, aiming at a 16:10 shape) instead of one long row.
 
 **L5. Folders have three detail levels.**
 
@@ -80,6 +80,6 @@ All wires are solid lines for now. Line styles and colour-blind variants come la
 
 - Wire-on-wire crossings are minimised by heuristics, not guaranteed to be zero.
 - In Rust, `mod.rs` files and their submodules often form loops, so much of a crate can end up in one cycle box.
-- A folder with hundreds of files in the same column becomes tall. Wrapping columns is planned.
+- A column far taller than its folder's 16:10 target is split into side-by-side columns. Files in one column never wire to each other, so L1 still holds.
 - A busy folder can have hundreds of gates. Minimised view (level 1) is the way to fold them.
 - The layout is only as correct as the wires. Until wires are compiler-verified (roadmap Phase 3), the layout correctly follows wires that may themselves be wrong.

@@ -595,3 +595,70 @@ fn the_route_checks_catch_violations() {
     flow.gates.retain(|x| x.kind == GateKind::Code);
     assert!(flow.gates.len() < before && fails(g), "a documentation crossing without a documentation gate is caught");
 }
+
+/// One folder holding `cards` cards, laid out after `connect` adds wires.
+fn one_folder(cards: usize, connect: impl Fn(&mut Graph, &[NodeId])) -> (Graph, Vec<NodeId>) {
+    let mut g = Graph::new();
+    g.tree_layout = true;
+    g.flow_layout = true;
+    let mut root = GroupCluster::new("root", "root", "Folder", 0);
+    let ids: Vec<NodeId> = (0..cards).map(|i| card(&mut g, &format!("{i:03}.rs"), "root")).collect();
+    root.node_ids = ids.clone();
+    g.clusters = vec![root];
+    connect(&mut g, &ids);
+    g.rebuild_fast_indices();
+    g.layout_folder_tree();
+    (g, ids)
+}
+
+fn aspect(r: Rect) -> f32 {
+    (r[2] - r[0]) / (r[3] - r[1])
+}
+
+#[test]
+fn a_long_loop_is_packed_into_a_block_not_a_row() {
+    let (g, ids) = one_folder(24, |g, ids| {
+        for i in 0..ids.len() {
+            wire(g, ids[i], ids[(i + 1) % ids.len()], EdgeKind::Import);
+        }
+    });
+    let boxes = cycle_rects(&g);
+    assert_eq!(boxes.len(), 1);
+    let columns: BTreeSet<i32> = ids.iter().map(|id| g.nodes[id].position[0] as i32).collect();
+    assert!(columns.len() > 1 && columns.len() < ids.len(), "{} columns for {} cards", columns.len(), ids.len());
+    let a = aspect(boxes[0]);
+    assert!((0.5..=4.0).contains(&a), "loop box aspect {a}");
+    assert_nested_without_overlap(&g);
+    assert_routes_obey_the_laws(&g);
+}
+
+#[test]
+fn a_very_tall_column_is_split_and_still_flows_left_to_right() {
+    // Forty files all feed one: they share a layer, which used to make one column 40 cards tall.
+    let (g, ids) = one_folder(41, |g, ids| {
+        for &p in &ids[1..] {
+            wire(g, p, ids[0], EdgeKind::Import);
+        }
+    });
+    let providers: BTreeSet<i32> = ids[1..].iter().map(|id| g.nodes[id].position[0] as i32).collect();
+    assert!(providers.len() > 1, "the layer is split into several columns");
+    let root = cluster_rect(&g.clusters[0]);
+    assert!(aspect(root) > 0.4, "folder aspect {}", aspect(root));
+    assert_providers_left(&g);
+    assert_nested_without_overlap(&g);
+    assert_routes_obey_the_laws(&g);
+}
+
+#[test]
+fn packing_picks_the_column_count_closest_to_the_target_aspect() {
+    let sizes = vec![[220.0, 42.0]; 30];
+    let seq: Vec<usize> = (0..30).collect();
+    let columns = pack_columns(&seq, &sizes);
+    assert_eq!(columns.len(), 30);
+    assert!(columns.windows(2).all(|w| w[1] == w[0] || w[1] == w[0] + 1), "consecutive, in order");
+    let n = columns.last().unwrap() + 1;
+    let rows = 30_usize.div_ceil(n);
+    let (w, h) = (n as f32 * 220.0 + (n - 1) as f32 * GAP_BASE, rows as f32 * (42.0 + ITEM_GAP));
+    assert!((w / h / TARGET_ASPECT).ln().abs() < 0.6, "{n} columns: {w} x {h}");
+    assert!(pack_columns(&[], &sizes).is_empty());
+}
