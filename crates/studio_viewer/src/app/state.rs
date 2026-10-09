@@ -5,7 +5,7 @@ use studio_graph::{
     create_showcase_files_graph, create_showcase_graph, EdgeId, Graph, NodeArchetype,
 };
 use studio_parser::{
-    save_and_reparse, spawn_load_project_opt, ProjectStats, SymbolSearchIndex, ViewGranularity,
+    spawn_load_project_opt, ProjectStats, SymbolSearchIndex, ViewGranularity,
 };
 use studio_ui::apply_theme;
 
@@ -74,6 +74,9 @@ impl StudioApp {
             code_editor_member_id: None,
             code_editor_dirty: false,
             code_editor_status: None,
+            code_editor_path: None,
+            code_editor_origin: None,
+            pending_editor_switch: None,
             markdown_preview_mode: true,
             markdown_inspector_tab: 0,
             spotlight_open: false,
@@ -277,44 +280,5 @@ impl StudioApp {
             .map(|(&arch, _)| arch)
             .collect();
         self.canvas_state.category_filter = active;
-    }
-
-    /// Handles live disk saving and hot re-parsing of edited source code (Code Canvas).
-    pub fn save_current_editor_code(&mut self) {
-        if self.code_editor_member_id.is_some() {
-            self.code_editor_status = Some("ℹ Member snippets are read-only. Switch to full file to save edits.".to_string());
-            return;
-        }
-
-        if let Some(node_id) = self.code_editor_node_id {
-            if let Some(node) = self.graph.nodes.get(&node_id) {
-                if let Some(file_path_str) = &node.file_path {
-                    let path = PathBuf::from(file_path_str);
-                    if path.exists() {
-                        match save_and_reparse(&path, &self.code_editor_buffer, &mut self.graph) {
-                            Ok(count) => {
-                                self.code_editor_dirty = false;
-                                self.code_editor_status = Some(format!("✔ Saved to disk! ({} node updated)", count));
-                                self.canvas_state.status_message = Some(format!("Hot reloaded {}", path.display()));
-                            }
-                            Err(e) => {
-                                self.code_editor_status = Some(format!("⚠ Save Error: {}", e));
-                            }
-                        }
-                    } else {
-                        // In-memory update for mock/showcase graphs
-                        if let Some(n) = self.graph.nodes.get_mut(&node_id) {
-                            n.source_code = Some(self.code_editor_buffer.clone());
-                            self.code_editor_dirty = false;
-                            self.code_editor_status = Some("✔ Updated in-memory model".to_string());
-                        }
-                    }
-                } else if let Some(n) = self.graph.nodes.get_mut(&node_id) {
-                    n.source_code = Some(self.code_editor_buffer.clone());
-                    self.code_editor_dirty = false;
-                    self.code_editor_status = Some("✔ Updated in-memory model".to_string());
-                }
-            }
-        }
     }
 }

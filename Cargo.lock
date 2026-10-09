@@ -2940,6 +2940,7 @@ dependencies = [
  "serde",
  "studio_graph",
  "syn 2.0.119",
+ "tempfile",
  "toml",
  "walkdir",
 ]

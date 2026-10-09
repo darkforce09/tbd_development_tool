@@ -33,30 +33,6 @@ impl StudioApp {
                             let lang = studio_ui::detect_language(node.file_path.as_deref(), node.badge.as_deref());
                             let is_markdown = lang == "md" || lang == "markdown" || node.badge.as_deref() == Some("MD");
 
-                            // Sync editor buffer if selection changed
-                            if self.code_editor_node_id != Some(node_id) {
-                                self.code_editor_node_id = Some(node_id);
-                                self.code_editor_member_id = None;
-                                if is_markdown {
-                                    self.markdown_preview_mode = true;
-                                    self.markdown_inspector_tab = 0;
-                                }
-                                self.code_editor_buffer = node.source_code.clone().unwrap_or_default();
-                                // Lazily read file from disk on-demand if source_code is not preloaded in memory
-                                if self.code_editor_buffer.is_empty() {
-                                    if let Some(ref path) = node.file_path {
-                                        if let Ok(content) = std::fs::read_to_string(path) {
-                                            self.code_editor_buffer = content;
-                                        }
-                                    }
-                                }
-                                if self.code_editor_buffer.is_empty() {
-                                    self.code_editor_buffer = node.description.clone();
-                                }
-                                self.code_editor_dirty = false;
-                                self.code_editor_status = None;
-                            }
-
                             // Header: Title + Archetype + Crate
                             ui.horizontal(|ui| {
                                 ui.label(RichText::new(&node.title).font(FontId::new(15.0, FontFamily::Proportional)).strong().color(TEXT_HIGHLIGHT));
@@ -305,11 +281,7 @@ impl StudioApp {
                                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                                         let btn_label = if is_active { "Active" } else { "Inspect" };
                                                         if ui.small_button(btn_label).clicked() {
-                                                            self.code_editor_node_id = Some(node.id);
-                                                            self.code_editor_member_id = Some(member.id.clone());
-                                                            self.code_editor_buffer = member.source_code.clone();
-                                                            self.code_editor_dirty = false;
-                                                            self.code_editor_status = Some(format!("Inspecting member {}", member.name));
+                                                            self.request_open_member(node.id, member.id.clone());
                                                         }
                                                     });
                                                 });
@@ -409,11 +381,14 @@ impl StudioApp {
                                     }
                                 });
 
-                                if let Some(mem_id) = &self.code_editor_member_id {
+                                let item_snippet = node.archetype != studio_graph::NodeArchetype::File
+                                    && matches!(self.code_editor_origin, Some(studio_parser::EditOrigin::Snippet { .. }));
+                                let snippet_label = self.code_editor_member_id.clone().or_else(|| item_snippet.then(|| node.title.clone()));
+                                if let Some(snippet_label) = snippet_label {
                                     let mut clear_inspect = false;
                                     ui.horizontal(|ui| {
                                         ui.label(
-                                            RichText::new(format!("Viewing snippet: {}", mem_id))
+                                            RichText::new(format!("Viewing snippet: {}", snippet_label))
                                                 .font(FontId::new(10.0, FontFamily::Monospace))
                                                 .color(Color32::from_rgb(56, 189, 248)),
                                         );
@@ -423,20 +398,7 @@ impl StudioApp {
                                         }
                                     });
                                     if clear_inspect {
-                                        self.code_editor_member_id = None;
-                                        self.code_editor_buffer = node.source_code.clone().unwrap_or_default();
-                                        if self.code_editor_buffer.is_empty() {
-                                            if let Some(ref path) = node.file_path {
-                                                if let Ok(content) = std::fs::read_to_string(path) {
-                                                    self.code_editor_buffer = content;
-                                                }
-                                            }
-                                        }
-                                        if self.code_editor_buffer.is_empty() {
-                                            self.code_editor_buffer = node.description.clone();
-                                        }
-                                        self.code_editor_dirty = false;
-                                        self.code_editor_status = Some("Loaded full file".to_string());
+                                        self.load_full_file_in_editor();
                                     }
                                 }
 

@@ -4,6 +4,7 @@ pub mod builder;
 pub mod sync;
 pub mod search_index;
 pub mod cache;
+pub mod edit;
 
 pub use project::{CrateInfo, ProjectError, RustProject, scan_project};
 pub use extractor::{
@@ -15,6 +16,7 @@ pub use builder::{
     build_skeleton_files_graph, ProjectStats, ViewGranularity,
 };
 pub use sync::save_and_reparse;
+pub use edit::{apply_edit, atomic_write, content_hash, EditError, EditOrigin};
 pub use search_index::{SearchItem, SymbolSearchIndex};
 pub use cache::{
     clear_project_cache, load_project_cache, save_project_cache, user_cache_dir_for_project,
@@ -277,6 +279,30 @@ mod tests {
         assert_eq!(disk_content, updated_code, "Disk file must match saved content");
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_item_node_save_keeps_other_items() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n").unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        let lib = dir.path().join("src/lib.rs");
+        let original = "pub fn alpha() -> i32 {\n    1\n}\n\npub fn beta() -> i32 {\n    2\n}\n";
+        std::fs::write(&lib, original).unwrap();
+
+        let (mut graph, _) = load_rust_project(dir.path(), ViewGranularity::AllItems).unwrap();
+        let beta = graph.nodes.values().find(|n| n.title == "fn beta").expect("item node for beta");
+        let snippet = beta.source_code.clone().unwrap();
+        assert!(!snippet.contains("alpha"), "item node holds only its own snippet");
+
+        let origin = EditOrigin::Snippet { original: snippet };
+        let disk = std::fs::read_to_string(&lib).unwrap();
+        let new_content = apply_edit(&disk, &origin, "pub fn beta() -> i32 {\n    20\n}").unwrap();
+        save_and_reparse(&lib, &new_content, &mut graph).unwrap();
+
+        let saved = std::fs::read_to_string(&lib).unwrap();
+        assert!(saved.contains("pub fn alpha() -> i32 {\n    1\n}"), "other items must survive: {saved}");
+        assert!(saved.contains("    20\n"));
     }
 
     #[test]

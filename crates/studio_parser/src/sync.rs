@@ -7,7 +7,7 @@ use studio_graph::{FileMemberNode, Graph, NodeArchetype};
 /// Supports Rust, Markdown, Enforce Script, and universal polyglot code files.
 pub fn save_and_reparse(path: &Path, new_content: &str, graph: &mut Graph) -> Result<usize, String> {
     // 1. Write updated content to disk
-    std::fs::write(path, new_content)
+    crate::edit::atomic_write(path, new_content.as_bytes())
         .map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
 
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();

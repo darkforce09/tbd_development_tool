@@ -1,3 +1,4 @@
+pub mod editor;
 pub mod left_sidebar;
 pub mod modals;
 pub mod right_inspector;
@@ -60,6 +61,11 @@ pub struct StudioApp {
     pub code_editor_member_id: Option<String>,
     pub code_editor_dirty: bool,
     pub code_editor_status: Option<String>,
+    /// File the buffer is saved to; `None` for in-memory (mock) nodes.
+    pub code_editor_path: Option<PathBuf>,
+    /// Which part of `code_editor_path` the buffer holds.
+    pub code_editor_origin: Option<studio_parser::EditOrigin>,
+    pub pending_editor_switch: Option<editor::PendingEditorSwitch>,
     pub markdown_preview_mode: bool,
     pub markdown_inspector_tab: usize,
 
@@ -191,14 +197,8 @@ impl App for StudioApp {
                         if node.is_code_expanded {
                             node.expanded_tab = 2;
                         }
-                        if let Some(member) = node.member_nodes.iter().find(|m| m.id == member_id) {
-                            self.code_editor_node_id = Some(node_id);
-                            self.code_editor_member_id = Some(member_id);
-                            self.code_editor_buffer = member.source_code.clone();
-                            self.code_editor_dirty = false;
-                            self.code_editor_status = Some(format!("Inspecting member {}", member.name));
-                        }
                     }
+                    self.request_open_member(node_id, member_id);
                 }
                 CanvasAction::CenterNode(id) => {
                     if let Some(n) = self.graph.nodes.get(&id) {
@@ -231,6 +231,7 @@ impl App for StudioApp {
         self.render_left_sidebar(ctx);
 
         // 4. Right Inspector
+        self.sync_editor_with_selection();
         self.render_right_inspector(ctx);
 
         // 5. Central Infinite Canvas Viewport
@@ -251,5 +252,8 @@ impl App for StudioApp {
 
         // 7. Enso Spotlight / Command Palette Modal
         self.render_spotlight_modal(ctx);
+
+        // 8. Unsaved editor changes prompt
+        self.render_unsaved_changes_modal(ctx);
     }
 }
