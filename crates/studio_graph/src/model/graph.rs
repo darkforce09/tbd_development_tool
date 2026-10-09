@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use super::cluster::GroupCluster;
 use super::edge::Edge;
 use super::node::Node;
-use super::types::{DataType, EdgeId, NodeArchetype, NodeId, Port, PortDirection, PortId};
+use super::types::{DataType, EdgeId, FileContent, NodeArchetype, NodeId, Port, PortDirection, PortId};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize)]
 #[rkyv(derive(Debug))]
@@ -14,6 +14,9 @@ pub struct Graph {
     pub edges: Vec<Edge>,
     pub clusters: Vec<GroupCluster>,
     next_id: u64,
+    /// Clusters form a folder tree laid out by [`Graph::layout_folder_tree`] (Files view).
+    #[serde(default)]
+    pub tree_layout: bool,
 
     // Fast O(1) indices (ignored by serialization, rebuilt on load)
     #[serde(skip)]
@@ -37,6 +40,10 @@ pub struct Graph {
     #[serde(skip)]
     #[rkyv(with = rkyv::with::Skip)]
     pub collapsed_node_ids: HashSet<NodeId>,
+    /// Clusters inside a collapsed ancestor (not drawn).
+    #[serde(skip)]
+    #[rkyv(with = rkyv::with::Skip)]
+    pub hidden_cluster_ids: HashSet<String>,
 }
 
 impl Graph {
@@ -46,6 +53,7 @@ impl Graph {
             edges: Vec::new(),
             clusters: Vec::new(),
             next_id: 1,
+            tree_layout: false,
             port_edges: HashMap::new(),
             edge_indices: HashMap::new(),
             node_degrees: HashMap::new(),
@@ -53,6 +61,7 @@ impl Graph {
             archetype_counts: [0; 10],
             collapsed_clusters_count: 0,
             collapsed_node_ids: HashSet::new(),
+            hidden_cluster_ids: HashSet::new(),
         }
     }
 
@@ -204,6 +213,8 @@ impl Graph {
             show_member_wires: false,
             expanded_member_id: None,
             member_nodes: Vec::new(),
+            content: FileContent::Code,
+            size_bytes: None,
         };
 
         let arch_idx = archetype.index();

@@ -32,7 +32,7 @@ pub fn render_background_and_wires(
     sorted_clusters.sort_by_key(|c| c.depth);
 
     for cluster in sorted_clusters {
-        if cluster.size[0] <= 1.0 || cluster.size[1] <= 1.0 {
+        if cluster.size[0] <= 1.0 || cluster.size[1] <= 1.0 || graph.hidden_cluster_ids.contains(&cluster.id) {
             continue;
         }
         let min_world = Pos2::new(cluster.position[0], cluster.position[1]);

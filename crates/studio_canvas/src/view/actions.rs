@@ -19,8 +19,14 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
             None
         };
         if let Some(bounds) = new_bounds {
-            state.spatial_grid.update(node_id, bounds);
-            graph.update_cluster_bounds();
+            if graph.tree_layout {
+                // A taller card shifts its row and every folder below it.
+                graph.layout_folder_tree();
+                state.spatial_grid_dirty = true;
+            } else {
+                state.spatial_grid.update(node_id, bounds);
+                graph.update_cluster_bounds();
+            }
         }
     }
 
@@ -40,8 +46,14 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
             None
         };
         if let Some(bounds) = new_bounds {
-            state.spatial_grid.update(node_id, bounds);
-            graph.update_cluster_bounds();
+            if graph.tree_layout {
+                // A taller card shifts its row and every folder below it.
+                graph.layout_folder_tree();
+                state.spatial_grid_dirty = true;
+            } else {
+                state.spatial_grid.update(node_id, bounds);
+                graph.update_cluster_bounds();
+            }
         }
     }
 
@@ -135,8 +147,14 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
             None
         };
         if let Some(bounds) = new_bounds {
-            state.spatial_grid.update(node_id, bounds);
-            graph.update_cluster_bounds();
+            if graph.tree_layout {
+                // A taller card shifts its row and every folder below it.
+                graph.layout_folder_tree();
+                state.spatial_grid_dirty = true;
+            } else {
+                state.spatial_grid.update(node_id, bounds);
+                graph.update_cluster_bounds();
+            }
         }
     }
 
@@ -188,8 +206,13 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
                     None
                 };
                 if let Some(bounds) = new_bounds {
-                    graph.update_cluster_bounds();
-                    state.spatial_grid.update(id, bounds);
+                    if graph.tree_layout {
+                        graph.layout_folder_tree();
+                        state.spatial_grid_dirty = true;
+                    } else {
+                        graph.update_cluster_bounds();
+                        state.spatial_grid.update(id, bounds);
+                    }
                 }
                 state.action_request = None;
             }
@@ -215,8 +238,13 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
                     None
                 };
                 if let Some(bounds) = new_bounds {
-                    graph.update_cluster_bounds();
-                    state.spatial_grid.update(id, bounds);
+                    if graph.tree_layout {
+                        graph.layout_folder_tree();
+                        state.spatial_grid_dirty = true;
+                    } else {
+                        graph.update_cluster_bounds();
+                        state.spatial_grid.update(id, bounds);
+                    }
                 }
                 state.action_request = None;
             }
@@ -236,8 +264,13 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
                     None
                 };
                 if let Some(bounds) = new_bounds {
-                    graph.update_cluster_bounds();
-                    state.spatial_grid.update(id, bounds);
+                    if graph.tree_layout {
+                        graph.layout_folder_tree();
+                        state.spatial_grid_dirty = true;
+                    } else {
+                        graph.update_cluster_bounds();
+                        state.spatial_grid.update(id, bounds);
+                    }
                 }
                 state.action_request = None;
             }

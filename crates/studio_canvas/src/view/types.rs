@@ -166,7 +166,7 @@ impl CanvasState {
 
         if !graph.clusters.is_empty() {
             for cluster in &graph.clusters {
-                if cluster.size[0] > 1.0 && cluster.size[1] > 1.0 {
+                if cluster.size[0] > 1.0 && cluster.size[1] > 1.0 && !graph.hidden_cluster_ids.contains(&cluster.id) {
                     min_x = min_x.min(cluster.position[0]);
                     min_y = min_y.min(cluster.position[1]);
                     max_x = max_x.max(cluster.position[0] + cluster.size[0]);

@@ -18,6 +18,22 @@ pub struct GroupCluster {
     pub node_ids: Vec<NodeId>,
     pub is_collapsed: bool,
     pub depth: usize,
+    /// Folder whose contents are not loaded yet (shown collapsed with totals).
+    #[serde(default)]
+    pub lazy: Option<LazyFolder>,
+}
+
+/// A folder listed with totals but not materialized (version control, gitignored, build caches,
+/// dependencies). Expanding it loads its contents.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize)]
+#[rkyv(derive(Debug))]
+pub struct LazyFolder {
+    pub abs_path: String,
+    pub file_count: u64,
+    pub dir_count: u64,
+    pub total_bytes: u64,
+    /// Why it starts collapsed, e.g. "gitignored".
+    pub reason: String,
 }
 
 impl GroupCluster {
@@ -40,6 +56,7 @@ impl GroupCluster {
             node_ids: Vec::new(),
             is_collapsed: false,
             depth: 0,
+            lazy: None,
         }
     }
 }

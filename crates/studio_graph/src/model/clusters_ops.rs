@@ -88,6 +88,7 @@ impl Graph {
     pub fn rebuild_collapsed_cache(&mut self) {
         self.collapsed_clusters_count = self.clusters.iter().filter(|c| c.is_collapsed).count();
         self.collapsed_node_ids.clear();
+        self.hidden_cluster_ids.clear();
         if self.collapsed_clusters_count == 0 {
             return;
         }
@@ -117,6 +118,10 @@ impl Graph {
                 for &nid in &c.node_ids {
                     self.collapsed_node_ids.insert(nid);
                 }
+                // Descendants of a collapsed folder are hidden; the collapsed folder itself is drawn.
+                if c.parent_id.as_ref().is_some_and(|p| collapsed_ids.contains(p)) {
+                    self.hidden_cluster_ids.insert(c.id.clone());
+                }
             }
         }
     }
@@ -133,7 +138,7 @@ impl Graph {
         }
         if found {
             self.rebuild_collapsed_cache();
-            self.update_cluster_bounds();
+            self.relayout();
         }
         found
     }

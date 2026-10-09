@@ -250,3 +250,66 @@ impl FileMemberNode {
         self
     }
 }
+
+/// What a file card holds, so the UI knows whether it can be parsed, previewed or edited.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize)]
+#[rkyv(derive(Debug, PartialEq, Eq))]
+pub enum FileContent {
+    /// Text that was parsed (or a non-file node).
+    #[default]
+    Code,
+    Binary,
+    Image,
+    /// Too large to parse; still listed.
+    TooLarge,
+    /// Symbolic link; holds the link target.
+    Symlink(String),
+    /// Could not be read; holds the error.
+    Unreadable(String),
+}
+
+impl FileContent {
+    /// Short reason shown on cards for anything that is not parsed code.
+    pub fn label(&self) -> Option<String> {
+        match self {
+            FileContent::Code => None,
+            FileContent::Binary => Some("binary".to_string()),
+            FileContent::Image => Some("image".to_string()),
+            FileContent::TooLarge => Some("too large to parse".to_string()),
+            FileContent::Symlink(target) => Some(format!("symlink → {target}")),
+            FileContent::Unreadable(err) => Some(format!("unreadable: {err}")),
+        }
+    }
+
+    pub fn is_editable_text(&self) -> bool {
+        matches!(self, FileContent::Code)
+    }
+}
+
+/// `1.2 MB`-style size for cards and the inspector.
+pub fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+#[cfg(test)]
+mod file_content_tests {
+    use super::*;
+
+    #[test]
+    fn human_bytes_formats() {
+        assert_eq!(human_bytes(512), "512 B");
+        assert_eq!(human_bytes(1536), "1.5 KB");
+        assert_eq!(human_bytes(3 * 1024 * 1024), "3.0 MB");
+    }
+}

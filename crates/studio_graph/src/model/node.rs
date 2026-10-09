@@ -1,7 +1,7 @@
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
 
-use super::types::{FileMemberNode, NodeArchetype, NodeId, Port, PortDirection, PortId};
+use super::types::{FileContent, FileMemberNode, NodeArchetype, NodeId, Port, PortDirection, PortId};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize)]
 #[rkyv(derive(Debug))]
@@ -34,6 +34,12 @@ pub struct Node {
     pub show_member_wires: bool,
     pub expanded_member_id: Option<String>,
     pub member_nodes: Vec<FileMemberNode>,
+
+    // What the file holds (binary, image, too large, ...) and its size on disk
+    #[serde(default)]
+    pub content: FileContent,
+    #[serde(default)]
+    pub size_bytes: Option<u64>,
 }
 
 impl Node {
