@@ -22,33 +22,9 @@ impl StudioApp {
 
                     ui.separator();
 
-                    // Quick Project Actions
                     let open_label = format!("{} Open...", egui_phosphor::regular::FOLDER_OPEN);
                     if ui.button(open_label).clicked() {
                         self.open_folder_dialog();
-                    }
-
-                    let repo_label = format!("{} Repo", egui_phosphor::regular::GIT_BRANCH);
-                    if ui.button(repo_label).clicked() {
-                        if let Ok(dir) = std::env::current_dir() {
-                            self.load_project(&dir);
-                        }
-                    }
-
-                    let show_label = format!("{} Showcase", egui_phosphor::regular::ARROWS_CLOCKWISE);
-                    if ui.button(show_label).clicked() {
-                        self.load_showcase();
-                    }
-
-                    if self.current_project_path.is_some() {
-                        let reparse_label = format!("{} Force Reparse", egui_phosphor::regular::LIGHTNING);
-                        if ui
-                            .button(reparse_label)
-                            .on_hover_text("Bypass user rkyv cache and re-parse all files from scratch")
-                            .clicked()
-                        {
-                            self.force_reparse_current_project();
-                        }
                     }
 
                     ui.separator();
@@ -97,7 +73,7 @@ impl StudioApp {
         } else {
             (egui_phosphor::regular::PACKAGE, TEXT_SECONDARY)
         };
-        let name = self.project_stats.as_ref().map_or("Showcase", |s| s.project_name.as_str());
+        let name = self.project_stats.as_ref().map_or("No project", |s| s.project_name.as_str());
         let pill = ui.button(
             RichText::new(format!("{icon} {name} {}", egui_phosphor::regular::CARET_DOWN))
                 .font(FontId::new(11.0, FontFamily::Proportional))
@@ -133,35 +109,26 @@ impl StudioApp {
             ui.separator();
         }
 
-        match &self.project_stats {
-            Some(stats) => {
-                ui.label(
-                    RichText::new(&stats.project_name)
-                        .font(FontId::new(12.5, FontFamily::Proportional))
-                        .color(TEXT_HIGHLIGHT)
-                        .strong(),
-                );
-                if let Some(path) = &self.current_project_path {
-                    ui.label(
-                        RichText::new(path.display().to_string())
-                            .font(FontId::new(10.0, FontFamily::Monospace))
-                            .color(TEXT_DIM),
-                    );
-                }
-                ui.add_space(4.0);
-                row(ui, "Files", stats.file_count.to_string());
-                row(ui, "Crates", stats.crate_count.to_string());
-            }
-            None => {
-                ui.label(
-                    RichText::new("Showcase graph")
-                        .font(FontId::new(12.5, FontFamily::Proportional))
-                        .color(TEXT_HIGHLIGHT)
-                        .strong(),
-                );
-                ui.add_space(4.0);
-            }
+        let Some(stats) = &self.project_stats else {
+            ui.label(RichText::new("No project open").color(TEXT_SECONDARY));
+            return;
+        };
+        ui.label(
+            RichText::new(&stats.project_name)
+                .font(FontId::new(12.5, FontFamily::Proportional))
+                .color(TEXT_HIGHLIGHT)
+                .strong(),
+        );
+        if let Some(path) = &self.current_project_path {
+            ui.label(
+                RichText::new(path.display().to_string())
+                    .font(FontId::new(10.0, FontFamily::Monospace))
+                    .color(TEXT_DIM),
+            );
         }
+        ui.add_space(4.0);
+        row(ui, "Files", stats.file_count.to_string());
+        row(ui, "Crates", stats.crate_count.to_string());
         row(ui, "Nodes", self.graph.nodes.len().to_string());
         row(ui, "Wires", self.graph.edges.len().to_string());
         row(ui, "Folders", self.graph.clusters.len().to_string());

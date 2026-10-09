@@ -213,6 +213,7 @@ impl App for StudioApp {
             },
         );
 
+        self.render_empty_state(ctx);
         self.render_loading_hud(ctx);
         self.render_spotlight_modal(ctx);
     }

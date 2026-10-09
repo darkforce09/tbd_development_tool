@@ -87,8 +87,11 @@ Goal: remove everything that is mock, duplicated or in the way, so later work bu
 - [x] Project stats move into a popover on the project name button. The old "Architecture Graph Valid" title is dropped because nothing was validated.
 - [x] Remove the view dropdown (Files & Folders / All Items / Public API / Modules) from the UI.
 - [ ] Remove the Items, Public API and Modules graph builders from `studio_parser`, and granularity from the cache key.
-- [ ] Review the Ingress / Compute / State / Egress archetypes. They come from the abandoned lanes idea and are not derived from code.
-- [ ] Decide each remaining top bar control: Repo, Showcase, Force Reparse, Sub-node Wires.
+- [x] Remove the Ingress / Compute / State / Egress filter categories and the Spotlight buttons that created such nodes. They came from the abandoned lanes idea and are not derived from code.
+- [ ] Remove those archetypes from the graph model, the mock pipeline graph and `bench_scale` (needs a cache version bump; fold into Phase 1).
+- [x] Remove the Repo, Showcase and Force Reparse buttons. With no project open, the canvas shows an Open folder prompt.
+- [ ] Decide the Sub-node Wires toggle.
+- [ ] Review the Spotlight "create node" buttons (Function, Struct, Module). They add nodes that no code backs.
 - [ ] Decide where transient messages and errors appear. Today they appear only in the stats popover, and a failed load shows a warning icon on the project button.
 - [ ] Keyboard shortcut help, which went away with the bottom bar.
 

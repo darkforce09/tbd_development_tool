@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use studio_canvas::CanvasState;
-use studio_graph::{create_showcase_files_graph, Graph, NodeArchetype};
-use studio_parser::{spawn_load_project_opt, SymbolSearchIndex, ViewGranularity};
+use studio_graph::{Graph, NodeArchetype};
+use studio_parser::{spawn_load_project, SymbolSearchIndex, ViewGranularity};
 use studio_ui::apply_theme;
 
 use super::settings::PersistedSettings;
@@ -20,10 +20,6 @@ impl StudioApp {
         category_filters.insert(NodeArchetype::Enum, true);
         category_filters.insert(NodeArchetype::Trait, true);
         category_filters.insert(NodeArchetype::Module, true);
-        category_filters.insert(NodeArchetype::Ingress, true);
-        category_filters.insert(NodeArchetype::Compute, true);
-        category_filters.insert(NodeArchetype::State, true);
-        category_filters.insert(NodeArchetype::Egress, true);
 
         let saved: PersistedSettings =
             cc.storage.and_then(|storage| eframe::get_value(storage, eframe::APP_KEY)).unwrap_or_default();
@@ -69,36 +65,15 @@ impl StudioApp {
             spotlight_search: String::new(),
         };
 
-        // Explicit path, else the last project, else a Cargo project in the cwd, else the showcase.
+        // Explicit path, else the last project, else a Cargo project in the cwd, else nothing:
+        // the canvas then shows the open-folder prompt.
         let last_project = saved.last_project.filter(|p| p.is_dir());
-        if let Some(path) = initial_path.or(last_project) {
+        let cwd_project = std::env::current_dir().ok().filter(|dir| dir.join("Cargo.toml").exists());
+        if let Some(path) = initial_path.or(last_project).or(cwd_project) {
             app.load_project(&path);
-        } else if let Ok(dir) = std::env::current_dir() {
-            if dir.join("Cargo.toml").exists() {
-                app.load_project(&dir);
-            } else {
-                app.load_showcase();
-            }
-        } else {
-            app.load_showcase();
         }
 
         app
-    }
-
-    pub fn load_showcase(&mut self) {
-        self.current_project_path = None;
-        self.project_stats = None;
-        self.is_loading = false;
-        self.is_from_cache = false;
-        self.load_error = None;
-        self.loader_rx = None;
-        self.graph = create_showcase_files_graph();
-        self.search_index = SymbolSearchIndex::build(&self.graph);
-        self.canvas_state.spatial_grid.build_from_graph(&self.graph);
-        self.canvas_state.spatial_grid_dirty = false;
-        self.pending_fit_view = true;
-        self.canvas_state.status_message = Some("Showcase loaded".to_string());
     }
 
     pub fn open_folder_dialog(&mut self) {
@@ -115,36 +90,20 @@ impl StudioApp {
     }
 
     pub fn load_project(&mut self, path: &Path) {
-        self.load_project_opt(path, false);
-    }
-
-    pub fn load_project_opt(&mut self, path: &Path, force_reparse: bool) {
         let path_buf = path.to_path_buf();
         self.current_project_path = Some(path_buf.clone());
         self.path_input = path_buf.to_string_lossy().to_string();
         self.is_loading = true;
         self.load_error = None;
-        self.loading_stage = if force_reparse {
-            "Force re-parsing workspace from disk...".to_string()
-        } else {
-            "Checking user rkyv cache & manifests...".to_string()
-        };
+        self.loading_stage = "Checking user rkyv cache & manifests...".to_string();
         self.loading_files_done = 0;
         self.loading_total_files = 0;
         self.loading_progress = 0.05;
         self.canvas_state.status_message = Some(format!("Loading {}...", path.display()));
 
         let (tx, rx) = std::sync::mpsc::channel();
-        spawn_load_project_opt(path_buf, ViewGranularity::FilesAndFolders, force_reparse, tx);
+        spawn_load_project(path_buf, ViewGranularity::FilesAndFolders, tx);
         self.loader_rx = Some(rx);
-    }
-
-    pub fn force_reparse_current_project(&mut self) {
-        if let Some(path) = self.current_project_path.clone() {
-            self.load_project_opt(&path, true);
-        } else {
-            self.load_showcase();
-        }
     }
 
     pub(crate) fn sync_category_filters(&mut self) {

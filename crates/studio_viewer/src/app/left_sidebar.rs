@@ -65,10 +65,6 @@ impl StudioApp {
                         (NodeArchetype::Enum, "ENM", "Enums", Color32::from_rgb(250, 204, 21)),
                         (NodeArchetype::Trait, "TRT", "Traits", Color32::from_rgb(52, 211, 153)),
                         (NodeArchetype::Module, "MOD", "Modules", Color32::from_rgb(56, 189, 248)),
-                        (NodeArchetype::Ingress, "IN", "Ingress", ARCHETYPE_INGRESS),
-                        (NodeArchetype::Compute, "CPU", "Compute", ARCHETYPE_COMPUTE),
-                        (NodeArchetype::State, "MEM", "State Cache", ARCHETYPE_STATE),
-                        (NodeArchetype::Egress, "OUT", "Egress Output", ARCHETYPE_EGRESS),
                     ];
 
                     for (arch, tag, label, color) in archetypes {

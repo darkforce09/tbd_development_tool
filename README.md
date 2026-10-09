@@ -23,7 +23,7 @@ You need Rust 1.95 or newer. Install it with [rustup](https://rustup.rs).
 cargo run --release -p studio_viewer -- /path/to/project
 ```
 
-Without a path, Studio reopens the last project. If there is none, it opens the current directory when that is a Cargo project, and otherwise shows a built-in showcase graph.
+Without a path, Studio reopens the last project. If there is none, it opens the current directory when that is a Cargo project, and otherwise shows an **Open folder** prompt.
 
 Platform notes:
 
