@@ -1,18 +1,25 @@
 use eframe::egui;
-use egui::{Color32, FontFamily, FontId, Pos2, RichText, Stroke};
+use egui::{Align2, Color32, CornerRadius, FontFamily, FontId, Pos2, RichText, Sense, Stroke, Vec2};
 use studio_graph::NodeArchetype;
 use studio_ui::color_tokens::*;
 
 use super::StudioApp;
 
 impl StudioApp {
+    /// Left sidebar, Eden style: closed, a small arrow tab sits at the left edge under the
+    /// title bar; open, the same tab sits on the sidebar's right edge and closes it.
     pub(crate) fn render_left_sidebar(&mut self, root: &mut egui::Ui) {
         let ctx = root.ctx().clone();
+        let tab_y = root.available_rect_before_wrap().top() + 8.0;
         if !self.left_sidebar_open {
+            let left = root.max_rect().left();
+            if sidebar_tab(&ctx, Pos2::new(left, tab_y), egui_phosphor::regular::CARET_RIGHT, "Show sidebar") {
+                self.left_sidebar_open = true;
+            }
             return;
         }
 
-        egui::Panel::left("studio_left_sidebar")
+        let panel = egui::Panel::left("studio_left_sidebar")
             .resizable(true)
             .default_size(280.0)
             .min_size(220.0)
@@ -137,5 +144,34 @@ impl StudioApp {
                     }
                 });
             });
+
+        let edge = panel.response.rect.right();
+        if sidebar_tab(&ctx, Pos2::new(edge, tab_y), egui_phosphor::regular::CARET_LEFT, "Hide sidebar") {
+            self.left_sidebar_open = false;
+        }
     }
+}
+
+/// Arrow tab attached to a vertical edge at `pos` (top-left of the tab). Returns true when clicked.
+fn sidebar_tab(ctx: &egui::Context, pos: Pos2, icon: &str, tooltip: &str) -> bool {
+    egui::Area::new(egui::Id::new("left_sidebar_tab"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(pos)
+        .show(ctx, |ui| {
+            let (rect, response) = ui.allocate_exact_size(Vec2::new(16.0, 40.0), Sense::click());
+            let response = response.on_hover_text(tooltip);
+            let fill = if response.hovered() { FLOATING_BTN_HOVER } else { PANEL_BG };
+            let radius = CornerRadius { nw: 0, sw: 0, ne: 5, se: 5 };
+            ui.painter().rect(rect, radius, fill, Stroke::new(1.0, PANEL_BORDER), egui::StrokeKind::Inside);
+            let color = if response.hovered() { TEXT_HIGHLIGHT } else { TEXT_SECONDARY };
+            ui.painter().text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                icon,
+                FontId::new(12.0, FontFamily::Proportional),
+                color,
+            );
+            response.clicked()
+        })
+        .inner
 }

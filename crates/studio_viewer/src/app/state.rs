@@ -25,10 +25,10 @@ impl StudioApp {
             cc.storage.and_then(|storage| eframe::get_value(storage, eframe::APP_KEY)).unwrap_or_default();
 
         let mut canvas_state = CanvasState::default();
-        let gpu_label = cc.wgpu_render_state.as_ref().map_or_else(
-            || "CPU wire rendering".to_string(),
-            |rs| crate::telemetry::GpuDeviceInfo::from_adapter_info(&rs.adapter.get_info()).name,
-        );
+        let gpu = cc
+            .wgpu_render_state
+            .as_ref()
+            .map(|rs| crate::telemetry::GpuDeviceInfo::from_adapter_info(&rs.adapter.get_info()));
         if let Some(render_state) = &cc.wgpu_render_state {
             let pipeline = studio_canvas::GpuWirePipeline::new(&render_state.device, render_state.target_format);
             render_state.renderer.write().callback_resources.insert(pipeline);
@@ -43,7 +43,8 @@ impl StudioApp {
             frame_counter: 0,
             last_frame_time: 0.0,
             fps: 60.0,
-            gpu_label,
+            gpu,
+            debug: Default::default(),
             current_project_path: None,
             path_input: String::new(),
             project_stats: None,

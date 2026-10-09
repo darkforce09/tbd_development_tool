@@ -84,15 +84,17 @@ Goal: remove everything that is mock, duplicated or in the way, so later work bu
 - [x] Remove the right Inspector panel and the Split Editor. Editing returns on the canvas in Phase 6.
 - [x] Filters sidebar hidden when the app opens.
 - [x] Remove the STUDIO brand label and the bottom status bar.
-- [x] Project stats move into a popover on the project name button. The old "Architecture Graph Valid" title is dropped because nothing was validated.
+- [x] Project stats move into the F3 debug panel, alongside frame timing, process, GPU and canvas telemetry. The old "Architecture Graph Valid" title is dropped because nothing was validated.
 - [x] Remove the view dropdown (Files & Folders / All Items / Public API / Modules) from the UI.
 - [ ] Remove the Items, Public API and Modules graph builders from `studio_parser`, and granularity from the cache key.
 - [x] Remove the Ingress / Compute / State / Egress filter categories and the Spotlight buttons that created such nodes. They came from the abandoned lanes idea and are not derived from code.
 - [ ] Remove those archetypes from the graph model, the mock pipeline graph and `bench_scale` (needs a cache version bump; fold into Phase 1).
 - [x] Remove the Repo, Showcase and Force Reparse buttons. With no project open, the canvas shows an Open folder prompt.
-- [ ] Decide the Sub-node Wires toggle.
-- [ ] Review the Spotlight "create node" buttons (Function, Struct, Module). They add nodes that no code backs.
-- [ ] Decide where transient messages and errors appear. Today they appear only in the stats popover, and a failed load shows a warning icon on the project button.
+- [x] Wire toggles move into a View menu (Wires, Member wires) built so new toggles are one line each.
+- [x] Remove the Spotlight "create node" buttons; it is now Search. They added nodes that no code backs.
+- [x] Integrated title bar: no OS decorations; search, open and the View menu on the left, the project name in the centre, window buttons on the right. The window edges resize it.
+- [x] Filters button removed; the sidebar opens from an arrow tab under the title bar (Eden editor style).
+- [x] Messages and errors: the debug panel shows the last message and any load error, and a failed load puts a warning on the title.
 - [ ] Keyboard shortcut help, which went away with the bottom bar.
 
 Exit: every control on screen does something real, and nothing shows mock data for a real project.

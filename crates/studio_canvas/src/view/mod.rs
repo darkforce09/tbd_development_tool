@@ -53,7 +53,7 @@ impl<'a> CanvasView<'a> {
         };
 
         // Layer A, A-2, B, C: Background, Clusters, Wires, Pending wire
-        let toggle_cluster_id = render_background_and_wires(
+        let (toggle_cluster_id, drawn_wires) = render_background_and_wires(
             &painter,
             self.state,
             self.graph,
@@ -63,6 +63,8 @@ impl<'a> CanvasView<'a> {
             pointer_clicked,
             anim_time,
         );
+
+        self.state.frame_stats = CanvasFrameStats { visible_nodes: visible_node_ids.len(), visible_wires: drawn_wires };
 
         let mut events = RenderEvents { toggle_cluster_id, ..Default::default() };
 

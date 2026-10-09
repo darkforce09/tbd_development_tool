@@ -11,5 +11,7 @@ pub use grid::paint_infinite_grid;
 pub use interaction::{HoverState, InteractionMode};
 pub use spatial::SpatialHashGrid;
 pub use transform::{screen_to_world, world_to_screen, CanvasTransform};
-pub use view::{archetype_color, calculate_file_node_size, data_type_color, CanvasAction, CanvasState, CanvasView};
+pub use view::{
+    archetype_color, calculate_file_node_size, data_type_color, CanvasAction, CanvasFrameStats, CanvasState, CanvasView,
+};
 pub use wire::{compute_bezier_control_points, distance_to_bezier, paint_bezier_wire};

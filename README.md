@@ -13,7 +13,8 @@ Built in Rust with [egui](https://github.com/emilk/egui) and [wgpu](https://wgpu
 - **Polyglot parsing**: Rust through `syn`, 17 more languages through tree-sitter, plus Markdown and Bohemia Enforce Script (Arma Reforger / DayZ). See [Supported languages](#supported-languages).
 - **Wires**: imports, calls and Markdown links between files and between individual members, drawn on the GPU in instanced batches. There is a CPU fallback.
 - **Fast reopen**: parsed graphs are cached per project with zero-copy `rkyv`. The cache is invalidated when any source file changes.
-- **Spotlight**: <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd> or <kbd>/</kbd> searches symbols across the project.
+- **Search**: <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd> or <kbd>/</kbd> searches symbols across the project.
+- **Debug panel**: <kbd>F3</kbd> shows project numbers, frame timing, memory, CPU, disk, GPU and canvas statistics.
 
 ## Build and run
 
@@ -42,11 +43,16 @@ To use a specific graphics backend, set `WGPU_BACKEND` (`vulkan`, `metal`, `dx12
 | Zoom | scroll over the canvas, <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + scroll anywhere, or pinch |
 | Scroll inside an open code card | scroll over the card's code |
 | Select | click a card or a member row |
-| Spotlight search | <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd> or <kbd>/</kbd> |
+| Search symbols | <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd> or <kbd>/</kbd> |
 | Close / deselect | <kbd>Esc</kbd> |
 | Collapse / expand a folder | click its header, or the collapsed folder card |
-| Filters sidebar | **Filters** in the top bar (hidden when the app opens) |
-| Project stats | click the project name in the top bar |
+| Open or close the sidebar | the arrow tab at the left edge, under the title bar |
+| Show or hide wires | **View** menu: **Wires** and **Member wires** |
+| Debug panel and project stats | <kbd>F3</kbd> |
+| Move / maximise the window | drag / double-click an empty part of the title bar |
+| Resize the window | drag a window edge or corner |
+
+Studio draws its own title bar. On macOS, resizing from the edges is not supported yet.
 
 ## Supported languages
 

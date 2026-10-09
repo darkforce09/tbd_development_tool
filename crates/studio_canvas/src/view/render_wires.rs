@@ -20,7 +20,7 @@ pub fn render_background_and_wires(
     pointer_pos: Pos2,
     pointer_clicked: bool,
     anim_time: f64,
-) -> Option<String> {
+) -> (Option<String>, usize) {
     let mut toggle_cluster_id = None;
     let zoom = state.transform.zoom;
 
@@ -71,7 +71,9 @@ pub fn render_background_and_wires(
 
     // Layer B: Graph Connection Wires (Always Bezier curves, rendered at every zoom level)
     let wire_cull_rect = visible_world_rect.expand(200.0);
-    let visible_edge_ids = state.spatial_grid.query_edges_rect(wire_cull_rect);
+    let visible_edge_ids =
+        if state.show_wires { state.spatial_grid.query_edges_rect(wire_cull_rect) } else { Vec::new() };
+    let mut drawn_wires = 0;
 
     // Track bundled connections between collapsed cards to avoid redundant overdraw
     let mut bundled_pairs: std::collections::HashSet<(studio_graph::NodeId, studio_graph::NodeId)> =
@@ -117,6 +119,7 @@ pub fn render_background_and_wires(
         let p3_w = port_world_position(to_node, edge.to_port)
             .unwrap_or_else(|| Pos2::new(to_node.position[0], to_node.position[1] + to_node.size[1] * 0.5));
 
+        drawn_wires += 1;
         let is_flow_active =
             if let Some(ref active_edges) = state.active_flow_edges { active_edges.contains(&edge.id) } else { false };
 
@@ -234,5 +237,5 @@ pub fn render_background_and_wires(
         }
     }
 
-    toggle_cluster_id
+    (toggle_cluster_id, drawn_wires)
 }

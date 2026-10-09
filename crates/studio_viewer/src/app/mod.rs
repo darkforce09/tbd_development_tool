@@ -1,9 +1,12 @@
+pub mod debug_panel;
 pub mod folders;
 pub mod left_sidebar;
 pub mod modals;
 pub mod settings;
 pub mod state;
 pub mod top_nav;
+pub mod view_menu;
+pub mod window_frame;
 
 use eframe::{egui, App, Frame};
 use egui::{Key, Pos2};
@@ -21,8 +24,9 @@ pub struct StudioApp {
     pub frame_counter: u64,
     pub last_frame_time: f64,
     pub fps: f32,
-    /// Name of the GPU adapter rendering the canvas, or why there is none.
-    pub gpu_label: String,
+    /// GPU adapter rendering the canvas; `None` when wires fall back to the CPU.
+    pub gpu: Option<crate::telemetry::GpuDeviceInfo>,
+    pub debug: debug_panel::DebugState,
 
     // Project state
     pub current_project_path: Option<PathBuf>,
@@ -150,7 +154,12 @@ impl App for StudioApp {
             self.last_frame_time = now;
         }
 
+        self.debug.push_frame_time(ctx.input(|i| i.unstable_dt) * 1000.0);
+
         // Global Keyboard Shortcuts
+        if ctx.input(|i| i.key_pressed(Key::F3)) {
+            self.debug.open = !self.debug.open;
+        }
         if ctx.input(|i| i.modifiers.command && i.key_pressed(Key::K)) || ctx.input(|i| i.key_pressed(Key::Slash)) {
             self.spotlight_open = !self.spotlight_open;
             if self.spotlight_open {
@@ -216,6 +225,8 @@ impl App for StudioApp {
         self.render_empty_state(ctx);
         self.render_loading_hud(ctx);
         self.render_spotlight_modal(ctx);
+        self.render_debug_panel(ctx);
+        window_frame::resize_edges(ctx);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {

@@ -165,7 +165,7 @@ pub fn handle_canvas_input(state: &mut CanvasState, graph: &mut Graph, ui: &mut 
     }
 
     // Test edges touching candidate nodes
-    if new_hover.hovered_port.is_none() && new_hover.hovered_node.is_none() {
+    if state.show_wires && new_hover.hovered_port.is_none() && new_hover.hovered_node.is_none() {
         let mut checked_edges = HashSet::new();
         for &node_id in &candidate_nodes {
             if let Some(cand_node) = graph.nodes.get(&node_id) {

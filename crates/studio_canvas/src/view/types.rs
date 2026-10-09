@@ -106,6 +106,13 @@ pub struct NodeContextMenu {
     pub screen_pos: Pos2,
 }
 
+/// What the last rendered frame drew, for the debug panel.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CanvasFrameStats {
+    pub visible_nodes: usize,
+    pub visible_wires: usize,
+}
+
 /// State of the canvas viewport, camera, and interactions.
 #[derive(Debug, Clone)]
 pub struct CanvasState {
@@ -117,6 +124,8 @@ pub struct CanvasState {
     pub search_filter: String,
     pub category_filter: BTreeSet<NodeArchetype>,
     pub active_flow_edges: Option<BTreeSet<EdgeId>>,
+    /// Master switch for every wire; hidden wires are neither drawn nor hit-tested.
+    pub show_wires: bool,
     pub show_subnode_wires_globally: bool,
     pub collapsed_subnodes: BTreeSet<(NodeId, String)>,
     pub action_request: Option<CanvasAction>,
@@ -125,6 +134,7 @@ pub struct CanvasState {
     pub spatial_grid_dirty: bool,
     pub interactive_rects: Vec<Rect>,
     pub use_gpu_wires: bool,
+    pub frame_stats: CanvasFrameStats,
 }
 
 impl Default for CanvasState {
@@ -138,6 +148,7 @@ impl Default for CanvasState {
             search_filter: String::new(),
             category_filter: BTreeSet::new(),
             active_flow_edges: None,
+            show_wires: true,
             show_subnode_wires_globally: true,
             collapsed_subnodes: BTreeSet::new(),
             action_request: None,
@@ -146,6 +157,7 @@ impl Default for CanvasState {
             spatial_grid_dirty: true,
             interactive_rects: Vec::new(),
             use_gpu_wires: true,
+            frame_stats: CanvasFrameStats::default(),
         }
     }
 }

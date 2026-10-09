@@ -410,3 +410,41 @@ fn test_clicking_unloaded_folder_requests_load_instead_of_toggling() {
     assert!(state.action_request.is_none());
     assert!(!graph.clusters[1].is_collapsed, "loaded folders toggle directly");
 }
+
+#[test]
+fn test_wires_toggle_hides_every_wire() {
+    let mut graph = studio_graph::create_showcase_graph();
+    graph.rebuild_fast_indices();
+    assert!(!graph.edges.is_empty());
+    let mut state = CanvasState::default();
+    state.spatial_grid.build_from_graph(&graph);
+    let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1600.0, 1000.0));
+    state.zoom_to_fit(&graph, rect);
+    state.use_gpu_wires = false;
+
+    let ctx = egui::Context::default();
+    let drawn = |state: &CanvasState| {
+        let mut wires = 0;
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let painter = ui.ctx().layer_painter(egui::LayerId::background());
+            let world = state.transform.screen_to_world_rect(rect);
+            wires = super::render_wires::render_background_and_wires(
+                &painter,
+                state,
+                &graph,
+                rect,
+                world,
+                rect.center(),
+                false,
+                0.0,
+            )
+            .1;
+        });
+        output.textures_delta.clear();
+        wires
+    };
+
+    assert!(drawn(&state) > 0, "wires draw by default");
+    state.show_wires = false;
+    assert_eq!(drawn(&state), 0, "hidden wires are not drawn");
+}

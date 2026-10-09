@@ -1,6 +1,5 @@
 use eframe::egui;
 use egui::{Color32, CornerRadius, FontFamily, FontId, Key, Pos2, ProgressBar, RichText, Stroke};
-use studio_graph::{DataType, NodeArchetype};
 use studio_ui::color_tokens::*;
 
 use super::StudioApp;
@@ -37,7 +36,7 @@ impl StudioApp {
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
-                                RichText::new(&self.gpu_label)
+                                RichText::new(self.gpu.as_ref().map_or("CPU wire rendering", |g| g.name.as_str()))
                                     .font(FontId::new(10.0, FontFamily::Monospace))
                                     .color(Color32::from_rgb(52, 211, 153)),
                             );
@@ -72,10 +71,10 @@ impl StudioApp {
         }
 
         let screen_rect = ctx.content_rect();
-        let spot_title = format!("{} Enso Spotlight & Quick Actions", egui_phosphor::regular::MAGNIFYING_GLASS);
+        let spot_title = format!("{} Search", egui_phosphor::regular::MAGNIFYING_GLASS);
         egui::Window::new(spot_title)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, -80.0])
-            .fixed_size([560.0, 380.0])
+            .fixed_size([560.0, 260.0])
             .collapsible(false)
             .resizable(false)
             .frame(
@@ -93,7 +92,7 @@ impl StudioApp {
                     );
                     let edit = ui.add(
                         egui::TextEdit::singleline(&mut self.spotlight_search)
-                            .hint_text("Type symbol to jump or 'add' to create...")
+                            .hint_text("Type a symbol to jump to it")
                             .desired_width(460.0)
                             .font(FontId::new(14.0, FontFamily::Proportional)),
                     );
@@ -104,77 +103,9 @@ impl StudioApp {
                 ui.separator();
                 ui.add_space(8.0);
 
-                // Insert Actions (Enso style)
-                ui.label(
-                    RichText::new("CREATE NEW NODE ON CANVAS")
-                        .font(FontId::new(10.5, FontFamily::Monospace))
-                        .color(TEXT_DIM)
-                        .strong(),
-                );
-                ui.add_space(4.0);
-
-                ui.horizontal_wrapped(|ui| {
-                    let center_world = self.canvas_state.transform.screen_to_world(screen_rect.center());
-
-                    let fn_btn = format!("{} Function", egui_phosphor::regular::PLUS);
-                    if ui.button(fn_btn).clicked() {
-                        let id = self.graph.add_node(
-                            "fn new_handler",
-                            NodeArchetype::Function,
-                            "Custom function node",
-                            Some("FN".to_string()),
-                            vec![("exec".to_string(), DataType::RustFlow)],
-                            vec![("call".to_string(), DataType::RustFlow)],
-                            [center_world.x, center_world.y],
-                        );
-                        self.canvas_state.selected_nodes.clear();
-                        self.canvas_state.selected_nodes.insert(id);
-                        self.spotlight_open = false;
-                    }
-
-                    let struct_btn = format!("{} Struct", egui_phosphor::regular::PLUS);
-                    if ui.button(struct_btn).clicked() {
-                        let id = self.graph.add_node(
-                            "struct Config",
-                            NodeArchetype::Struct,
-                            "Custom struct node",
-                            Some("STRUCT".to_string()),
-                            vec![],
-                            vec![("Self".to_string(), DataType::RustType("Config".to_string()))],
-                            [center_world.x, center_world.y],
-                        );
-                        self.canvas_state.selected_nodes.clear();
-                        self.canvas_state.selected_nodes.insert(id);
-                        self.spotlight_open = false;
-                    }
-
-                    let mod_btn = format!("{} Module", egui_phosphor::regular::PLUS);
-                    if ui.button(mod_btn).clicked() {
-                        let id = self.graph.add_node(
-                            "mod services",
-                            NodeArchetype::Module,
-                            "Module container",
-                            Some("MOD".to_string()),
-                            vec![],
-                            vec![("export".to_string(), DataType::RustFlow)],
-                            [center_world.x, center_world.y],
-                        );
-                        self.canvas_state.selected_nodes.clear();
-                        self.canvas_state.selected_nodes.insert(id);
-                        self.spotlight_open = false;
-                    }
-                });
-
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(8.0);
-
                 // High-performance Trigram Symbol Search Results (Enso style)
                 ui.label(
-                    RichText::new("JUMP TO GRAPH SYMBOLS")
-                        .font(FontId::new(10.5, FontFamily::Monospace))
-                        .color(TEXT_DIM)
-                        .strong(),
+                    RichText::new("SYMBOLS").font(FontId::new(10.5, FontFamily::Monospace)).color(TEXT_DIM).strong(),
                 );
                 ui.add_space(4.0);
 
