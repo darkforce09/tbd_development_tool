@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
+
+use crate::tree::{scan_tree, ProjectTree, ScanOptions};
 
 #[derive(Debug, Clone)]
 pub struct CrateInfo {
@@ -13,7 +14,10 @@ pub struct CrateInfo {
 pub struct RustProject {
     pub name: String,
     pub root_path: PathBuf,
+    /// Parseable text files grouped by crate / top-level folder (Items and Modules views).
     pub crates: Vec<CrateInfo>,
+    /// Every file and folder on disk (Files view).
+    pub tree: ProjectTree,
 }
 
 pub type SourceProject = RustProject;
@@ -54,141 +58,10 @@ impl From<std::io::Error> for ProjectError {
     }
 }
 
-/// Checks whether a given path is a supported source, script, layout, config or documentation file.
-/// True binary files (images, archives, compiled objects) are excluded.
-pub fn is_supported_source_file(path: &Path) -> bool {
-    let file_name = match path.file_name().and_then(|n| n.to_str()) {
-        Some(name) => name,
-        None => return false,
-    };
-
-    // Skip temporary editor cruft and system files
-    if file_name.ends_with(".swp")
-        || file_name.ends_with(".swo")
-        || file_name == ".DS_Store"
-        || file_name == "Thumbs.db"
-        || file_name.ends_with(".min.js")
-        || file_name.ends_with(".min.css")
-        || file_name.ends_with(".bundle.js")
-        || file_name.ends_with(".bundle.min.js")
-        || file_name.ends_with(".map")
-    {
-        return false;
-    }
-
-    let ext = match path.extension().and_then(|e| e.to_str()) {
-        Some(e) => e.to_lowercase(),
-        None => {
-            // Extensionless files (e.g. Dockerfile, Makefile, LICENSE, .editorconfig, baselines)
-            return true;
-        }
-    };
-
-    // Exclude true binary asset, image, archive and compiled formats
-    if matches!(
-        ext.as_str(),
-        // Images & textures
-        "png" | "jpg" | "jpeg" | "gif" | "ico" | "webp" | "bmp" | "tiff" | "tga" | "dds"
-        // Archives & compressed files
-        | "gz" | "zip" | "tar" | "tgz" | "bz2" | "xz" | "7z" | "rar" | "zst"
-        // Machine binaries & compiled objects
-        | "exe" | "dll" | "so" | "dylib" | "o" | "a" | "lib" | "pyc" | "class" | "jar" | "wasm"
-        | "rmeta" | "rlib" | "d" | "timestamp" | "map" | "lock" | "pdb" | "idb" | "ipdb" | "iobj"
-        // Documents & fonts
-        | "pdf" | "ttf" | "otf" | "woff" | "woff2"
-        // Raw game terrain binaries / LFS payload types
-        | "dem" | "tbd-sat" | "tbd-bath" | "r16"
-    ) {
-        return false;
-    }
-
-    // Safety guard: skip files larger than 1.5 MB (almost certainly minified bundles, data dumps, or binary blobs)
-    if let Ok(meta) = path.metadata() {
-        if meta.len() > 1_500_000 {
-            return false;
-        }
-    }
-
-    true
-}
-
-/// Discovers all candidate repository files.
-/// First attempts ultra-fast discovery using `git ls-files` (takes ~4ms on 18k files),
-/// falling back to recursive WalkDir if git is unavailable or errors.
+/// Absolute paths of every file outside heavy (collapsed) folders.
 pub fn discover_all_repository_files(root: &Path) -> Vec<PathBuf> {
-    if let Some(files) = git_discover_files(root) {
-        if !files.is_empty() {
-            return files;
-        }
-    }
-    walkdir_discover_files(root)
-}
-
-fn git_discover_files(root: &Path) -> Option<Vec<PathBuf>> {
-    if !root.join(".git").exists() {
-        return None;
-    }
-
-    let mut files = Vec::new();
-
-    // 1. Tracked files
-    let tracked_output =
-        std::process::Command::new("git").arg("-C").arg(root).args(["ls-files", "-z"]).output().ok()?;
-
-    if !tracked_output.status.success() {
-        return None;
-    }
-
-    for chunk in tracked_output.stdout.split(|&b| b == 0) {
-        if !chunk.is_empty() {
-            if let Ok(rel) = std::str::from_utf8(chunk) {
-                let path = root.join(rel);
-                if is_supported_source_file(&path) {
-                    files.push(path);
-                }
-            }
-        }
-    }
-
-    // 2. Untracked files (excluding gitignored)
-    if let Ok(untracked_output) = std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["ls-files", "--others", "--exclude-standard", "-z"])
-        .output()
-    {
-        if untracked_output.status.success() {
-            for chunk in untracked_output.stdout.split(|&b| b == 0) {
-                if !chunk.is_empty() {
-                    if let Ok(rel) = std::str::from_utf8(chunk) {
-                        let path = root.join(rel);
-                        if is_supported_source_file(&path) {
-                            files.push(path);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    files.sort();
-    files.dedup();
-    Some(files)
-}
-
-fn walkdir_discover_files(root: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    for entry in WalkDir::new(root).into_iter().filter_entry(should_descend).flatten() {
-        if entry.file_type().is_file() {
-            let path = entry.path();
-            if is_supported_source_file(path) {
-                files.push(path.to_path_buf());
-            }
-        }
-    }
-    files.sort();
-    files.dedup();
-    files
+    let tree = scan_tree(root, ScanOptions::default());
+    tree.files.iter().map(|f| tree.root.join(&f.rel)).collect()
 }
 
 /// Scans a directory for any codebase:
@@ -206,49 +79,56 @@ pub fn scan_project(path: impl AsRef<Path>) -> Result<RustProject, ProjectError>
         return Err(ProjectError::NotFound(format!("Not a directory: {}", root.display())));
     }
 
+    let tree = scan_tree(&root, ScanOptions::default());
+    let text_files: Vec<PathBuf> = tree.text_files().collect();
+
     let cargo_toml_path = root.join("Cargo.toml");
     if cargo_toml_path.is_file() {
         if let Ok(manifest_content) = std::fs::read_to_string(&cargo_toml_path) {
             if let Ok(toml_val) = manifest_content.parse::<toml::Value>() {
-                if let Ok(project) = parse_cargo_workspace_or_package(&root, &cargo_toml_path, &toml_val) {
-                    if project.total_files() > 0 {
-                        return Ok(project);
-                    }
+                if let Some(crates) = parse_cargo_workspace_or_package(&root, &cargo_toml_path, &toml_val, &text_files)
+                {
+                    return Ok(RustProject {
+                        name: cargo_project_name(&root, &toml_val),
+                        root_path: root,
+                        crates,
+                        tree,
+                    });
                 }
             }
         }
     }
 
-    // Fallback: Scan general directory tree (Enforce script, Markdown, polyglot)
-    scan_loose_files(&root)
+    // Fallback: group by top-level folder (Enforce script, Markdown, polyglot, or empty projects)
+    let name = folder_name(&root);
+    let mut crates = Vec::new();
+    group_unclaimed_into_crates(&root, &name, text_files, &mut crates);
+    Ok(RustProject { name, root_path: root, crates, tree })
+}
+
+fn folder_name(root: &Path) -> String {
+    root.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_else(|| "Project".to_string())
+}
+
+fn cargo_project_name(root: &Path, toml_val: &toml::Value) -> String {
+    toml_val
+        .get("package")
+        .and_then(|p| p.get("name"))
+        .and_then(|n| n.as_str())
+        .or_else(|| toml_val.get("workspace")?.get("package")?.get("name")?.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| folder_name(root))
 }
 
 fn parse_cargo_workspace_or_package(
     root: &Path,
     cargo_toml_path: &Path,
     toml_val: &toml::Value,
-) -> Result<RustProject, ProjectError> {
-    let project_name = toml_val
-        .get("package")
-        .and_then(|p| p.get("name"))
-        .and_then(|n| n.as_str())
-        .map(|s| s.to_string())
-        .or_else(|| {
-            toml_val
-                .get("workspace")
-                .and_then(|w| w.get("package"))
-                .and_then(|p| p.get("name"))
-                .and_then(|n| n.as_str())
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_else(|| {
-            root.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_else(|| "Project".to_string())
-        });
-
-    // 1. Discover all repository files across the entire workspace tree
-    let all_files = discover_all_repository_files(root);
+    all_files: &[PathBuf],
+) -> Option<Vec<CrateInfo>> {
+    let project_name = cargo_project_name(root, toml_val);
     if all_files.is_empty() {
-        return Err(ProjectError::NoSourceFiles(root.display().to_string()));
+        return None;
     }
 
     // 2. Identify Cargo workspace member crate roots
@@ -280,7 +160,7 @@ fn parse_cargo_workspace_or_package(
     let mut unclaimed_files = Vec::new();
 
     // 3. Partition discovered files between Cargo crates and unclaimed repository files
-    for file in all_files {
+    for file in all_files.iter().cloned() {
         let mut matched_root = None;
         for (crate_root, _, _) in &cargo_crate_metas {
             if file.starts_with(crate_root) {
@@ -311,10 +191,9 @@ fn parse_cargo_workspace_or_package(
     group_unclaimed_into_crates(root, &project_name, unclaimed_files, &mut crates);
 
     if crates.is_empty() || crates.iter().all(|c| c.source_files.is_empty()) {
-        return scan_loose_files(root);
+        return None;
     }
-
-    Ok(RustProject { name: project_name, root_path: root.to_path_buf(), crates })
+    Some(crates)
 }
 
 fn group_unclaimed_into_crates(
@@ -421,50 +300,4 @@ fn get_package_name_from_manifest(manifest: &Path) -> Option<String> {
     let content = std::fs::read_to_string(manifest).ok()?;
     let toml: toml::Value = content.parse().ok()?;
     toml.get("package")?.get("name")?.as_str().map(|s| s.to_string())
-}
-
-fn scan_loose_files(root: &Path) -> Result<RustProject, ProjectError> {
-    let project_name =
-        root.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_else(|| "Project".to_string());
-
-    let all_files = discover_all_repository_files(root);
-    if all_files.is_empty() {
-        return Err(ProjectError::NoSourceFiles(root.display().to_string()));
-    }
-
-    let mut crates = Vec::new();
-    group_unclaimed_into_crates(root, &project_name, all_files, &mut crates);
-
-    if crates.is_empty() || crates.iter().all(|c| c.source_files.is_empty()) {
-        return Err(ProjectError::NoSourceFiles(root.display().to_string()));
-    }
-
-    Ok(RustProject { name: project_name, root_path: root.to_path_buf(), crates })
-}
-
-fn should_descend(entry: &walkdir::DirEntry) -> bool {
-    let file_name = entry.file_name().to_string_lossy();
-    if entry.file_type().is_dir()
-        && (file_name == ".git"
-            || file_name == "target"
-            || file_name == "node_modules"
-            || file_name == "dist"
-            || file_name == "build"
-            || file_name == "out"
-            || file_name == "bin"
-            || file_name == "obj"
-            || file_name == "vendor"
-            || file_name == ".cache"
-            || file_name == ".studio"
-            || file_name == "__pycache__"
-            || file_name == ".gradle"
-            || file_name == ".cargo"
-            || file_name == "bazel-out"
-            || file_name == "coverage"
-            || file_name == ".svn"
-            || file_name == ".hg")
-    {
-        return false;
-    }
-    true
 }

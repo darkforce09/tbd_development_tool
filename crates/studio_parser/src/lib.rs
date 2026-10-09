@@ -5,6 +5,7 @@ pub mod extractor;
 pub mod project;
 pub mod search_index;
 pub mod sync;
+pub mod tree;
 
 pub use builder::{
     build_files_graph, build_items_graph, build_modules_graph, build_project_graph, build_skeleton_files_graph,
