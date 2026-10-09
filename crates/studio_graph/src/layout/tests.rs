@@ -757,3 +757,136 @@ fn assert_nested_without_overlap_visible(g: &Graph) {
         }
     }
 }
+
+/// Every visible folder's direct cards and subfolders, as columns (left to right) of items (top
+/// to bottom). Equal when nothing was reordered, whatever the sizes.
+fn orders(g: &Graph) -> BTreeMap<String, Vec<Vec<String>>> {
+    let mut out = BTreeMap::new();
+    for c in g.clusters.iter().filter(|c| !g.hidden_cluster_ids.contains(&c.id) && !c.is_collapsed()) {
+        let mut items: Vec<(f32, f32, String)> =
+            c.node_ids.iter().map(|id| (g.nodes[id].position[0], g.nodes[id].position[1], format!("{id:?}"))).collect();
+        for child in g.clusters.iter().filter(|x| x.parent_id.as_deref() == Some(c.id.as_str())) {
+            items.push((child.position[0], child.position[1], child.id.clone()));
+        }
+        items.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+        let mut columns: Vec<(f32, Vec<String>)> = Vec::new();
+        for (x, _, id) in items {
+            match columns.last_mut() {
+                Some((cx, col)) if (*cx - x).abs() < 0.01 => col.push(id),
+                _ => columns.push((x, vec![id])),
+            }
+        }
+        out.insert(c.id.clone(), columns.into_iter().map(|(_, col)| col).collect());
+    }
+    out
+}
+
+fn positions(g: &Graph) -> (Vec<[f32; 2]>, Vec<[f32; 4]>) {
+    let cards = g.nodes.values().map(|n| n.position).collect();
+    let folders = g.clusters.iter().map(|c| [c.position[0], c.position[1], c.size[0], c.size[1]]).collect();
+    (cards, folders)
+}
+
+#[test]
+fn a_geometry_relayout_without_changes_reproduces_the_layout() {
+    let mut g = random_graph(21, 6, 30, 70);
+    g.layout_folder_tree();
+    let (before, flow) = (positions(&g), g.flow.clone());
+    assert!(g.relayout_geometry(&[]));
+    assert_eq!(positions(&g), before);
+    assert_eq!(g.flow, flow);
+}
+
+#[test]
+fn expanding_a_card_keeps_every_order_and_the_laws() {
+    for seed in 0..15 {
+        let mut g = random_graph(seed, 2 + seed as usize % 6, 12 + seed as usize * 2, 25 + seed as usize * 3);
+        g.layout_folder_tree();
+        let (before, order) = (positions(&g), orders(&g));
+        let ids: Vec<NodeId> = g.nodes.keys().copied().collect();
+        let card = ids[seed as usize % ids.len()];
+        let size = g.nodes[&card].size;
+        g.nodes.get_mut(&card).unwrap().size = [280.0, 340.0];
+        assert!(g.relayout_geometry(&[card]));
+        assert_eq!(orders(&g), order, "seed {seed}: nothing is reordered");
+        assert_providers_left(&g);
+        assert_nested_without_overlap(&g);
+        assert_routes_obey_the_laws(&g);
+        assert_no_collinear_verticals(&g);
+        g.nodes.get_mut(&card).unwrap().size = size;
+        assert!(g.relayout_geometry(&[card]));
+        assert_eq!(positions(&g), before, "seed {seed}: closing the card restores the layout");
+    }
+}
+
+#[test]
+fn switching_a_folder_level_never_reorders_the_rest() {
+    use crate::model::FolderDetail;
+    for seed in 0..12 {
+        let mut g = random_graph(seed, 4 + seed as usize % 4, 30, 70);
+        g.layout_folder_tree();
+        let (before, order) = (positions(&g), orders(&g));
+        let folder = g.clusters[1 + seed as usize % (g.clusters.len() - 1)].id.clone();
+        let inside = |id: &str| id == folder || id.starts_with(&format!("{folder}/"));
+        for detail in [FolderDetail::NodeView, FolderDetail::Minimised] {
+            g.set_folder_detail(&folder, detail);
+            let now = orders(&g);
+            for (id, columns) in &order {
+                if !inside(id) {
+                    assert_eq!(now.get(id), Some(columns), "seed {seed}: {id} reordered by {detail:?}");
+                }
+            }
+            assert_routes_obey_the_laws(&g);
+            assert_nested_without_overlap_visible(&g);
+        }
+        g.set_folder_detail(&folder, FolderDetail::Open);
+        assert_eq!(positions(&g), before, "seed {seed}: opening it again restores the layout");
+    }
+}
+
+#[test]
+fn a_structural_change_needs_a_full_layout() {
+    let mut g = random_graph(4, 4, 20, 30);
+    g.layout_folder_tree();
+    let ids: Vec<NodeId> = g.nodes.keys().copied().collect();
+    wire(&mut g, ids[0], ids[1], EdgeKind::Import);
+    g.rebuild_fast_indices();
+    assert!(!g.relayout_geometry(&[]), "a new wire is not in the cached structure");
+    g.relayout();
+    assert!(g.relayout_geometry(&[]), "after a full layout the cache is current again");
+}
+
+#[test]
+fn cards_of_any_height_obey_the_laws() {
+    for seed in 0..30u64 {
+        let mut g = random_graph(seed, 1 + seed as usize % 7, 10 + seed as usize % 35, 20 + seed as usize * 2);
+        let mut rng = XorShift(seed.wrapping_mul(31) | 1);
+        for n in g.nodes.values_mut() {
+            if rng.below(3) == 0 {
+                n.size = [220.0 + rng.below(3) as f32 * 30.0, 42.0 + rng.below(400) as f32];
+            }
+        }
+        g.layout_folder_tree();
+        assert_providers_left(&g);
+        assert_nested_without_overlap(&g);
+        assert_routes_obey_the_laws(&g);
+        assert_no_collinear_verticals(&g);
+    }
+}
+
+#[test]
+fn tracks_are_shared_only_by_spans_that_do_not_overlap() {
+    // Three overlapping spans need three tracks; spans after them reuse the lowest free one.
+    let spans = [(0.0, 100.0, 0), (10.0, 50.0, 1), (20.0, 30.0, 2), (40.0, 60.0, 3), (200.0, 300.0, 4)];
+    let (slots, count) = share_tracks(&spans);
+    assert_eq!(count, 3);
+    for (i, a) in spans.iter().enumerate() {
+        for (j, b) in spans.iter().enumerate().skip(i + 1) {
+            let apart = a.1 + TRACK_PITCH <= b.0 || b.1 + TRACK_PITCH <= a.0;
+            assert!(apart || slots[i] != slots[j], "{a:?} and {b:?} overlap on one track");
+        }
+    }
+    assert_eq!(slots[4], 0, "a later span takes the lowest free track");
+    assert_eq!(slots[3], 2, "(40, 60) fits after (20, 30) on track 2");
+    assert_eq!(share_tracks::<u8>(&[]), (vec![], 0));
+}

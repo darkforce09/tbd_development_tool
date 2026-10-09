@@ -263,6 +263,68 @@ fn benchmark_real_project(tracker: &mut TimelineTracker, target_path: &std::path
 
     // 7. Real canvas frames across zoom levels (frame budget verification)
     benchmark_canvas_frames(tracker, &mut graph);
+
+    // 8. Geometry-only relayout: a card opening, a folder changing level.
+    benchmark_relayout(tracker, &mut graph);
+}
+
+/// Times what the user waits for when a card opens or a folder changes level: the geometry-only
+/// relayout plus rebuilding the scene and spatial grid.
+fn benchmark_relayout(tracker: &mut TimelineTracker, graph: &mut Graph) {
+    let mut state = CanvasState::default();
+    state.refresh_scene(graph);
+    // The card with the most members, in the deepest folder: the most containers to re-measure.
+    let Some(card) = graph
+        .nodes
+        .values()
+        .filter(|n| n.archetype == NodeArchetype::File && !graph.is_node_in_collapsed_cluster(n.id))
+        .max_by_key(|n| (n.group_id.as_deref().map_or(0, |g| g.matches('/').count()), n.member_nodes.len(), n.id))
+        .map(|n| n.id)
+    else {
+        return;
+    };
+    let mut time = |name: &str, graph: &mut Graph, change: &dyn Fn(&mut Graph) -> bool| {
+        let t = Instant::now();
+        let geometry = change(graph);
+        let layout_ms = t.elapsed().as_secs_f64() * 1000.0;
+        state.mark_scene_dirty();
+        let t_scene = Instant::now();
+        state.refresh_scene(graph);
+        let scene_ms = t_scene.elapsed().as_secs_f64() * 1000.0;
+        tracker.record_stage(
+            name.to_string(),
+            format!(
+                "{} {:.1} ms + scene {:.1} ms = {:.1} ms",
+                if geometry { "geometry relayout" } else { "FULL layout" },
+                layout_ms,
+                scene_ms,
+                layout_ms + scene_ms
+            ),
+            None,
+            Some((layout_ms + scene_ms) * 1000.0),
+            None,
+            None,
+        );
+    };
+    let toggle = |graph: &mut Graph| {
+        let node = graph.nodes.get_mut(&card).expect("card");
+        node.is_dropdown_expanded = !node.is_dropdown_expanded;
+        node.size = studio_canvas::calculate_file_node_size(node);
+        graph.relayout_geometry(&[card])
+    };
+    time("Relayout: card opens", graph, &toggle);
+    time("Relayout: card closes", graph, &toggle);
+    let folder = graph.nodes[&card].group_id.clone().unwrap_or_default();
+    let level = |detail: studio_graph::FolderDetail| {
+        let folder = folder.clone();
+        move |graph: &mut Graph| {
+            let geometry = graph.has_layout_cache();
+            graph.set_folder_detail(&folder, detail);
+            geometry
+        }
+    };
+    time("Relayout: folder to node view", graph, &level(studio_graph::FolderDetail::NodeView));
+    time("Relayout: folder opens again", graph, &level(studio_graph::FolderDetail::Open));
 }
 
 /// Times real canvas frames: `CanvasView::show` in a headless egui context plus tessellation,

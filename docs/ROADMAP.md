@@ -104,7 +104,7 @@ Goal: remove everything that is mock, duplicated or in the way, so later work bu
 - [x] Wire routing: orthogonal routes that never pass through cards or folders, crossing folder edges only at gates.
 - [x] Route documentation wires: through documentation gates and each folder's documentation strip, never over cards or folders (L2, L3).
 - [x] Rendering of routes, gates, documentation ports and cycle boxes; folder detail levels (minimised, node view, open) switched from the folder header.
-- [ ] Geometry-only relayout when a card expands, and layout performance targets.
+- [x] Geometry-only relayout when a card expands or a folder changes level: columns and order are kept, only the folders around the change are measured again.
 
 Exit: every control on screen does something real, and nothing shows mock data for a real project.
 

@@ -8,4 +8,5 @@ rust-version.workspace = true
 serde.workspace = true
 bytemuck = { workspace = true }
 rkyv.workspace = true
+rayon.workspace = true
 

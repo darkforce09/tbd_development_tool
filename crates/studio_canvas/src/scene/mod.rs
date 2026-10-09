@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytemuck::{Pod, Zeroable};
 use egui::{Color32, Pos2, Rect};
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use studio_graph::{Edge, EdgeId, FolderDetail, GateKind, GateSide, Graph, NodeId};
 use studio_ui::{cluster_tint, color_tokens::*, with_alpha};
 
@@ -136,8 +136,9 @@ pub struct CanvasScene {
     pub member_wires: bool,
     /// How long the build took, in ms.
     pub build_ms: f32,
-    /// (hit cell, wire) pairs, sorted: every cell a wire passes lists it.
-    hit: Vec<((i32, i32), u32)>,
+    /// (hit cell, wire) pairs, sorted: every cell a wire passes lists it. Built on first use or
+    /// by `build_hit_index`.
+    hit: std::sync::OnceLock<Vec<((i32, i32), u32)>>,
     tile_keys: Vec<(i32, i32)>,
 }
 
@@ -157,86 +158,127 @@ impl CanvasScene {
         scene.build_wires(graph, member_wires);
         scene.build_folders(graph);
         scene.build_gates(graph);
-        scene.build_hit_index();
         scene.build_ms = started.elapsed().as_secs_f32() * 1000.0;
         scene
     }
 
     fn build_wires(&mut self, graph: &Graph, member_wires: bool) {
-        // Which edges are drawn along their route, decided in edge order so the result never
-        // depends on thread timing. Pairs already drawn into or out of a collapsed folder, between
-        // two closed cards per kind, and as one bundled member wire, are skipped.
+        use rayon::prelude::*;
+        // What each edge needs, worked out in parallel; which of them are drawn is then decided in
+        // edge order, so the result never depends on thread timing. Pairs already drawn into or
+        // out of a collapsed folder, between two closed cards per kind, and as one bundled member
+        // wire, are skipped.
+        enum Plan {
+            Skip,
+            /// Route ends in a collapsed folder: drawn once per card pair.
+            Hidden,
+            Wire {
+                bundle: bool,
+                routed: bool,
+                dedup: bool,
+            },
+        }
+        let opened = |n: &studio_graph::Node| n.is_dropdown_expanded || n.is_code_expanded;
+        let plans: Vec<Plan> = graph
+            .edges
+            .par_iter()
+            .map(|edge| {
+                if graph.is_node_in_collapsed_cluster(edge.from_node)
+                    || graph.is_node_in_collapsed_cluster(edge.to_node)
+                {
+                    return if graph.has_route(edge) { Plan::Hidden } else { Plan::Skip };
+                }
+                let (Some(from), Some(to)) = (graph.nodes.get(&edge.from_node), graph.nodes.get(&edge.to_node)) else {
+                    return Plan::Skip;
+                };
+                // A wire within one card only means something once the card shows its members.
+                if from.id == to.id && !opened(from) {
+                    return Plan::Skip;
+                }
+                let is_member = |n: &studio_graph::Node, port| {
+                    n.member_nodes.iter().any(|m| m.in_port_id == Some(port) || m.out_port_id == Some(port))
+                };
+                // Member wires between two closed cards are bundled into one wire per pair.
+                let both_closed = !from.is_dropdown_expanded && !to.is_dropdown_expanded;
+                let bundle =
+                    !member_wires && both_closed && (is_member(from, edge.from_port) || is_member(to, edge.to_port));
+                let routed = graph.has_route(edge);
+                // Between two closed cards every wire of a pair and kind has the same path.
+                let dedup = routed && !opened(from) && !opened(to);
+                Plan::Wire { bundle, routed, dedup }
+            })
+            .collect();
+
         let mut routed: Vec<&Edge> = Vec::new();
         let mut curves: Vec<(WireInstance, EdgeId)> = Vec::new();
         let mut hidden_pairs: FxHashSet<(NodeId, NodeId)> = FxHashSet::default();
         let mut drawn_pairs: FxHashSet<(NodeId, NodeId, u32)> = FxHashSet::default();
         let mut bundled_pairs: FxHashSet<(NodeId, NodeId)> = FxHashSet::default();
-        let has_route = |e: &Edge| graph.has_route(e);
-        for edge in &graph.edges {
-            let kind = edge.kind as u32;
-            if graph.is_node_in_collapsed_cluster(edge.from_node) || graph.is_node_in_collapsed_cluster(edge.to_node) {
-                // The route ends at the collapsed folder's gate; draw it once per card pair.
-                if has_route(edge) && hidden_pairs.insert((edge.from_node, edge.to_node)) {
-                    routed.push(edge);
+        for (edge, plan) in graph.edges.iter().zip(plans) {
+            let pair = (edge.from_node, edge.to_node);
+            match plan {
+                Plan::Skip => {}
+                Plan::Hidden => {
+                    if hidden_pairs.insert(pair) {
+                        routed.push(edge);
+                    }
                 }
-                continue;
-            }
-            let (Some(from), Some(to)) = (graph.nodes.get(&edge.from_node), graph.nodes.get(&edge.to_node)) else {
-                continue;
-            };
-            // A wire within one card only means something once the card shows its members.
-            let opened = |n: &studio_graph::Node| n.is_dropdown_expanded || n.is_code_expanded;
-            if from.id == to.id && !opened(from) {
-                continue;
-            }
-            let is_member = |n: &studio_graph::Node, port| {
-                n.member_nodes.iter().any(|m| m.in_port_id == Some(port) || m.out_port_id == Some(port))
-            };
-            // Member wires between two closed cards are bundled into one wire per pair.
-            let both_closed = !from.is_dropdown_expanded && !to.is_dropdown_expanded;
-            if !member_wires
-                && both_closed
-                && (is_member(from, edge.from_port) || is_member(to, edge.to_port))
-                && !bundled_pairs.insert((from.id, to.id))
-            {
-                continue;
-            }
-            if has_route(edge) {
-                // Between two closed cards every wire of a pair and kind has the same path.
-                if opened(from) || opened(to) || drawn_pairs.insert((from.id, to.id, kind)) {
-                    routed.push(edge);
+                Plan::Wire { bundle, .. } if bundle && !bundled_pairs.insert(pair) => {}
+                Plan::Wire { routed: true, dedup, .. } => {
+                    if !dedup || drawn_pairs.insert((pair.0, pair.1, edge.kind as u32)) {
+                        routed.push(edge);
+                    }
                 }
-                continue;
-            }
-            let (p0, p1) = curve_ends(graph, edge);
-            let color = edge_kind_color(edge.kind).to_srgba_unmultiplied();
-            curves.push((WireInstance { p0: p0.into(), p1: p1.into(), color, flags: kind | WIRE_CURVE }, edge.id));
-            if edge.step_number.is_some() || edge.label.is_some() {
-                self.labeled.push(edge.id);
+                Plan::Wire { routed: false, .. } => {
+                    let (p0, p1) = curve_ends(graph, edge);
+                    let color = edge_kind_color(edge.kind).to_srgba_unmultiplied();
+                    let flags = edge.kind as u32 | WIRE_CURVE;
+                    curves.push((WireInstance { p0: p0.into(), p1: p1.into(), color, flags }, edge.id));
+                    if edge.step_number.is_some() || edge.label.is_some() {
+                        self.labeled.push(edge.id);
+                    }
+                }
             }
         }
 
-        // Every segment of every route, keyed by (tile, quantized ends, kind, edge order). After
-        // sorting, copies of a segment shared by several routes are neighbours and the first one
-        // belongs to the earliest edge, so each is drawn once and the result is deterministic.
-        use rayon::prelude::*;
+        // Every segment of every route, keyed by (tile, quantized ends, kind, edge order). Most
+        // sharing is one provider fanning out, so each provider's routes of one kind are
+        // deduplicated together first; sorting then puts any remaining copies side by side, the
+        // first belonging to the earliest edge, so each segment is drawn once and the result is
+        // deterministic.
+        let mut groups: Vec<Vec<u32>> = Vec::new();
+        let mut group_of: FxHashMap<(NodeId, u32), usize> = FxHashMap::default();
+        for (i, edge) in routed.iter().enumerate() {
+            let g = *group_of.entry((edge.from_node, edge.kind as u32)).or_insert_with(|| {
+                groups.push(Vec::new());
+                groups.len() - 1
+            });
+            groups[g].push(i as u32);
+        }
         let q = |v: f32| (v * 10.0).round() as i32;
-        let mut keys: Vec<SegmentKey> = routed
+        let mut keys: Vec<SegmentKey> = groups
             .par_iter()
-            .enumerate()
-            .map_init(Vec::new, |points, (order, edge)| {
-                routed_wire_points_into(graph, edge, points);
-                points
-                    .windows(2)
-                    .filter(|w| (w[0] - w[1]).length_sq() >= 1e-6)
-                    .map(|w| {
-                        let (a, b) = if (w[0].x, w[0].y) <= (w[1].x, w[1].y) { (w[0], w[1]) } else { (w[1], w[0]) };
-                        let mid = a.lerp(b, 0.5);
-                        let tile = ((mid.x / TILE).floor() as i32, (mid.y / TILE).floor() as i32);
-                        (tile, [q(a.x), q(a.y), q(b.x), q(b.y)], edge.kind as u8, order as u32)
-                    })
-                    .collect::<Vec<_>>()
-            })
+            .map_init(
+                || (Vec::new(), FxHashSet::default()),
+                |(points, seen): &mut (Vec<Pos2>, FxHashSet<[i32; 4]>), group| {
+                    seen.clear();
+                    let mut out = Vec::new();
+                    for &order in group {
+                        let edge = routed[order as usize];
+                        routed_wire_points_into(graph, edge, points);
+                        for w in points.windows(2).filter(|w| (w[0] - w[1]).length_sq() >= 1e-6) {
+                            let (a, b) = if (w[0].x, w[0].y) <= (w[1].x, w[1].y) { (w[0], w[1]) } else { (w[1], w[0]) };
+                            let ends = [q(a.x), q(a.y), q(b.x), q(b.y)];
+                            if seen.insert(ends) {
+                                let mid = a.lerp(b, 0.5);
+                                let tile = ((mid.x / TILE).floor() as i32, (mid.y / TILE).floor() as i32);
+                                out.push((tile, ends, edge.kind as u8, order));
+                            }
+                        }
+                    }
+                    out
+                },
+            )
             .flatten_iter()
             .collect();
         keys.par_sort_unstable();
@@ -339,7 +381,13 @@ impl CanvasScene {
         }
     }
 
-    fn build_hit_index(&mut self) {
+    /// Builds the hover index now if it is not built yet. `CanvasState::refresh_scene` starts this
+    /// on a worker thread; a hover before it finishes waits for it.
+    pub fn build_hit_index(&self) {
+        self.hit.get_or_init(|| self.hit_index());
+    }
+
+    fn hit_index(&self) -> Vec<((i32, i32), u32)> {
         use rayon::prelude::*;
         let cell = |p: Pos2| ((p.x / HIT_CELL).floor() as i32, (p.y / HIT_CELL).floor() as i32);
         let span = |a: (i32, i32), b: (i32, i32)| {
@@ -365,18 +413,19 @@ impl CanvasScene {
         });
         let mut hit: Vec<((i32, i32), u32)> = segments.chain(curves).collect();
         hit.par_sort_unstable();
-        self.hit = hit;
+        hit
     }
 
     /// The wire nearest to `world` within `reach` (world units) whose kind `visible` accepts.
     pub fn hit_test(&self, world: Pos2, reach: f32, visible: impl Fn(u32) -> bool) -> Option<EdgeId> {
+        let hit = self.hit.get_or_init(|| self.hit_index());
         let lo = ((world.x - reach) / HIT_CELL).floor() as i32..=((world.x + reach) / HIT_CELL).floor() as i32;
         let mut best: Option<(f32, EdgeId)> = None;
         for cx in lo {
             for cy in ((world.y - reach) / HIT_CELL).floor() as i32..=((world.y + reach) / HIT_CELL).floor() as i32 {
-                let from = self.hit.partition_point(|&(c, _)| c < (cx, cy));
-                let to = self.hit.partition_point(|&(c, _)| c <= (cx, cy));
-                for &(_, i) in &self.hit[from..to] {
+                let from = hit.partition_point(|&(c, _)| c < (cx, cy));
+                let to = hit.partition_point(|&(c, _)| c <= (cx, cy));
+                for &(_, i) in &hit[from..to] {
                     let (w, owner) = if i & HIT_CURVE != 0 {
                         let i = (i & !HIT_CURVE) as usize;
                         (&self.curves[i], self.curve_owner[i])

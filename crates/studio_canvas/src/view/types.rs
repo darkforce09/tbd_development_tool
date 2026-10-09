@@ -242,6 +242,10 @@ impl CanvasState {
         if self.scene_dirty || self.scene.member_wires != self.show_subnode_wires_globally || self.scene.revision == 0 {
             self.spatial_grid.build_from_graph(graph);
             self.scene = Arc::new(CanvasScene::build(graph, self.show_subnode_wires_globally));
+            // The hover index is only needed once the pointer is over a wire: build it off the
+            // UI thread.
+            let scene = self.scene.clone();
+            rayon::spawn(move || scene.build_hit_index());
             self.scene_dirty = false;
         }
     }

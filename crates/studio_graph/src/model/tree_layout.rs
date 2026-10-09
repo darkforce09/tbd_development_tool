@@ -68,10 +68,17 @@ impl Graph {
 
     /// Re-runs whichever layout the graph uses after a size or collapse change.
     pub fn relayout(&mut self) {
-        if self.tree_layout {
-            self.layout_folder_tree();
-        } else {
+        self.relayout_resized(&[]);
+    }
+
+    /// Lays the graph out again after `cards` changed size or folders changed detail level. The
+    /// dataflow layout keeps every container's order and only measures what changed (see
+    /// [`Graph::relayout_geometry`]); otherwise the whole layout runs again.
+    pub fn relayout_resized(&mut self, cards: &[super::types::NodeId]) {
+        if !self.tree_layout {
             self.update_cluster_bounds();
+        } else if !(self.flow_layout && self.relayout_geometry(cards)) {
+            self.layout_folder_tree();
         }
     }
 

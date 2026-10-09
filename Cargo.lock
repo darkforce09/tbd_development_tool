@@ -2956,6 +2956,7 @@ name = "studio_graph"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "rayon",
  "rkyv",
  "serde",
 ]

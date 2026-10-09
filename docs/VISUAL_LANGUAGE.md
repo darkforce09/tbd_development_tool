@@ -49,7 +49,7 @@ Cards (files) and folders follow the same rules.
 | 2. Node view | Every gate, listed like the pins of a ComfyUI or Unreal node. The inside is hidden. |
 | 3. Open | The same gates as level 2, with the wires continuing inside to the files. |
 
-Changing a folder's detail level never reorders the folders around it.
+Changing a folder's detail level never reorders the folders around it. Neither does opening a card: the layout keeps every folder's columns and order and only moves things aside to make room. A full layout (opening the project, loading a folder, new wires) may order things afresh.
 
 In node view the pins are listed top to bottom on each side: documentation pins first, then code pins, each in alphabetical order of the file whose wires they carry, and each pin is labelled with that file's name. An open folder places the same gates level with what they feed, so the order can differ between levels; the set of gates is the same.
 

@@ -62,6 +62,10 @@ pub struct Graph {
     #[serde(skip)]
     #[rkyv(with = rkyv::with::Skip)]
     pub layout_stats: Vec<crate::layout::ContainerStats>,
+    /// What the last dataflow layout found, so a resize or detail change can keep the order.
+    #[serde(skip)]
+    #[rkyv(with = rkyv::with::Skip)]
+    pub(crate) layout_cache: Option<Box<crate::layout::LayoutCache>>,
 }
 
 impl Graph {
@@ -85,6 +89,7 @@ impl Graph {
             route_index: HashMap::new(),
             doc_route_index: HashMap::new(),
             layout_stats: Vec::new(),
+            layout_cache: None,
         }
     }
 

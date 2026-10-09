@@ -147,6 +147,7 @@ enum Kind {
     Cycle,
 }
 
+#[derive(Clone)]
 struct Container {
     kind: Kind,
     parent: Option<usize>,
@@ -251,24 +252,173 @@ impl Graph {
         tree.box_cycles(&pairs);
         let links = tree.lift(&pairs);
         let doc_links = tree.lift(&doc_pairs);
-        let placed = tree.measure(self, &links, &doc_links);
-        let (mut flow, origins) = tree.place(self, &placed);
-        flow.routes = tree.compose_routes(&pairs, &placed, &origins, |p| &p.routes);
-        flow.doc_routes = tree.compose_routes(&doc_pairs, &placed, &origins, |p| &p.doc_routes);
-        self.layout_stats = placed
-            .into_iter()
+        let outer = outer_gate_keys(tree.containers.len(), &links, &doc_links);
+        let n = tree.containers.len();
+        let mut cache = LayoutCache {
+            fingerprint: fingerprint(self),
+            tree,
+            pairs,
+            doc_pairs,
+            links,
+            doc_links,
+            outer,
+            frozen: vec![Frozen::default(); n],
+            placed: vec![Placed::default(); n],
+        };
+        cache.measure(self, &vec![true; n], false);
+        self.apply_layout(cache);
+    }
+
+    /// Lays the graph out again after cards changed size or folders changed detail level,
+    /// keeping every container's columns and order: only the containers holding `cards` and the
+    /// folders whose level changed, and the folders around them, are measured again. Returns
+    /// false, changing nothing, when there is no layout to adjust or the graph's structure
+    /// changed since; then a full layout is needed.
+    pub fn relayout_geometry(&mut self, cards: &[NodeId]) -> bool {
+        let Some(mut cache) = self.layout_cache.take() else { return false };
+        if cache.fingerprint != fingerprint(self) {
+            return false;
+        }
+        let tree = &mut cache.tree;
+        let mut dirty = vec![false; tree.containers.len()];
+        let mark = |dirty: &mut Vec<bool>, tree: &Tree, mut c: Option<usize>| {
+            while let Some(i) = c {
+                dirty[i] = true;
+                c = tree.containers[i].parent;
+            }
+        };
+        for i in 0..tree.containers.len() {
+            let Kind::Folder(f) = tree.containers[i].kind else { continue };
+            let Some(cluster) = self.clusters.get(f) else { return false };
+            let (collapsed, node_view) =
+                (cluster.is_collapsed(), cluster.detail == crate::model::FolderDetail::NodeView);
+            if tree.containers[i].collapsed != collapsed || tree.containers[i].node_view != node_view {
+                tree.containers[i].collapsed = collapsed;
+                tree.containers[i].node_view = node_view;
+                mark(&mut dirty, tree, Some(i));
+            }
+        }
+        for card in cards {
+            mark(&mut dirty, tree, tree.home.get(card).copied());
+        }
+        cache.measure(self, &dirty, true);
+        self.apply_layout(*cache);
+        true
+    }
+
+    /// Whether a layout is kept that a geometry-only relayout can adjust.
+    pub fn has_layout_cache(&self) -> bool {
+        self.layout_cache.is_some()
+    }
+
+    /// Places the measured containers, composes the routes and keeps the cache.
+    fn apply_layout(&mut self, cache: LayoutCache) {
+        let (mut flow, origins) = cache.tree.place(self, &cache.placed);
+        let hidden = cache.tree.hidden();
+        flow.routes = cache.tree.compose_routes(&cache.pairs, &cache.placed, &origins, &hidden, |p| &p.routes);
+        flow.doc_routes =
+            cache.tree.compose_routes(&cache.doc_pairs, &cache.placed, &origins, &hidden, |p| &p.doc_routes);
+        self.layout_stats = cache
+            .placed
+            .iter()
             .enumerate()
             .map(|(c, p)| ContainerStats {
-                id: tree.containers[c].key.clone(),
-                depth: tree.depth(c),
+                id: cache.tree.containers[c].key.clone(),
+                depth: cache.tree.depth(c),
                 size: p.size,
-                ..p.stats
+                ..p.stats.clone()
             })
             .collect();
         self.flow = Some(flow);
         self.rebuild_route_index();
         self.rebuild_collapsed_cache();
+        self.layout_cache = Some(Box::new(cache));
     }
+}
+
+/// What a geometry-only relayout needs from the last full layout: the folder tree with its cycle
+/// boxes, the lifted wires, and each container's columns, order and measurements. Not saved.
+#[derive(Clone, Default)]
+pub(crate) struct LayoutCache {
+    /// Cards, wires and folders the layout was made for.
+    fingerprint: u64,
+    tree: Tree,
+    pairs: Vec<(NodeId, NodeId)>,
+    doc_pairs: Vec<(NodeId, NodeId)>,
+    links: Vec<BTreeSet<(From, To)>>,
+    doc_links: Vec<BTreeSet<(From, To)>>,
+    outer: Vec<GateKeys>,
+    frozen: Vec<Frozen>,
+    placed: Vec<Placed>,
+}
+
+impl std::fmt::Debug for LayoutCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "LayoutCache {{ {} containers }}", self.tree.containers.len())
+    }
+}
+
+impl LayoutCache {
+    /// Measures the containers marked in `which`, children before parents. With `reuse`, each
+    /// keeps the columns and order it had.
+    fn measure(&mut self, graph: &Graph, which: &[bool], reuse: bool) {
+        let mut order: Vec<usize> = (0..self.tree.containers.len()).filter(|&c| which[c]).collect();
+        order.sort_by_key(|&c| std::cmp::Reverse(self.tree.depth(c)));
+        for c in order {
+            let frozen = reuse.then(|| &self.frozen[c]);
+            let (placed, frozen) = self.tree.measure_one(
+                graph,
+                c,
+                &self.links[c],
+                &self.doc_links[c],
+                &self.outer[c],
+                &self.placed,
+                frozen,
+            );
+            self.placed[c] = placed;
+            self.frozen[c] = frozen;
+        }
+    }
+}
+
+/// Changes when cards, wires or folders are added or removed.
+fn fingerprint(graph: &Graph) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    graph.nodes.len().hash(&mut h);
+    graph.clusters.len().hash(&mut h);
+    for e in &graph.edges {
+        (e.id, e.from_node, e.to_node, e.kind as u8).hash(&mut h);
+    }
+    h.finish()
+}
+
+/// The gates each container needs, seen from outside: every provider its parent wires into or out
+/// of it. A folder whose contents are hidden has no links of its own to tell.
+fn outer_gate_keys(n: usize, links: &[BTreeSet<(From, To)>], doc_links: &[BTreeSet<(From, To)>]) -> Vec<GateKeys> {
+    let mut outer = vec![GateKeys::default(); n];
+    for (code, all) in [(true, links), (false, doc_links)] {
+        for (from, to) in all.iter().flatten() {
+            if let From::Item(Item::Sub(s), k) = from {
+                let keys = &mut outer[*s];
+                if code { &mut keys.code_out } else { &mut keys.doc_out }.insert(*k);
+            }
+            if let To::Item(Item::Sub(s), k) = to {
+                let keys = &mut outer[*s];
+                if code { &mut keys.code_in } else { &mut keys.doc_in }.insert(*k);
+            }
+        }
+    }
+    outer
+}
+
+/// A container's columns, kept between layouts so a relayout never reorders: the layer of each
+/// item and the column order found by the crossing reduction.
+#[derive(Debug, Clone, Default)]
+struct Frozen {
+    item_layers: Vec<usize>,
+    order: Vec<Vec<usize>>,
+    nodes: usize,
 }
 
 /// Distinct (provider, consumer) card pairs joined by code-flow wires, in a stable order.
@@ -296,6 +446,7 @@ fn documentation_pairs(graph: &Graph, tree: &Tree) -> Vec<(NodeId, NodeId)> {
     pairs.into_iter().collect()
 }
 
+#[derive(Clone, Default)]
 struct Tree {
     containers: Vec<Container>,
     /// Container that directly holds each card.
@@ -346,14 +497,22 @@ impl Tree {
         chain
     }
 
-    /// The visible end of a wire: a card inside a collapsed folder is represented by the
-    /// outermost collapsed folder around it. Returns the item and the chain of containers above it.
-    fn visible_end(&self, node: NodeId) -> (Item, Vec<usize>) {
-        let chain = self.chain(node);
-        match chain.iter().rposition(|&c| self.containers[c].collapsed) {
-            Some(i) => (Item::Sub(chain[i]), chain[i + 1..].to_vec()),
-            None => (Item::Card(node), chain),
+    /// Containers that are hidden: inside a folder whose contents are hidden, or that folder's
+    /// own inside. Wires are lifted and laid out through them anyway, so showing them again
+    /// changes nothing else.
+    fn hidden(&self) -> Vec<bool> {
+        let mut hidden = vec![false; self.containers.len()];
+        for (c, flag) in hidden.iter_mut().enumerate() {
+            let mut at = Some(c);
+            while let Some(i) = at {
+                if self.containers[i].collapsed {
+                    *flag = true;
+                    break;
+                }
+                at = self.containers[i].parent;
+            }
         }
+        hidden
     }
 
     /// The item directly inside `container` that holds the end `(item, chain)`.
@@ -368,8 +527,8 @@ impl Tree {
     fn box_cycles(&mut self, pairs: &[(NodeId, NodeId)]) {
         let mut sibling_edges: BTreeMap<usize, BTreeSet<(Item, Item)>> = BTreeMap::new();
         for &(u, v) in pairs {
-            let (ui, uc) = self.visible_end(u);
-            let (vi, vc) = self.visible_end(v);
+            let (ui, uc) = (Item::Card(u), self.chain(u));
+            let (vi, vc) = (Item::Card(v), self.chain(v));
             let Some(lca) = lowest_common(&uc, &vc) else { continue };
             let (a, b) = (self.item_in(ui, &uc, lca), self.item_in(vi, &vc, lca));
             if a != b {
@@ -377,9 +536,6 @@ impl Tree {
             }
         }
         for (container, edges) in sibling_edges {
-            if self.containers[container].collapsed {
-                continue;
-            }
             let items = self.containers[container].items.clone();
             let pos: HashMap<Item, usize> = items.iter().enumerate().map(|(i, &it)| (it, i)).collect();
             let mut adj = vec![Vec::new(); items.len()];
@@ -423,8 +579,8 @@ impl Tree {
     /// container below the lowest common one, across that one, then into each container down to
     /// the consumer.
     fn pieces(&self, u: NodeId, v: NodeId) -> Vec<(usize, From, To)> {
-        let (ui, uc) = self.visible_end(u);
-        let (vi, vc) = self.visible_end(v);
+        let (ui, uc) = (Item::Card(u), self.chain(u));
+        let (vi, vc) = (Item::Card(v), self.chain(v));
         let Some(lca) = lowest_common(&uc, &vc) else { return Vec::new() };
         let (a, b) = (self.item_in(ui, &uc, lca), self.item_in(vi, &vc, lca));
         if a == b {
@@ -460,17 +616,22 @@ impl Tree {
         pairs: &[(NodeId, NodeId)],
         placed: &[Placed],
         origins: &[[f32; 2]],
-        of: impl Fn(&Placed) -> &BTreeMap<(From, To), Vec<[f32; 2]>>,
-    ) -> Vec<WireRoute> {
-        let mut routes = Vec::new();
-        'pairs: for &(u, v) in pairs {
-            let pieces = self.pieces(u, v);
+        hidden: &[bool],
+        of: impl Fn(&Placed) -> &BTreeMap<(From, To), Vec<[f32; 2]>> + Sync,
+    ) -> Vec<WireRoute>
+    where
+        Self: Sync,
+    {
+        use rayon::prelude::*;
+        let compose = |&(u, v): &(NodeId, NodeId)| -> Option<WireRoute> {
+            // Pieces inside a hidden folder are skipped: the route starts or ends at its gate.
+            let pieces: Vec<(usize, From, To)> = self.pieces(u, v).into_iter().filter(|p| !hidden[p.0]).collect();
             if pieces.is_empty() {
-                continue;
+                return None;
             }
             let mut points: Vec<[f32; 2]> = Vec::new();
             for (c, from, to) in pieces {
-                let Some(local) = of(&placed[c]).get(&(from, to)) else { continue 'pairs };
+                let local = of(&placed[c]).get(&(from, to))?;
                 let o = origins[c];
                 for p in local {
                     let w = [o[0] + p[0], o[1] + p[1]];
@@ -479,9 +640,10 @@ impl Tree {
                     }
                 }
             }
-            routes.push(WireRoute { provider: u, consumer: v, points: simplify(points) });
-        }
-        routes
+            Some(WireRoute { provider: u, consumer: v, points: simplify(points) })
+        };
+        // Pairs are independent; the result keeps their order.
+        pairs.par_iter().filter_map(compose).collect()
     }
 
     fn depth(&self, mut c: usize) -> usize {
@@ -493,37 +655,7 @@ impl Tree {
         d
     }
 
-    /// Lays out every container bottom-up.
-    fn measure(
-        &self,
-        graph: &Graph,
-        links: &[BTreeSet<(From, To)>],
-        doc_links: &[BTreeSet<(From, To)>],
-    ) -> Vec<Placed> {
-        let mut order: Vec<usize> = (0..self.containers.len()).collect();
-        order.sort_by_key(|&c| std::cmp::Reverse(self.depth(c)));
-        // The gates each container needs, seen from outside: every provider its parent wires into
-        // or out of it. A folder whose contents are hidden has no links of its own to tell.
-        let mut outer = vec![GateKeys::default(); self.containers.len()];
-        for (code, all) in [(true, links), (false, doc_links)] {
-            for (from, to) in all.iter().flatten() {
-                if let From::Item(Item::Sub(s), k) = from {
-                    let keys = &mut outer[*s];
-                    if code { &mut keys.code_out } else { &mut keys.doc_out }.insert(*k);
-                }
-                if let To::Item(Item::Sub(s), k) = to {
-                    let keys = &mut outer[*s];
-                    if code { &mut keys.code_in } else { &mut keys.doc_in }.insert(*k);
-                }
-            }
-        }
-        let mut placed: Vec<Placed> = vec![Placed::default(); self.containers.len()];
-        for c in order {
-            placed[c] = self.measure_one(graph, c, &links[c], &doc_links[c], &outer[c], &placed);
-        }
-        placed
-    }
-
+    #[allow(clippy::too_many_arguments)]
     fn measure_one(
         &self,
         graph: &Graph,
@@ -532,25 +664,9 @@ impl Tree {
         doc_links: &BTreeSet<(From, To)>,
         outer: &GateKeys,
         placed: &[Placed],
-    ) -> Placed {
+        frozen: Option<&Frozen>,
+    ) -> (Placed, Frozen) {
         let container = &self.containers[c];
-        if container.node_view {
-            return node_view(graph, outer);
-        }
-        if container.collapsed {
-            // Minimised: one input and one output gate. Every code wire meets in the middle of its
-            // edge, every documentation wire level with a card's documentation port.
-            let mid = COLLAPSED_FOLDER_SIZE[1] * 0.5;
-            let at = |keys: &BTreeSet<NodeId>, y: f32| keys.iter().map(|&k| (k, y)).collect();
-            return Placed {
-                size: COLLAPSED_FOLDER_SIZE,
-                in_gates: at(&outer.code_in, mid),
-                out_gates: at(&outer.code_out, mid),
-                doc_in: at(&outer.doc_in, DOC_PORT_OFFSET_Y),
-                doc_out: at(&outer.doc_out, DOC_PORT_OFFSET_Y),
-                ..Default::default()
-            };
-        }
         let is_cycle = container.kind == Kind::Cycle;
         let doc_providers: BTreeSet<NodeId> = doc_links.iter().map(|(from, _)| from.key()).collect();
         let strip_top = if is_cycle { CYCLE_PAD_TOP } else { PAD_TOP };
@@ -568,8 +684,35 @@ impl Tree {
                 }
             }
         };
-        let mut lay = ColumnLayout::new(&container.items, links, &size_of, &port_y, is_cycle);
-        lay.order();
+        // Columns and order: kept from the last layout when asked, found afresh otherwise.
+        let mut lay =
+            ColumnLayout::new(&container.items, links, &size_of, &port_y, is_cycle, frozen.map(|f| &f.item_layers[..]));
+        match frozen {
+            Some(f) if f.nodes == lay.nodes.len() && f.order.iter().map(Vec::len).sum::<usize>() == lay.nodes.len() => {
+                lay.layers = f.order.clone();
+            }
+            _ => lay.order(),
+        }
+        let kept = Frozen { item_layers: lay.item_layer.clone(), order: lay.layers.clone(), nodes: lay.nodes.len() };
+
+        if container.node_view {
+            return (node_view(graph, outer), kept);
+        }
+        if container.collapsed {
+            // Minimised: one input and one output gate. Every code wire meets in the middle of its
+            // edge, every documentation wire level with a card's documentation port.
+            let mid = COLLAPSED_FOLDER_SIZE[1] * 0.5;
+            let at = |keys: &BTreeSet<NodeId>, y: f32| keys.iter().map(|&k| (k, y)).collect();
+            let p = Placed {
+                size: COLLAPSED_FOLDER_SIZE,
+                in_gates: at(&outer.code_in, mid),
+                out_gates: at(&outer.code_out, mid),
+                doc_in: at(&outer.doc_in, DOC_PORT_OFFSET_Y),
+                doc_out: at(&outer.doc_out, DOC_PORT_OFFSET_Y),
+                ..Default::default()
+            };
+            return (p, kept);
+        }
         lay.coordinates();
 
         let (pad_top, pad_x, pad_bottom) =
@@ -579,9 +722,10 @@ impl Tree {
         let mut bottom = pad_top;
         let mut right = content_left;
         for node in &lay.nodes {
-            let Some(it) = node.item else { continue };
+            // Lanes count too: a wire passing below the lowest item must stay inside.
             let pos = [content_left + lay.column_x[node.layer], pad_top + node.y];
             bottom = bottom.max(pos[1] + node.h);
+            let Some(it) = node.item else { continue };
             right = right.max(pos[0] + node.w);
             p.items.push((it, pos));
         }
@@ -680,7 +824,7 @@ impl Tree {
             };
             p.doc_routes = channels.route(doc_links, &exit_y, &entry_y);
         }
-        p
+        (p, kept)
     }
 
     /// Assigns world positions top-down and records gates and cycle boxes. Also returns each
@@ -876,6 +1020,8 @@ enum Seg {
 }
 
 struct ColumnLayout {
+    /// Layer of each item (by index in the container), as decided before the lanes were added.
+    item_layer: Vec<usize>,
     nodes: Vec<ColNode>,
     segs: Vec<Seg>,
     layers: Vec<Vec<usize>>,
@@ -905,6 +1051,7 @@ impl ColumnLayout {
         size_of: &dyn Fn(Item) -> [f32; 2],
         port_y: &dyn Fn(Item, NodeId, bool) -> f32,
         is_cycle: bool,
+        frozen_layers: Option<&[usize]>,
     ) -> Self {
         let pos: HashMap<Item, usize> = items.iter().enumerate().map(|(i, &it)| (it, i)).collect();
         let n = items.len();
@@ -973,7 +1120,9 @@ impl ColumnLayout {
         // much taller than the rest is split into side-by-side columns (L1 still holds: items in
         // one layer never wire to each other).
         let sizes: Vec<[f32; 2]> = items.iter().map(|&it| size_of(it)).collect();
-        let layer = if is_cycle {
+        let layer = if let Some(kept) = frozen_layers.filter(|k| k.len() == n) {
+            kept.to_vec()
+        } else if is_cycle {
             let seq: Vec<usize> = order.iter().copied().filter(|&i| connected[i]).collect();
             let mut packed = vec![0usize; n];
             for (&i, column) in seq.iter().zip(pack_columns(&seq, &sizes)) {
@@ -985,6 +1134,7 @@ impl ColumnLayout {
         };
 
         let mut lay = ColumnLayout {
+            item_layer: layer.clone(),
             nodes: Vec::new(),
             segs: Vec::new(),
             layers: Vec::new(),
@@ -1640,26 +1790,56 @@ fn ordered_fit(desired: &[f32], heights: &[(f32, f32)]) -> Vec<f32> {
 /// pitch of clearance, visiting intervals by start. Returns each interval's track (in the input
 /// order) and the number of tracks used, which is the most intervals overlapping at any point.
 fn share_tracks<K: Ord + Copy>(intervals: &[(f32, f32, K)]) -> (Vec<usize>, usize) {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
     let mut order: Vec<usize> = (0..intervals.len()).collect();
     order.sort_by(|&a, &b| {
         let (x, y) = (&intervals[a], &intervals[b]);
         x.0.total_cmp(&y.0).then(x.1.total_cmp(&y.1)).then(x.2.cmp(&y.2))
     });
-    let mut ends: Vec<f32> = Vec::new();
+    // Tracks in use, by the end of their last span (plus clearance), and free tracks by index.
+    let mut busy: BinaryHeap<Reverse<(Ord32, usize)>> = BinaryHeap::new();
+    let mut free: BinaryHeap<Reverse<usize>> = BinaryHeap::new();
+    let mut count = 0;
     let mut slots = vec![0; intervals.len()];
     for i in order {
         let (lo, hi, _) = intervals[i];
-        let t = match ends.iter().position(|&end| end + TRACK_PITCH <= lo) {
-            Some(t) => t,
+        while let Some(Reverse((Ord32(end), t))) = busy.peek().copied() {
+            if end > lo {
+                break;
+            }
+            busy.pop();
+            free.push(Reverse(t));
+        }
+        let t = match free.pop() {
+            Some(Reverse(t)) => t,
             None => {
-                ends.push(f32::NEG_INFINITY);
-                ends.len() - 1
+                count += 1;
+                count - 1
             }
         };
-        ends[t] = hi;
+        busy.push(Reverse((Ord32(hi + TRACK_PITCH), t)));
         slots[i] = t;
     }
-    (slots, ends.len())
+    (slots, count)
+}
+
+/// An f32 ordered by `total_cmp`, for heaps.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Ord32(f32);
+
+impl Eq for Ord32 {}
+
+impl PartialOrd for Ord32 {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Ord32 {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
+    }
 }
 
 /// Each gate at the median y of its wires, spread to at least `GATE_PITCH` apart in that order.

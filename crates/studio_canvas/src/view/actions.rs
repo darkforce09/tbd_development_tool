@@ -27,7 +27,7 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
         if let Some(bounds) = new_bounds {
             if graph.tree_layout {
                 // A taller card shifts its row and every folder below it.
-                graph.layout_folder_tree();
+                graph.relayout_resized(&[node_id]);
                 state.mark_scene_dirty();
             } else {
                 state.spatial_grid.update(node_id, bounds);
@@ -55,7 +55,7 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
         if let Some(bounds) = new_bounds {
             if graph.tree_layout {
                 // A taller card shifts its row and every folder below it.
-                graph.layout_folder_tree();
+                graph.relayout_resized(&[node_id]);
                 state.mark_scene_dirty();
             } else {
                 state.spatial_grid.update(node_id, bounds);
@@ -157,7 +157,7 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
         if let Some(bounds) = new_bounds {
             if graph.tree_layout {
                 // A taller card shifts its row and every folder below it.
-                graph.layout_folder_tree();
+                graph.relayout_resized(&[node_id]);
                 state.mark_scene_dirty();
             } else {
                 state.spatial_grid.update(node_id, bounds);
@@ -216,7 +216,7 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
                 };
                 if let Some(bounds) = new_bounds {
                     if graph.tree_layout {
-                        graph.layout_folder_tree();
+                        graph.relayout_resized(&[id]);
                         state.mark_scene_dirty();
                     } else {
                         graph.update_cluster_bounds();
@@ -249,7 +249,7 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
                 };
                 if let Some(bounds) = new_bounds {
                     if graph.tree_layout {
-                        graph.layout_folder_tree();
+                        graph.relayout_resized(&[id]);
                         state.mark_scene_dirty();
                     } else {
                         graph.update_cluster_bounds();
@@ -276,7 +276,7 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
                 };
                 if let Some(bounds) = new_bounds {
                     if graph.tree_layout {
-                        graph.layout_folder_tree();
+                        graph.relayout_resized(&[id]);
                         state.mark_scene_dirty();
                     } else {
                         graph.update_cluster_bounds();
