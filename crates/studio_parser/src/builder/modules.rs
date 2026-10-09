@@ -91,9 +91,7 @@ pub fn build_modules_graph(project: &ExtractedProject) -> (Graph, ProjectStats) 
             for (idx, u) in file.uses.iter().take(4).enumerate() {
                 if let Some(port) = node_ref.inputs.get(idx) {
                     let imported_mod = u.path
-                        .split([':', '/', '\\', '.'])
-                        .filter(|s| !s.is_empty())
-                        .last()
+                        .split([':', '/', '\\', '.']).rfind(|s| !s.is_empty())
                         .unwrap_or("")
                         .trim()
                         .to_string();

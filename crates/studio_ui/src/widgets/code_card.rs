@@ -414,7 +414,7 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
                     TEXT_PRIMARY,
                 );
                 curr_y += font_size * 1.3;
-            } else if trimmed.starts_with("> ") {
+            } else if let Some(quote) = trimmed.strip_prefix("> ") {
                 body_clip.rect_filled(
                     Rect::from_min_size(Pos2::new(content_left, curr_y), Vec2::new(3.0 * z, font_size * 1.2)),
                     CornerRadius::from(1.0),
@@ -423,7 +423,7 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
                 body_clip.text(
                     Pos2::new(content_left + 8.0 * z, curr_y),
                     egui::Align2::LEFT_TOP,
-                    trimmed[2..].trim(),
+                    quote.trim(),
                     FontId::new(font_size, FontFamily::Proportional),
                     TEXT_SECONDARY,
                 );

@@ -166,15 +166,13 @@ fn test_node_tab_clicked_and_port_jump_action() {
     assert_eq!(node.scroll_offset_y, 0.0);
 
     // 1. Tab switch event
-    let mut events = super::types::RenderEvents::default();
-    events.node_tab_clicked = Some((n1, 2)); // Switch to Members tab
+    let events = super::types::RenderEvents { node_tab_clicked: Some((n1, 2)), ..Default::default() }; // Switch to Members tab
     super::actions::apply_render_events(events, &mut state, &mut graph, rect);
 
     assert_eq!(graph.nodes.get(&n1).unwrap().expanded_tab, 2);
 
     // 2. Port jump event: selects target node and immediately executes CenterNode
-    let mut events = super::types::RenderEvents::default();
-    events.port_jump_clicked = Some(n2);
+    let events = super::types::RenderEvents { port_jump_clicked: Some(n2), ..Default::default() };
     super::actions::apply_render_events(events, &mut state, &mut graph, rect);
 
     assert!(state.selected_nodes.contains(&n2));
@@ -190,8 +188,7 @@ fn test_node_tab_clicked_and_port_jump_action() {
     // 3. Close code card resets is_code_expanded and scroll_offset_y
     graph.nodes.get_mut(&n1).unwrap().is_code_expanded = true;
     graph.nodes.get_mut(&n1).unwrap().scroll_offset_y = 120.0;
-    let mut events = super::types::RenderEvents::default();
-    events.code_close_clicked = Some(n1);
+    let events = super::types::RenderEvents { code_close_clicked: Some(n1), ..Default::default() };
     super::actions::apply_render_events(events, &mut state, &mut graph, rect);
 
     let node = graph.nodes.get(&n1).unwrap();
@@ -265,29 +262,25 @@ fn test_context_menu_actions_and_subnode_jump() {
     let rect = Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(1000.0, 800.0));
 
     // 1. Subnode jump scrolls card to line
-    let mut events = super::types::RenderEvents::default();
-    events.subnode_jump_clicked = Some((nid, 15));
+    let events = super::types::RenderEvents { subnode_jump_clicked: Some((nid, 15)), ..Default::default() };
     super::actions::apply_render_events(events, &mut state, &mut graph, rect);
 
     assert_eq!(graph.nodes.get(&nid).unwrap().scroll_offset_y, (15 - 1) as f32 * 18.0);
 
     // 2. ContextMenuAction::ToggleExpand toggles code expansion
-    let mut events = super::types::RenderEvents::default();
-    events.context_menu_action = Some((nid, super::types::ContextMenuAction::ToggleExpand));
+    let events = super::types::RenderEvents { context_menu_action: Some((nid, super::types::ContextMenuAction::ToggleExpand)), ..Default::default() };
     super::actions::apply_render_events(events, &mut state, &mut graph, rect);
 
     assert!(graph.nodes.get(&nid).unwrap().is_code_expanded);
 
     // 3. ContextMenuAction::ViewDocs sets active tab to Documentation (tab 1)
-    let mut events = super::types::RenderEvents::default();
-    events.context_menu_action = Some((nid, super::types::ContextMenuAction::ViewDocs));
+    let events = super::types::RenderEvents { context_menu_action: Some((nid, super::types::ContextMenuAction::ViewDocs)), ..Default::default() };
     super::actions::apply_render_events(events, &mut state, &mut graph, rect);
 
     assert_eq!(graph.nodes.get(&nid).unwrap().expanded_tab, 1);
 
     // 4. ContextMenuAction::CopyPath sets status message
-    let mut events = super::types::RenderEvents::default();
-    events.context_menu_action = Some((nid, super::types::ContextMenuAction::CopyPath));
+    let events = super::types::RenderEvents { context_menu_action: Some((nid, super::types::ContextMenuAction::CopyPath)), ..Default::default() };
     super::actions::apply_render_events(events, &mut state, &mut graph, rect);
 
     assert!(state.status_message.as_ref().unwrap().contains("handler.rs"));
@@ -310,22 +303,19 @@ fn test_member_fold_clicked_and_dropdown_toggle() {
     let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::new(800.0, 600.0));
 
     // Test member_fold_clicked inserts then removes from collapsed_subnodes
-    let mut events = super::types::RenderEvents::default();
-    events.member_fold_clicked = Some((nid, "execute".to_string()));
+    let events = super::types::RenderEvents { member_fold_clicked: Some((nid, "execute".to_string())), ..Default::default() };
     super::actions::apply_render_events(events, &mut state, &mut graph, rect);
 
     assert!(state.collapsed_subnodes.contains(&(nid, "execute".to_string())));
 
-    let mut events2 = super::types::RenderEvents::default();
-    events2.member_fold_clicked = Some((nid, "execute".to_string()));
+    let events2 = super::types::RenderEvents { member_fold_clicked: Some((nid, "execute".to_string())), ..Default::default() };
     super::actions::apply_render_events(events2, &mut state, &mut graph, rect);
 
     assert!(!state.collapsed_subnodes.contains(&(nid, "execute".to_string())));
 
     // Test file_dropdown_toggle_clicked toggles is_dropdown_expanded
     assert!(!graph.nodes.get(&nid).unwrap().is_dropdown_expanded);
-    let mut events3 = super::types::RenderEvents::default();
-    events3.file_dropdown_toggle_clicked = Some(nid);
+    let events3 = super::types::RenderEvents { file_dropdown_toggle_clicked: Some(nid), ..Default::default() };
     super::actions::apply_render_events(events3, &mut state, &mut graph, rect);
     assert!(graph.nodes.get(&nid).unwrap().is_dropdown_expanded);
 }

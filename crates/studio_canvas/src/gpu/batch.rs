@@ -23,6 +23,7 @@ impl GpuWireBatch {
 
     /// Adds a connection wire to the GPU render batch.
     #[inline]
+    #[allow(clippy::too_many_arguments)]
     pub fn push_wire(
         &mut self,
         p0: Pos2,

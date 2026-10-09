@@ -207,14 +207,13 @@ impl MarkdownRenderer {
                 self.table_headers = std::mem::take(&mut self.current_table_row);
                 self.in_table_head = false;
             }
-            TagEnd::TableRow => {
-                if !self.in_table_head {
+            TagEnd::TableRow
+                if !self.in_table_head => {
                     let row = std::mem::take(&mut self.current_table_row);
                     if !row.is_empty() {
                         self.table_rows.push(row);
                     }
                 }
-            }
             TagEnd::TableCell => {
                 let cell = std::mem::take(&mut self.current_cell_text);
                 self.current_table_row.push(cell.trim().to_string());

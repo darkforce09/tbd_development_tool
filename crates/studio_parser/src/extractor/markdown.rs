@@ -123,9 +123,9 @@ fn extract_links_from_line(
 
                 // Check for immediate '(' target
                 let after_bracket = &line[label_end + 1..];
-                if after_bracket.starts_with('(') {
-                    if let Some(close_paren) = after_bracket[1..].find(')') {
-                        let target_str = after_bracket[1..1 + close_paren].trim();
+                if let Some(after_paren) = after_bracket.strip_prefix('(') {
+                    if let Some(close_paren) = after_paren.find(')') {
+                        let target_str = after_paren[..close_paren].trim();
                         // Ignore pure web URLs for file wiring, but strip anchors
                         let clean_target = target_str
                             .split('#')

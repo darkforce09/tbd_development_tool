@@ -103,11 +103,10 @@ pub fn render_background_and_wires(
         // When both cards are collapsed and global subnode wire mode is not active:
         // Bundle connections between the same pair into a single visible card-level line
         let both_collapsed = !from_node.is_dropdown_expanded && !to_node.is_dropdown_expanded;
-        if (from_is_member || to_is_member) && both_collapsed && !state.show_subnode_wires_globally {
-            if !bundled_pairs.insert((from_node.id, to_node.id)) {
+        if (from_is_member || to_is_member) && both_collapsed && !state.show_subnode_wires_globally
+            && !bundled_pairs.insert((from_node.id, to_node.id)) {
                 continue;
             }
-        }
 
         let p0_w = port_world_position(from_node, edge.from_port).unwrap_or_else(|| {
             Pos2::new(from_node.position[0] + from_node.size[0], from_node.position[1] + from_node.size[1] * 0.5)

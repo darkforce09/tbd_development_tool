@@ -281,7 +281,7 @@ fn parse_cargo_workspace_or_package(
     }
 
     // Sort cargo crates by root path length descending (longest path / innermost crate matches first)
-    cargo_crate_metas.sort_by(|a, b| b.0.as_os_str().len().cmp(&a.0.as_os_str().len()));
+    cargo_crate_metas.sort_by_key(|meta| std::cmp::Reverse(meta.0.as_os_str().len()));
 
     let mut crates = Vec::new();
     let mut crate_file_map: std::collections::HashMap<PathBuf, Vec<PathBuf>> = std::collections::HashMap::new();

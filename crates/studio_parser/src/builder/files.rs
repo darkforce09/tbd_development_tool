@@ -244,9 +244,7 @@ pub fn build_files_graph(project: &ExtractedProject) -> (Graph, ProjectStats) {
 
                 for u in &file.uses {
                     let last_segment = u.path
-                        .split([':', '/', '\\', '.'])
-                        .filter(|s| !s.is_empty())
-                        .last()
+                        .split([':', '/', '\\', '.']).rfind(|s| !s.is_empty())
                         .unwrap_or("")
                         .trim()
                         .to_string();

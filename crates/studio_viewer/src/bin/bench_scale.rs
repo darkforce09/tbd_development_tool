@@ -603,7 +603,7 @@ fn benchmark_ultra_scale_5m(tracker: &mut TimelineTracker) {
 
     tracker.record_stage(
         "Ultra 5M Graph & Spatial Grid",
-        format!("100k folders, 500k files, 5M components, 500k wires indexed"),
+        "100k folders, 500k files, 5M components, 500k wires indexed".to_string(),
         None,
         None,
         Some(total_nodes),
