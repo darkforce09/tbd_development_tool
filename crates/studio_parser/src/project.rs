@@ -58,12 +58,6 @@ impl From<std::io::Error> for ProjectError {
     }
 }
 
-/// Absolute paths of every file outside heavy (collapsed) folders.
-pub fn discover_all_repository_files(root: &Path) -> Vec<PathBuf> {
-    let tree = scan_tree(root, ScanOptions::default());
-    tree.files.iter().map(|f| tree.root.join(&f.rel)).collect()
-}
-
 /// Scans a directory for any codebase:
 /// - Cargo workspaces or packages (Rust)
 /// - Enforce Script projects (DayZ / Arma Reforger / Enfusion mods)

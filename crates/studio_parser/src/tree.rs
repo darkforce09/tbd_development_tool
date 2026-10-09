@@ -223,6 +223,31 @@ pub fn scan_tree(root: &Path, opts: ScanOptions) -> ProjectTree {
     tree
 }
 
+/// Hashes the shape of the tree cheaply, for cache invalidation: every visible folder and file
+/// (relative path, size, modification time) and each heavy folder's own modification time, without
+/// descending into heavy folders or reading file contents.
+pub fn hash_tree_state(root: &Path, hasher: &mut impl std::hash::Hasher) {
+    use std::hash::Hash;
+    let ignored_dirs = git_ignored_dirs(root);
+    let mut walker = WalkDir::new(root).follow_links(false).sort_by_file_name().into_iter();
+    while let Some(entry) = walker.next() {
+        let Ok(entry) = entry else { continue };
+        let path = entry.path();
+        let rel = path.strip_prefix(root).unwrap_or(path);
+        rel.hash(hasher);
+        let meta = entry.metadata().ok();
+        if let Some(meta) = &meta {
+            meta.len().hash(hasher);
+            if let Ok(mtime) = meta.modified() {
+                mtime.hash(hasher);
+            }
+        }
+        if entry.depth() > 0 && entry.file_type().is_dir() && heavy_reason(path, rel, &ignored_dirs).is_some() {
+            walker.skip_current_dir();
+        }
+    }
+}
+
 fn heavy_reason(path: &Path, rel: &Path, ignored_dirs: &HashSet<PathBuf>) -> Option<HeavyReason> {
     let name = rel.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
     if matches!(name.as_ref(), ".git" | ".hg" | ".svn") {

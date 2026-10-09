@@ -7,6 +7,7 @@ Built in Rust with [egui](https://github.com/emilk/egui) and [wgpu](https://wgpu
 ## Features
 
 - **Views**: Files & Folders, every item, public API only, or one card per module.
+- **Nothing hidden**: the Files view shows every file and folder on disk, including empty folders, gitignored files, binaries, images, large files and symlinks, laid out as the real nested folder tree. See [What the Files view shows](#what-the-files-view-shows).
 - **Polyglot parsing**: Rust through `syn`, 17 more languages through tree-sitter, plus Markdown and Bohemia Enforce Script (Arma Reforger / DayZ). See [Supported languages](#supported-languages).
 - **Wires**: imports, calls and Markdown links between files and between individual members, drawn on the GPU in instanced batches. There is a CPU fallback.
 - **Inspector and editor**: syntax-highlighted source for any file, item or member. Edits to a snippet are spliced back into the file. Saving is refused if the file changed on disk.
@@ -43,6 +44,7 @@ To use a specific graphics backend, set `WGPU_BACKEND` (`vulkan`, `metal`, `dx12
 | Save the editor buffer | <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>S</kbd> |
 | Spotlight search | <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd> or <kbd>/</kbd> |
 | Close / deselect | <kbd>Esc</kbd> |
+| Collapse / expand a folder | click its header, or the collapsed folder card |
 
 Editing works on whatever the inspector shows: the whole file, or the snippet for a single item or member.
 
@@ -76,7 +78,26 @@ Editing works on whatever the inspector shows: the whole file, or the snippet fo
 | Markdown | `md` `markdown` | headings, links, code blocks |
 | Enforce Script | `c` (in Enforce projects), `ens` `es` `enforce` | classes, `modded class`, methods, fields, enums, attributes |
 
-Other text files (JSON, YAML, configs) appear as plain file cards. Binary files and files over 1.5 MB are skipped.
+Other text files (JSON, YAML, configs) appear as plain file cards without parsed members.
+
+## What the Files view shows
+
+Every folder is a box nested inside its parent, and every file is a card in its folder. Nothing is filtered out.
+
+- **Empty folders** show as empty boxes.
+- **Binary files, images, files over 1.5 MB, symlinks and unreadable files** get a card with their kind and size. They are listed but not parsed. In the inspector:
+  - images are previewed;
+  - large text files show their first 64 KB;
+  - binaries show a hex dump;
+  - symlinks show their target;
+  - every file has **Open in system app** and **Show folder** buttons.
+- **Heavy folders start collapsed** and show their totals, for example `node_modules · 48,213 files · 312 MB · dependencies`. Click one to load its contents in the background. Heavy folders are:
+  - version control (`.git`, `.hg`, `.svn`);
+  - folders git ignores;
+  - build caches marked with `CACHEDIR.TAG` (such as Cargo's `target/`);
+  - dependency trees (`node_modules`, Python virtualenvs, `__pycache__`, …).
+
+  Folders nested inside a loaded one that are themselves heavy stay collapsed until clicked.
 
 A `.c` file is treated as Enforce Script when any of these is true:
 - it is inside a folder that contains a Reforger `*.gproj`, a DayZ `$PBOPREFIX$`, or a `config.cpp` that declares `CfgMods`;

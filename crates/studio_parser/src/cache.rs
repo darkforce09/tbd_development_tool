@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 use studio_graph::Graph;
 
 /// 16-byte magic identifier and format version header
-pub const CACHE_MAGIC: &[u8; 16] = b"TBD_RKYV_V4\0\0\0\0\0";
+pub const CACHE_MAGIC: &[u8; 16] = b"TBD_RKYV_V5\0\0\0\0\0";
 /// Bump whenever extraction or graph building changes output, so cached graphs are rebuilt.
-pub const EXTRACTOR_VERSION: u32 = 3;
+pub const EXTRACTOR_VERSION: u32 = 4;
 const HEADER_SIZE: usize = 32;
 
 /// Serializable wrapper combining the architecture graph and project metrics
@@ -131,20 +131,10 @@ pub fn compute_workspace_fingerprint(project_root: &Path, granularity: ViewGranu
         }
     }
 
-    // 3. Size + mtime of every discovered source file, so edits anywhere in the tree invalidate
-    //    the cache (sorted for a stable order across git / walkdir discovery).
-    let mut files = crate::project::discover_all_repository_files(project_root);
-    files.sort();
-    files.len().hash(&mut hasher);
-    for path in &files {
-        path.strip_prefix(project_root).unwrap_or(path).hash(&mut hasher);
-        if let Ok(meta) = path.metadata() {
-            meta.len().hash(&mut hasher);
-            if let Ok(mtime) = meta.modified() {
-                mtime.hash(&mut hasher);
-            }
-        }
-    }
+    // 3. Every visible folder and file (path, size, mtime) plus each collapsed folder's own mtime,
+    //    so adding, removing or editing anything shown invalidates the cache.
+    let root = project_root.canonicalize().unwrap_or_else(|_| project_root.to_path_buf());
+    crate::tree::hash_tree_state(&root, &mut hasher);
 
     hasher.finish()
 }
@@ -270,6 +260,19 @@ mod tests {
         assert_ne!(cache1, cache2, "Different project paths must generate different cache dirs");
         assert!(cache1.to_string_lossy().contains("tbd_studio"));
         assert!(cache1.to_string_lossy().contains("projects"));
+    }
+
+    #[test]
+    fn test_new_empty_folder_invalidates_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+        let granularity = ViewGranularity::FilesAndFolders;
+        save_project_cache(dir.path(), granularity, &Graph::new(), &ProjectStats::default()).unwrap();
+        assert!(load_project_cache(dir.path(), granularity).unwrap().is_some());
+
+        std::fs::create_dir(dir.path().join("brand_new")).unwrap();
+        assert!(load_project_cache(dir.path(), granularity).unwrap().is_none(), "new folder must invalidate");
+        clear_project_cache(dir.path()).unwrap();
     }
 
     #[test]
