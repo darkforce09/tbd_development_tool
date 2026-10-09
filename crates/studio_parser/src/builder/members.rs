@@ -3,7 +3,7 @@ use std::path::Path;
 use studio_graph::{
     DataType, FileMemberNode, Graph, NodeArchetype, NodeId, Port, PortDirection, PortId,
 };
-use crate::extractor::{ExtractedFile, SourceLang};
+use crate::extractor::{CodeLang, ExtractedFile, SourceLang};
 
 /// Lowercased file extension used for per-language labels.
 pub fn file_ext(file: &ExtractedFile) -> String {
@@ -17,9 +17,33 @@ pub fn file_ext(file: &ExtractedFile) -> String {
 
 /// Builds the inline member list (functions, types, methods, headings, links) shown inside a file card,
 /// sorted by line. Ports are not assigned; see [`attach_member_ports`].
+/// Keyword shown before function names in member signatures (`def`, `func`, `fn`, ...).
+fn fn_prefix(file: &ExtractedFile, is_async: bool) -> String {
+    let keyword = match file.language {
+        SourceLang::Code(lang) => lang.fn_keyword(),
+        SourceLang::Enforce => "",
+        _ => "fn",
+    };
+    match (is_async, keyword) {
+        (true, "") => "async ".to_string(),
+        (true, k) => format!("async {k} "),
+        (false, "") => String::new(),
+        (false, k) => format!("{k} "),
+    }
+}
+
+/// Languages whose struct-like items are classes (shown as `class X : Base`).
+fn has_classes(file: &ExtractedFile) -> bool {
+    match file.language {
+        SourceLang::Enforce => true,
+        SourceLang::Code(lang) => !matches!(lang, CodeLang::C | CodeLang::Go | CodeLang::Zig),
+        _ => false,
+    }
+}
+
 pub fn build_member_nodes(file: &ExtractedFile) -> Vec<FileMemberNode> {
-    let ext = file_ext(file);
     let is_enforce = file.language == SourceLang::Enforce;
+    let is_class_lang = has_classes(file);
     let mut member_nodes = Vec::new();
 
     for s in &file.structs {
@@ -30,7 +54,7 @@ pub fn build_member_nodes(file: &ExtractedFile) -> Vec<FileMemberNode> {
             (NodeArchetype::Module, lvl, s.name.clone())
         } else if is_modded {
             (NodeArchetype::Struct, "MOD".to_string(), format!("modded class {}", s.name))
-        } else if is_enforce || s.source_code.contains("class ") {
+        } else if is_class_lang {
             let base = s.derives.first().map(|b| format!(" : {}", b)).unwrap_or_default();
             (NodeArchetype::Struct, "CLS".to_string(), format!("class {}{}", s.name, base))
         } else {
@@ -66,10 +90,9 @@ pub fn build_member_nodes(file: &ExtractedFile) -> Vec<FileMemberNode> {
 
     for t in &file.traits {
         let vis = if t.visibility.is_public() { "pub" } else { "" };
-        let kind_label = if matches!(ext.as_str(), "ts" | "tsx" | "java" | "cs" | "go") {
-            "interface"
-        } else {
-            "trait"
+        let kind_label = match file.language {
+            SourceLang::Code(lang) => lang.interface_label(),
+            _ => "trait",
         };
         member_nodes.push(FileMemberNode::new(
             format!("trait:{}", t.name),
@@ -94,17 +117,7 @@ pub fn build_member_nodes(file: &ExtractedFile) -> Vec<FileMemberNode> {
             let vis = if f.visibility.is_public() { "pub" } else { "" };
             let params_sig = f.inputs.iter().map(|p| format!("{}: {}", p.name, p.type_str)).collect::<Vec<_>>().join(", ");
             let ret_sig = f.output.as_ref().map(|o| format!(" -> {}", o)).unwrap_or_default();
-            let prefix = if ext == "py" {
-                if f.is_async { "async def " } else { "def " }
-            } else if ext == "go" {
-                "func "
-            } else if ext == "sh" || ext == "bash" {
-                "sh "
-            } else if f.is_async {
-                "async fn "
-            } else {
-                "fn "
-            };
+            let prefix = fn_prefix(file, f.is_async);
             (NodeArchetype::Function, vis.to_string(), format!("{}{}({}){}", prefix, f.name, params_sig, ret_sig))
         };
 
@@ -125,7 +138,7 @@ pub fn build_member_nodes(file: &ExtractedFile) -> Vec<FileMemberNode> {
             let vis = if is_enforce { "FN" } else if m.visibility.is_public() { "pub" } else { "" };
             let params_sig = m.inputs.iter().map(|p| format!("{}: {}", p.name, p.type_str)).collect::<Vec<_>>().join(", ");
             let ret_sig = m.output.as_ref().map(|o| format!(" -> {}", o)).unwrap_or_default();
-            let prefix = if m.is_async { "async fn " } else { "fn " };
+            let prefix = fn_prefix(file, m.is_async);
             member_nodes.push(FileMemberNode::new(
                 format!("method:{}::{}", imp.target_type, m.name),
                 format!("{}::{}", imp.target_type, m.name),

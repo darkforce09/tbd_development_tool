@@ -75,6 +75,15 @@ fn nodes_for_path(graph: &Graph, path: &Path) -> Vec<NodeId> {
 /// survive, and re-wires the card's outgoing member call edges.
 fn refresh_file_node(graph: &mut Graph, node_id: NodeId, extracted: &ExtractedFile, content: &str) {
     let mut members = build_member_nodes(extracted);
+    if members.is_empty() && extracted.parse_error.is_some() {
+        // Mid-edit syntax error: keep the last good members and edges.
+        if let Some(node) = graph.nodes.get_mut(&node_id) {
+            if node.source_code.is_some() {
+                node.source_code = Some(content.to_string());
+            }
+        }
+        return;
+    }
     let old_ports: HashMap<String, (Option<PortId>, Option<PortId>)> = graph.nodes[&node_id]
         .member_nodes
         .iter()

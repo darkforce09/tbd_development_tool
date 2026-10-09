@@ -67,18 +67,14 @@ pub fn extract_source(file_path: &Path, rel_path: &Path, content: &str) -> Extra
     match super::lang::detect_language(file_path, content) {
         SourceLang::Markdown => return super::markdown::extract_markdown_file(file_path, rel_path, content),
         SourceLang::Enforce => return super::enforce::extract_enforce_script_file(file_path, rel_path, content),
-        SourceLang::Other => return super::universal::extract_universal_file(file_path, rel_path, content),
+        SourceLang::Code(lang) => return super::treesitter::extract_code_file(lang, file_path, rel_path, content),
+        SourceLang::Other => return ExtractedFile::empty(file_path, rel_path, SourceLang::Other, None),
         SourceLang::Rust => {}
     }
 
     let syn_file = match syn::parse_file(content) {
         Ok(sf) => sf,
-        Err(e) => {
-            let mut fallback = super::universal::extract_universal_file(file_path, rel_path, content);
-            fallback.parse_error = Some(format!("Syntax error: {}", e));
-            fallback.language = SourceLang::Rust;
-            return fallback;
-        }
+        Err(e) => return ExtractedFile::empty(file_path, rel_path, SourceLang::Rust, Some(format!("Syntax error: {}", e))),
     };
 
     let mut functions = Vec::new();

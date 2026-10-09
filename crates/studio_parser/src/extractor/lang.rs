@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
+use super::treesitter::CodeLang;
+
 /// Which extractor handles a file. Decided once per file by [`detect_language`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SourceLang {
@@ -9,6 +11,9 @@ pub enum SourceLang {
     Markdown,
     /// Bohemia Interactive Enforce Script (Arma Reforger, DayZ).
     Enforce,
+    /// Parsed with a tree-sitter grammar.
+    Code(CodeLang),
+    /// Data, config or unknown text: shown as a file card without members.
     #[default]
     Other,
 }
@@ -26,7 +31,7 @@ pub fn detect_language(path: &Path, content: &str) -> SourceLang {
         "c" if in_engine_script_module(path) || in_enforce_project(path) || looks_like_enforce(content) => {
             SourceLang::Enforce
         }
-        _ => SourceLang::Other,
+        ext => CodeLang::from_extension(ext).map_or(SourceLang::Other, SourceLang::Code),
     }
 }
 
@@ -37,7 +42,7 @@ pub fn detect_language_by_path(path: &Path) -> SourceLang {
         "md" | "markdown" => SourceLang::Markdown,
         "ens" | "es" | "enforce" => SourceLang::Enforce,
         "c" if in_engine_script_module(path) || in_enforce_project(path) => SourceLang::Enforce,
-        _ => SourceLang::Other,
+        ext => CodeLang::from_extension(ext).map_or(SourceLang::Other, SourceLang::Code),
     }
 }
 
@@ -139,8 +144,8 @@ mod tests {
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         let src = "#include <stdio.h>\nint main(void) {\n    printf(\"hi\");\n    return 0;\n}\n";
         std::fs::write(&file, src).unwrap();
-        assert_eq!(detect_language(&file, src), SourceLang::Other);
-        assert_eq!(detect_language_by_path(&file), SourceLang::Other);
+        assert_eq!(detect_language(&file, src), SourceLang::Code(CodeLang::C));
+        assert_eq!(detect_language_by_path(&file), SourceLang::Code(CodeLang::C));
     }
 
     #[test]
@@ -169,7 +174,7 @@ mod tests {
         let file = dir.path().join("loose.c");
         assert_eq!(detect_language(&file, "class Foo : Managed\n{\n}\n"), SourceLang::Enforce);
         assert_eq!(detect_language(&file, "modded class SCR_Base {}"), SourceLang::Enforce);
-        assert_eq!(detect_language(&file, "/* a class of problems */\nint x;\n"), SourceLang::Other);
+        assert_eq!(detect_language(&file, "/* a class of problems */\nint x;\n"), SourceLang::Code(CodeLang::C));
     }
 
     #[test]
@@ -181,7 +186,7 @@ mod tests {
         let free_fn = "void Helper(notnull IEntity e)\n{\n}\n";
         assert_eq!(detect_language(Path::new("/tmp/a.c"), free_fn), SourceLang::Enforce);
         let c_code = "// uses array<int> in a comment\nstatic int add(int a, int b) { return a + b; }\n";
-        assert_eq!(detect_language(Path::new("/tmp/b.c"), c_code), SourceLang::Other);
+        assert_eq!(detect_language(Path::new("/tmp/b.c"), c_code), SourceLang::Code(CodeLang::C));
     }
 
     #[test]
@@ -190,6 +195,7 @@ mod tests {
         assert_eq!(detect_language(&p.join("x.rs"), ""), SourceLang::Rust);
         assert_eq!(detect_language(&p.join("x.MD"), ""), SourceLang::Markdown);
         assert_eq!(detect_language(&p.join("x.enforce"), ""), SourceLang::Enforce);
-        assert_eq!(detect_language(&p.join("x.py"), ""), SourceLang::Other);
+        assert_eq!(detect_language(&p.join("x.py"), ""), SourceLang::Code(CodeLang::Python));
+        assert_eq!(detect_language(&p.join("x.json"), ""), SourceLang::Other);
     }
 }

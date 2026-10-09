@@ -3,8 +3,8 @@ pub mod helpers;
 pub mod lang;
 pub mod markdown;
 pub mod parse;
+pub mod treesitter;
 pub mod types;
-pub mod universal;
 
 pub use enforce::extract_enforce_script_file;
 pub use helpers::CallVisitor;
@@ -18,4 +18,4 @@ pub use types::{
     EnumItem, ExtractedCrate, ExtractedFile, ExtractedProject, FieldInfo, FunctionItem, ImplItem,
     ItemVisibility, ParamInfo, StructItem, TraitItem, UseItem,
 };
-pub use universal::extract_universal_file;
+pub use treesitter::{extract_code_file, CodeLang};
