@@ -339,7 +339,16 @@ mod tests {
             let cluster = graph.clusters.iter().find(|c| c.id == id).unwrap_or_else(|| panic!("no cluster {id}"));
             let parent = d.parent.map(|p| folder_cluster_id(&scanned.dirs[p].rel));
             assert_eq!(cluster.parent_id, parent, "{id}");
-            assert!(cluster.size[0] > 1.0 && cluster.size[1] > 1.0, "{id} must be visible");
+            // The project opens at its top level: the root open, every other folder closed.
+            let expected = match (d.parent, cluster.lazy.is_some()) {
+                (_, true) => studio_graph::FolderDetail::Minimised,
+                (None, false) => studio_graph::FolderDetail::Open,
+                (Some(_), false) => studio_graph::FolderDetail::NodeView,
+            };
+            assert_eq!(cluster.detail, expected, "{id}");
+            if !graph.hidden_cluster_ids.contains(&id) {
+                assert!(cluster.size[0] > 1.0 && cluster.size[1] > 1.0, "{id} must be visible");
+            }
         }
         for f in &scanned.files {
             let node = graph

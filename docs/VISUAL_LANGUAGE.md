@@ -35,8 +35,9 @@ Cards (files) and folders follow the same rules.
 
 **L3. Wires cross folder edges through gates.** A folder has **input gates** on its left edge and **output gates** on its right edge. A wire entering a folder always arrives at an input gate from the left and continues inside to the file it feeds. A wire leaving a folder always leaves a file, travels to an output gate and exits to the right. This holds even when the file sits at the bottom of a tall folder: the wire goes to the folder's edge first.
 
-- **One input gate per distinct outside item feeding in.** If one outside file feeds three files inside, that is one gate that fans out inside.
-- **One output gate per distinct inside item feeding out.** If one inside file feeds three files outside, that is one gate that fans out outside.
+- **One input gate per distinct visible source feeding in.** If one outside file feeds three files inside, that is one gate that fans out inside.
+- **One output gate per distinct visible source feeding out.** If one inside file feeds three files outside, that is one gate that fans out outside.
+- **A closed folder stands in for its files.** Outside a closed folder, every wire from the files in it counts as coming from the folder: they share one gate per folder edge and one wire, labelled with how many file pairs it carries and drawn thicker the more it carries. Opening the folder splits it back into its files.
 - **Documentation has its own gates.** They sit on the same edges (inputs left, outputs right) but at the top of the folder, in its documentation strip, one per documentation file whose links cross that edge. They are sky blue like documentation wires.
 
 **L4. Loops are boxed.** When files depend on each other in a loop (A uses B, B uses A), "provider left of consumer" cannot hold. The files in a loop are grouped into a marked **cycle box** that is placed as one unit. Everything outside the box stays strictly left to right. Inside a box, wires that run backwards are routed around the cards, never through them. Since order cannot hold inside a box anyway, its contents are packed into a compact block of columns (in loop order, aiming at a 16:10 shape) instead of one long row.
@@ -49,14 +50,19 @@ Cards (files) and folders follow the same rules.
 | 2. Node view | Every gate, listed like the pins of a ComfyUI or Unreal node. The inside is hidden. |
 | 3. Open | The same gates as level 2, with the wires continuing inside to the files. |
 
-Changing a folder's detail level never reorders the folders around it. Neither does opening a card: the layout keeps every folder's columns and order and only moves things aside to make room. A full layout (opening the project, loading a folder, new wires) may order things afresh.
+A project opens at its **top level**: the root folder is open and every folder in it is in node view, so you see the project's main parts and one wire per pair of them. Open a folder to look inside it; its own subfolders start closed. You move through a project one level at a time.
 
-In node view the pins are listed top to bottom on each side: documentation pins first, then code pins, each in alphabetical order of the file whose wires they carry, and each pin is labelled with that file's name. An open folder places the same gates level with what they feed, so the order can differ between levels; the set of gates is the same.
+Changing a folder's detail level never reorders the folders around it: their wiring can change (a closed folder shares its gates, an open one splits them), but every folder keeps its columns and the order of its items. Neither does opening a card: the layout keeps every folder's columns and order and only moves things aside to make room. A full layout (opening the project, loading a folder, new wires) may order things afresh.
 
-Every folder header has three buttons, one per level (minimised, node view, open); the current level is highlighted. Folders open at level 3, except folders whose contents are not loaded yet (dependencies, build output, version control), which start minimised.
+In node view the pins are listed top to bottom on each side: documentation pins first, then code pins, each in alphabetical order of the file or closed folder whose wires they carry, and each pin is labelled with that name. An open folder places the same gates level with what they feed, so the order can differ between levels; the set of gates is the same.
+
+Every folder header has three buttons, one per level (minimised, node view, open); the current level is highlighted. Folders whose contents are not loaded yet (dependencies, build output, version control) start minimised.
+
+**L6. Hubs are badges.** A file or folder that feeds at least half of the other connected items in its folder, and at least 8 of them, is a **hub** (a shared types file, a prelude). Its wires would say little ("everything uses it") and bury everything else, so they are not drawn or laid out. The hub shows a "used by N" badge instead, and its wires appear when it is selected. A hub still sits left of everything it feeds (L1).
 
 ## Placement of things that are not code flow
 
+- Documentation is shown as a chip on the card it documents ("docs 2") by default. Its wires can be turned on in the View menu.
 - Files with no code wires in their folder sit in a grid below the folder's code columns.
 - Documentation wires and asset wires do not affect the order. Documentation cannot create fake loops or pull code out of order.
 - Documentation wires follow L2 and L3 like code wires. Every folder has a documentation strip across its top, under its name. A documentation wire climbs from its file to the strip, runs along it on its own track, and comes down to the card it documents, entering that card's documentation port from the left. The strip grows when more documentation tracks cross the folder; that can move a folder's contents down, never reorder them.
@@ -85,5 +91,7 @@ All wires are solid lines for now. Line styles and colour-blind variants come la
 - Wire-on-wire crossings are minimised by heuristics, not guaranteed to be zero.
 - In Rust, `mod.rs` files and their submodules often form loops, so much of a crate can end up in one cycle box.
 - A column far taller than its folder's 16:10 target is split into side-by-side columns. Files in one column never wire to each other, so L1 still holds.
-- A busy folder can have hundreds of gates. Minimised view (level 1) is the way to fold them.
+- A busy folder can have many gates when it is open. Closing the folders around it (they then share their gates) or minimising it folds them.
+- A bundle carrying wires of several kinds is drawn in the colour of the kind it carries most; its count covers all of them.
+- The hub rule is a fixed threshold. It is exact and repeatable, but it can call something a hub that you would not, or miss one.
 - The layout is only as correct as the wires. Until wires are compiler-verified (roadmap Phase 3), the layout correctly follows wires that may themselves be wrong.

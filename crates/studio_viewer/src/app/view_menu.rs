@@ -63,7 +63,8 @@ mod tests {
     fn toggles_switch_their_canvas_flags() {
         let mut canvas = CanvasState::default();
         assert!(canvas.show_wires && canvas.show_subnode_wires_globally);
-        assert_eq!(canvas.wire_kinds.mask().count_ones(), 6, "every kind shows by default");
+        let docs = 1 << studio_graph::EdgeKind::Documentation as u32;
+        assert_eq!(canvas.wire_kinds.mask(), 0b11_1111 & !docs, "every kind but documentation shows by default");
         for toggle in view_toggles(&mut canvas) {
             *toggle.value = false;
         }

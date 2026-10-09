@@ -178,10 +178,15 @@ fn insert_folder_tree(
             _ => {
                 let mut cluster = GroupCluster::new(&id, label, "Folder", color);
                 cluster.subtitle = Some(subtitle);
+                // A project opens at its top level: the root open, every folder in it closed
+                // (node view), unloaded folders minimised. A folder loaded on demand opens, its
+                // subfolders closed.
                 cluster.detail = if lazy.is_some() {
                     studio_graph::FolderDetail::Minimised
-                } else {
+                } else if i == 0 {
                     studio_graph::FolderDetail::Open
+                } else {
+                    studio_graph::FolderDetail::NodeView
                 };
                 cluster.lazy = lazy;
                 cluster.parent_id = dir.parent.map(|p| cluster_ids[p].clone());

@@ -146,7 +146,8 @@ pub struct WireKinds {
 
 impl Default for WireKinds {
     fn default() -> Self {
-        Self { calls: true, type_uses: true, implements: true, imports: true, documentation: true, assets: true }
+        // Documentation shows as chips on cards until its wires are turned on in the View menu.
+        Self { calls: true, type_uses: true, implements: true, imports: true, documentation: false, assets: true }
     }
 }
 
