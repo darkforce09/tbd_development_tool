@@ -132,6 +132,40 @@ pub struct CanvasFrameStats {
     pub visible_wires: usize,
 }
 
+/// Which kinds of wire are shown, one switch per kind (docs/VISUAL_LANGUAGE.md colours).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WireKinds {
+    pub calls: bool,
+    pub type_uses: bool,
+    pub implements: bool,
+    pub imports: bool,
+    pub documentation: bool,
+    pub assets: bool,
+}
+
+impl Default for WireKinds {
+    fn default() -> Self {
+        Self { calls: true, type_uses: true, implements: true, imports: true, documentation: true, assets: true }
+    }
+}
+
+impl WireKinds {
+    /// Bit `EdgeKind as u32` set for every kind shown.
+    pub fn mask(&self) -> u32 {
+        [
+            (EdgeKind::Call, self.calls),
+            (EdgeKind::TypeUse, self.type_uses),
+            (EdgeKind::Implements, self.implements),
+            (EdgeKind::Import, self.imports),
+            (EdgeKind::Documentation, self.documentation),
+            (EdgeKind::Asset, self.assets),
+        ]
+        .into_iter()
+        .filter(|&(_, shown)| shown)
+        .fold(0, |mask, (kind, _)| mask | 1 << kind as u32)
+    }
+}
+
 /// State of the canvas viewport, camera, and interactions.
 #[derive(Debug, Clone)]
 pub struct CanvasState {
@@ -154,8 +188,8 @@ pub struct CanvasState {
     pub scene: Arc<CanvasScene>,
     /// The layout or a card's size changed: rebuild the spatial grid and the scene next frame.
     pub scene_dirty: bool,
-    /// Bit n set: wires of kind n (`EdgeKind as u32`) are shown.
-    pub wire_kind_mask: u32,
+    /// Which kinds of wire are shown.
+    pub wire_kinds: WireKinds,
     /// Cards as rects for far zoom, and the inputs they were built from.
     pub card_layer: Option<(u64, CardLayer)>,
     pub interactive_rects: Vec<Rect>,
@@ -184,7 +218,7 @@ impl Default for CanvasState {
             spatial_grid: SpatialHashGrid::default(),
             scene: Arc::new(CanvasScene::default()),
             scene_dirty: true,
-            wire_kind_mask: u32::MAX,
+            wire_kinds: WireKinds::default(),
             card_layer: None,
             interactive_rects: Vec::new(),
             use_gpu_wires: true,
@@ -211,9 +245,9 @@ impl CanvasState {
         }
     }
 
-    /// Whether wires of this kind are shown.
+    /// Whether wires of this kind (`EdgeKind as u32`) are shown.
     pub fn wire_kind_visible(&self, kind: u32) -> bool {
-        self.wire_kind_mask & (1 << kind) != 0
+        self.wire_kinds.mask() & (1 << kind) != 0
     }
 
     pub fn reset_view(&mut self) {

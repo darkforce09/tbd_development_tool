@@ -45,7 +45,7 @@ pub fn prepare_frame(state: &mut CanvasState, graph: &Graph, view_world: Rect, a
             pan: [state.transform.pan.x, state.transform.pan.y],
             zoom,
             time: (anim_time % 3600.0) as f32,
-            kind_mask: state.wire_kind_mask,
+            kind_mask: state.wire_kinds.mask(),
             flags: state.active_flow_edges.is_some() as u32,
         },
         scene: state.scene.clone(),
