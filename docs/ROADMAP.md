@@ -88,7 +88,7 @@ Goal: remove everything that is mock, duplicated or in the way, so later work bu
 - [x] Remove the STUDIO brand label and the bottom status bar.
 - [x] Project stats move into the F3 debug panel, alongside frame timing, process, GPU and canvas telemetry. The old "Architecture Graph Valid" title is dropped because nothing was validated.
 - [x] Remove the view dropdown (Files & Folders / All Items / Public API / Modules) from the UI.
-- [ ] Remove the Items, Public API and Modules graph builders from `studio_parser`, and granularity from the cache key.
+- [x] Remove the Items, Public API and Modules graph builders from `studio_parser`, and granularity from the cache key.
 - [x] Remove the Ingress / Compute / State / Egress filter categories and the Spotlight buttons that created such nodes. They came from the abandoned lanes idea and are not derived from code.
 - [ ] Remove those archetypes from the graph model, the mock pipeline graph and `bench_scale` (needs a cache version bump; fold into Phase 1).
 - [x] Remove the Repo, Showcase and Force Reparse buttons. With no project open, the canvas shows an Open folder prompt.

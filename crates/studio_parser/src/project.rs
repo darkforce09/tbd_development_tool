@@ -14,9 +14,9 @@ pub struct CrateInfo {
 pub struct RustProject {
     pub name: String,
     pub root_path: PathBuf,
-    /// Parseable text files grouped by crate / top-level folder (Items and Modules views).
+    /// Parseable text files grouped by crate / top-level folder.
     pub crates: Vec<CrateInfo>,
-    /// Every file and folder on disk (Files view).
+    /// Every file and folder on disk.
     pub tree: ProjectTree,
 }
 

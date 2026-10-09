@@ -5,7 +5,7 @@ use studio_canvas::SpatialHashGrid;
 use studio_graph::{DataType, Graph, NodeArchetype};
 use studio_parser::{
     build_project_graph, clear_project_cache, extract_project, load_project_cache, save_project_cache, scan_project,
-    ProjectStats, SymbolSearchIndex, ViewGranularity,
+    ProjectStats, SymbolSearchIndex,
 };
 use studio_viewer::telemetry::{TelemetryBudget, TimelineTracker};
 
@@ -148,7 +148,7 @@ fn benchmark_real_project(tracker: &mut TimelineTracker, target_path: &std::path
 
     // 3. Graph Construction
     let t2 = Instant::now();
-    let (mut graph, stats) = build_project_graph(&extracted, ViewGranularity::FilesAndFolders);
+    let (mut graph, stats) = build_project_graph(&extracted);
     let _build_dur = t2.elapsed();
     tracker.record_stage(
         "Graph Assembly",
@@ -339,8 +339,7 @@ fn benchmark_rkyv_caching(tracker: &mut TimelineTracker) {
     let _ = std::fs::write(&sample_file, "[package]\nname = \"bench_proj\"\nversion = \"0.1.0\"\n");
 
     // Measure serialization
-    let cache_path =
-        save_project_cache(&temp_proj, ViewGranularity::AllItems, &graph, &stats).expect("Failed to save rkyv cache");
+    let cache_path = save_project_cache(&temp_proj, &graph, &stats).expect("Failed to save rkyv cache");
     let file_size_mb = std::fs::metadata(&cache_path).map(|m| m.len() as f64 / 1_048_576.0).unwrap_or(0.0);
     tracker.record_stage(
         "rkyv Serialization",
@@ -353,7 +352,7 @@ fn benchmark_rkyv_caching(tracker: &mut TimelineTracker) {
 
     // Measure zero-copy load
     let t_load = Instant::now();
-    let loaded = load_project_cache(&temp_proj, ViewGranularity::AllItems).expect("Failed to load rkyv cache");
+    let loaded = load_project_cache(&temp_proj).expect("Failed to load rkyv cache");
     let load_dur = t_load.elapsed();
 
     assert!(loaded.is_some(), "Cache must be valid");

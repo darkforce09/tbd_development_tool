@@ -10,37 +10,24 @@ use crate::extractor::{extract_source, ExtractedFile};
 pub struct SaveReport {
     /// Graph nodes whose content was refreshed.
     pub updated_nodes: usize,
-    /// An item card no longer matches any item in the file; a project reload is needed to re-layout.
-    pub needs_reload: bool,
 }
 
-/// Saves edited code to disk atomically and refreshes the nodes that belong to that file, using the
-/// same extraction and member-building code as a full project load.
+/// Saves edited code to disk atomically and refreshes the file cards that belong to that file, using
+/// the same extraction and member-building code as a full project load.
 pub fn save_and_reparse(path: &Path, new_content: &str, graph: &mut Graph) -> Result<SaveReport, String> {
     crate::edit::atomic_write(path, new_content.as_bytes())
         .map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
 
     let extracted = extract_source(path, path, new_content);
     let mut report = SaveReport::default();
-    let mut item_nodes = Vec::new();
 
     for node_id in nodes_for_path(graph, path) {
-        match graph.nodes[&node_id].archetype {
-            NodeArchetype::File => {
-                refresh_file_node(graph, node_id, &extracted, new_content);
-                report.updated_nodes += 1;
-            }
-            NodeArchetype::Struct | NodeArchetype::Enum | NodeArchetype::Trait | NodeArchetype::Function => {
-                item_nodes.push(node_id);
-            }
-            // Module cards summarise the file and hold no editable source.
-            _ => {}
+        if graph.nodes[&node_id].archetype == NodeArchetype::File {
+            refresh_file_node(graph, node_id, &extracted, new_content);
+            report.updated_nodes += 1;
         }
     }
 
-    let (updated, needs_reload) = refresh_item_nodes(graph, &item_nodes, &extracted);
-    report.updated_nodes += updated;
-    report.needs_reload = needs_reload;
     graph.rebuild_fast_indices();
     Ok(report)
 }
@@ -163,46 +150,4 @@ fn rewire_member_calls(
             }
         }
     }
-}
-
-/// Updates per-item cards (Items / Public API views) in place. Each card is matched to the item with
-/// the same title nearest its previous line. Returns (updated, needs_reload).
-fn refresh_item_nodes(graph: &mut Graph, node_ids: &[NodeId], extracted: &ExtractedFile) -> (usize, bool) {
-    let mut candidates: HashMap<String, Vec<(usize, &str, &str)>> = HashMap::new();
-    for s in &extracted.structs {
-        candidates.entry(format!("struct {}", s.name)).or_default().push((s.line, &s.source_code, &s.docs));
-    }
-    for e in &extracted.enums {
-        candidates.entry(format!("enum {}", e.name)).or_default().push((e.line, &e.source_code, &e.docs));
-    }
-    for t in &extracted.traits {
-        candidates.entry(format!("trait {}", t.name)).or_default().push((t.line, &t.source_code, &t.docs));
-    }
-    for f in extracted.functions.iter().chain(extracted.impls.iter().flat_map(|i| i.methods.iter())) {
-        candidates.entry(format!("fn {}", f.name)).or_default().push((f.line, &f.source_code, &f.docs));
-    }
-
-    let mut updated = 0;
-    let mut needs_reload = false;
-    let mut used: HashSet<(String, usize)> = HashSet::new();
-    for &node_id in node_ids {
-        let Some(node) = graph.nodes.get_mut(&node_id) else { continue };
-        let old_line = node.line_number.unwrap_or(0);
-        let best = candidates.get(&node.title).and_then(|list| {
-            list.iter()
-                .filter(|(line, _, _)| !used.contains(&(node.title.clone(), *line)))
-                .min_by_key(|(line, _, _)| line.abs_diff(old_line))
-        });
-        match best {
-            Some(&(line, src, docs)) => {
-                used.insert((node.title.clone(), line));
-                node.line_number = Some(line);
-                node.source_code = Some(src.to_string());
-                node.doc_comment = if docs.is_empty() { None } else { Some(docs.to_string()) };
-                updated += 1;
-            }
-            None => needs_reload = true,
-        }
-    }
-    (updated, needs_reload)
 }

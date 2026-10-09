@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use studio_canvas::CanvasState;
 use studio_graph::{Graph, NodeArchetype};
-use studio_parser::{spawn_load_project, SymbolSearchIndex, ViewGranularity};
+use studio_parser::{spawn_load_project, SymbolSearchIndex};
 use studio_ui::apply_theme;
 
 use super::settings::PersistedSettings;
@@ -103,7 +103,7 @@ impl StudioApp {
         self.canvas_state.status_message = Some(format!("Loading {}...", path.display()));
 
         let (tx, rx) = std::sync::mpsc::channel();
-        spawn_load_project(path_buf, ViewGranularity::FilesAndFolders, tx);
+        spawn_load_project(path_buf, tx);
         self.loader_rx = Some(rx);
     }
 

@@ -1,4 +1,4 @@
-use crate::builder::{ProjectStats, ViewGranularity};
+use crate::builder::ProjectStats;
 use memmap2::Mmap;
 use std::collections::hash_map::DefaultHasher;
 use std::fs::File;
@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use studio_graph::Graph;
 
 /// 16-byte magic identifier and format version header
-pub const CACHE_MAGIC: &[u8; 16] = b"TBD_RKYV_V5\0\0\0\0\0";
+pub const CACHE_MAGIC: &[u8; 16] = b"TBD_RKYV_V6\0\0\0\0\0";
 /// Bump whenever extraction or graph building changes output, so cached graphs are rebuilt.
 pub const EXTRACTOR_VERSION: u32 = 4;
 const HEADER_SIZE: usize = 32;
@@ -70,23 +70,22 @@ pub fn user_cache_dir_for_project(project_root: &Path) -> PathBuf {
     base_cache.join("tbd_studio").join("projects").join(project_dir_name)
 }
 
-/// Path to the graph cache file inside the user cache directory for a given granularity.
-pub fn cache_file_path(project_root: &Path, granularity: ViewGranularity) -> PathBuf {
-    user_cache_dir_for_project(project_root).join(format!("graph_cache_g{}.rkyv", granularity as u8))
+/// Path to the graph cache file inside the user cache directory.
+pub fn cache_file_path(project_root: &Path) -> PathBuf {
+    user_cache_dir_for_project(project_root).join("graph_cache.rkyv")
 }
 
 /// Computes a fingerprint of the workspace to detect staleness: extractor version, git refs,
 /// workspace manifests, and the size + mtime of every source file.
-pub fn compute_workspace_fingerprint(project_root: &Path, granularity: ViewGranularity) -> u64 {
+pub fn compute_workspace_fingerprint(project_root: &Path) -> u64 {
     let mut hasher = DefaultHasher::new();
 
-    // Hash project root and granularity
+    // Hash project root
     if let Ok(c) = project_root.canonicalize() {
         c.hash(&mut hasher);
     } else {
         project_root.hash(&mut hasher);
     }
-    (granularity as u8).hash(&mut hasher);
     EXTRACTOR_VERSION.hash(&mut hasher);
 
     // 1. Hash Git HEAD / ref if present (instant git tree fingerprint)
@@ -140,17 +139,12 @@ pub fn compute_workspace_fingerprint(project_root: &Path, granularity: ViewGranu
 }
 
 /// Saves the project Graph and Stats into the user cache directory using rkyv zero-copy serialization.
-pub fn save_project_cache(
-    project_root: &Path,
-    granularity: ViewGranularity,
-    graph: &Graph,
-    stats: &ProjectStats,
-) -> Result<PathBuf, CacheError> {
+pub fn save_project_cache(project_root: &Path, graph: &Graph, stats: &ProjectStats) -> Result<PathBuf, CacheError> {
     let cache_dir = user_cache_dir_for_project(project_root);
     std::fs::create_dir_all(&cache_dir)?;
-    let cache_file = cache_file_path(project_root, granularity);
+    let cache_file = cache_file_path(project_root);
 
-    let fingerprint = compute_workspace_fingerprint(project_root, granularity);
+    let fingerprint = compute_workspace_fingerprint(project_root);
     let cached_data = CachedProjectData { graph: graph.clone(), stats: stats.clone() };
 
     let aligned_bytes =
@@ -178,11 +172,8 @@ pub fn save_project_cache(
 /// Attempts to load and reconstitute the Graph and Stats from the user cache directory.
 /// Returns `Ok(Some((graph, stats)))` on cache hit and valid fingerprint.
 /// Returns `Ok(None)` if the cache is missing, stale, or invalidated.
-pub fn load_project_cache(
-    project_root: &Path,
-    granularity: ViewGranularity,
-) -> Result<Option<(Graph, ProjectStats)>, CacheError> {
-    let cache_file = cache_file_path(project_root, granularity);
+pub fn load_project_cache(project_root: &Path) -> Result<Option<(Graph, ProjectStats)>, CacheError> {
+    let cache_file = cache_file_path(project_root);
     if !cache_file.is_file() {
         return Ok(None);
     }
@@ -205,7 +196,7 @@ pub fn load_project_cache(
     }
 
     let stored_fingerprint = u64::from_le_bytes(header_bytes[16..24].try_into().unwrap());
-    let current_fingerprint = compute_workspace_fingerprint(project_root, granularity);
+    let current_fingerprint = compute_workspace_fingerprint(project_root);
     if stored_fingerprint != current_fingerprint {
         return Ok(None); // Source files or manifests modified -> cache is stale
     }
@@ -266,12 +257,11 @@ mod tests {
     fn test_new_empty_folder_invalidates_cache() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "a").unwrap();
-        let granularity = ViewGranularity::FilesAndFolders;
-        save_project_cache(dir.path(), granularity, &Graph::new(), &ProjectStats::default()).unwrap();
-        assert!(load_project_cache(dir.path(), granularity).unwrap().is_some());
+        save_project_cache(dir.path(), &Graph::new(), &ProjectStats::default()).unwrap();
+        assert!(load_project_cache(dir.path()).unwrap().is_some());
 
         std::fs::create_dir(dir.path().join("brand_new")).unwrap();
-        assert!(load_project_cache(dir.path(), granularity).unwrap().is_none(), "new folder must invalidate");
+        assert!(load_project_cache(dir.path()).unwrap().is_none(), "new folder must invalidate");
         clear_project_cache(dir.path()).unwrap();
     }
 
@@ -283,12 +273,11 @@ mod tests {
         let deep_file = nested.join("deep.rs");
         std::fs::write(&deep_file, "pub fn deep() {}").unwrap();
 
-        let granularity = ViewGranularity::FilesAndFolders;
-        save_project_cache(dir.path(), granularity, &Graph::new(), &ProjectStats::default()).unwrap();
-        assert!(load_project_cache(dir.path(), granularity).unwrap().is_some());
+        save_project_cache(dir.path(), &Graph::new(), &ProjectStats::default()).unwrap();
+        assert!(load_project_cache(dir.path()).unwrap().is_some());
 
         std::fs::write(&deep_file, "pub fn deep() { let changed = 1; }").unwrap();
-        assert!(load_project_cache(dir.path(), granularity).unwrap().is_none(), "nested edit must invalidate");
+        assert!(load_project_cache(dir.path()).unwrap().is_none(), "nested edit must invalidate");
         clear_project_cache(dir.path()).unwrap();
     }
 
@@ -301,16 +290,15 @@ mod tests {
 
         let mut graph = Graph::new();
         let nid = graph.add_node(
-            "foo",
-            NodeArchetype::Function,
-            "A test function",
+            "lib.rs",
+            NodeArchetype::File,
+            "A test file",
             None,
             vec![],
             vec![("out".to_string(), DataType::RustFlow)],
             [10.0, 20.0],
         );
 
-        let granularity = ViewGranularity::AllItems;
         let stats = ProjectStats {
             project_name: "test_proj".to_string(),
             crate_count: 1,
@@ -322,11 +310,11 @@ mod tests {
         };
 
         // Save to cache
-        let saved_path = save_project_cache(&temp_proj, granularity, &graph, &stats).expect("save cache");
+        let saved_path = save_project_cache(&temp_proj, &graph, &stats).expect("save cache");
         assert!(saved_path.is_file());
 
         // Load from cache
-        let loaded = load_project_cache(&temp_proj, granularity).expect("load cache");
+        let loaded = load_project_cache(&temp_proj).expect("load cache");
         assert!(loaded.is_some(), "Cache should be hit and valid");
         let (restored_graph, restored_stats) = loaded.unwrap();
         assert_eq!(restored_graph.nodes.len(), 1);
@@ -338,7 +326,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(15));
         std::fs::write(&sample_file, "pub fn foo() { let x = 42; }").unwrap();
 
-        let loaded_after_edit = load_project_cache(&temp_proj, granularity).expect("load after edit");
+        let loaded_after_edit = load_project_cache(&temp_proj).expect("load after edit");
         assert!(loaded_after_edit.is_none(), "Cache must be invalidated when source file changes");
 
         // Clean up
