@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 
+use studio_graph::FolderDetail;
 use studio_parser::extractor::ExtractedFile;
 use studio_parser::tree::ProjectTree;
 use studio_parser::{load_folder_contents, materialize_folder, SymbolSearchIndex};
@@ -11,12 +12,15 @@ use super::StudioApp;
 pub struct FolderLoad {
     pub cluster_id: String,
     pub label: String,
+    /// Detail level to show the folder at once it is loaded.
+    pub detail: FolderDetail,
     rx: Receiver<(ProjectTree, Vec<ExtractedFile>)>,
 }
 
 impl StudioApp {
-    /// Starts loading a collapsed (lazy) folder's contents; it expands when the load finishes.
-    pub(crate) fn start_folder_load(&mut self, cluster_id: String) {
+    /// Starts loading a minimised (lazy) folder's contents; it switches to `detail` when the load
+    /// finishes.
+    pub(crate) fn start_folder_load(&mut self, cluster_id: String, detail: FolderDetail) {
         if self.folder_loads.iter().any(|l| l.cluster_id == cluster_id) {
             return;
         }
@@ -31,7 +35,7 @@ impl StudioApp {
             let _ = tx.send(load_folder_contents(&path));
         });
         self.canvas_state.status_message = Some(format!("Loading {label} ({} files)…", lazy.file_count));
-        self.folder_loads.push(FolderLoad { cluster_id, label, rx });
+        self.folder_loads.push(FolderLoad { cluster_id, label, detail, rx });
     }
 
     /// Merges finished folder loads into the graph. Called every frame.
@@ -52,8 +56,10 @@ impl StudioApp {
             };
             match materialize_folder(&mut self.graph, &load.cluster_id, &tree, &parsed) {
                 Ok(added) => {
-                    self.canvas_state.spatial_grid.build_from_graph(&self.graph);
-                    self.canvas_state.spatial_grid_dirty = false;
+                    if load.detail != FolderDetail::Open {
+                        self.graph.set_folder_detail(&load.cluster_id, load.detail);
+                    }
+                    self.canvas_state.mark_scene_dirty();
                     self.search_index = SymbolSearchIndex::build(&self.graph);
                     self.canvas_state.status_message = Some(format!("Loaded {}: {} files", load.label, added));
                 }

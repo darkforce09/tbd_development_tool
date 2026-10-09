@@ -1,4 +1,4 @@
-use crate::model::{DataType, Graph, GroupCluster, NodeArchetype};
+use crate::model::{DataType, EdgeKind, Graph, GroupCluster, NodeArchetype};
 
 /// Creates the pre-populated showcase pipeline scenario.
 pub fn create_showcase_graph() -> Graph {
@@ -188,6 +188,7 @@ impl DisplaySurface {
         audio_out_port,
         whisper_ocr,
         whisper_in_port,
+        EdgeKind::Call,
         Some("PCM Stream".to_string()),
         Some(1),
         Some(26),
@@ -201,6 +202,7 @@ impl DisplaySurface {
         whisper_out_port,
         inpainting,
         inpainting_text_port,
+        EdgeKind::Call,
         Some("Subtitle Tokens".to_string()),
         Some(2),
         Some(50),
@@ -214,6 +216,7 @@ impl DisplaySurface {
         frame_out_port,
         inpainting,
         inpainting_frame_port,
+        EdgeKind::Call,
         Some("4K Frames".to_string()),
         Some(3),
         Some(32),
@@ -227,6 +230,7 @@ impl DisplaySurface {
         composite_out_port,
         display_surface,
         display_in_port,
+        EdgeKind::Call,
         Some("Composite Buffer".to_string()),
         Some(4),
         Some(72),

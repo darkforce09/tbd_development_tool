@@ -35,6 +35,8 @@ Each wire carries a kind, a tier and its provenance (which resolver produced it,
 
 Name matching is not evidence. A wire that cannot reach at least the Possible set tier is shown as Unresolved or not at all.
 
+How kinds look on the canvas (colours, ports, layout laws) is defined in [VISUAL_LANGUAGE.md](VISUAL_LANGUAGE.md).
+
 ### S3. Language-agnostic core
 
 The graph model, layout and canvas know nothing about any language. Languages plug in through adapters that output symbols, references and evidence tiers in one shared format. Adding a language never changes the core.
@@ -86,7 +88,7 @@ Goal: remove everything that is mock, duplicated or in the way, so later work bu
 - [x] Remove the STUDIO brand label and the bottom status bar.
 - [x] Project stats move into the F3 debug panel, alongside frame timing, process, GPU and canvas telemetry. The old "Architecture Graph Valid" title is dropped because nothing was validated.
 - [x] Remove the view dropdown (Files & Folders / All Items / Public API / Modules) from the UI.
-- [ ] Remove the Items, Public API and Modules graph builders from `studio_parser`, and granularity from the cache key.
+- [x] Remove the Items, Public API and Modules graph builders from `studio_parser`, and granularity from the cache key.
 - [x] Remove the Ingress / Compute / State / Egress filter categories and the Spotlight buttons that created such nodes. They came from the abandoned lanes idea and are not derived from code.
 - [ ] Remove those archetypes from the graph model, the mock pipeline graph and `bench_scale` (needs a cache version bump; fold into Phase 1).
 - [x] Remove the Repo, Showcase and Force Reparse buttons. With no project open, the canvas shows an Open folder prompt.
@@ -96,6 +98,13 @@ Goal: remove everything that is mock, duplicated or in the way, so later work bu
 - [x] Filters button removed; the sidebar opens from an arrow tab under the title bar (Eden editor style).
 - [x] Messages and errors: the debug panel shows the last message and any load error, and a failed load puts a warning on the title.
 - [ ] Keyboard shortcut help, which went away with the bottom bar.
+- [x] Visual language standard: direction (providers left), ports, layout laws, gates, folder detail levels, colours. See [VISUAL_LANGUAGE.md](VISUAL_LANGUAGE.md).
+- [x] Wire kinds on every edge, Markdown links as documentation wires into a documentation port, provider-to-consumer direction, and keep every wire into an input (no fan-in loss).
+- [x] Left-to-right layout engine: lifting wires through folder gates, cycle boxes, layering, crossing reduction, coordinates.
+- [x] Wire routing: orthogonal routes that never pass through cards or folders, crossing folder edges only at gates.
+- [x] Route documentation wires: through documentation gates and each folder's documentation strip, never over cards or folders (L2, L3).
+- [x] Rendering of routes, gates, documentation ports and cycle boxes; folder detail levels (minimised, node view, open) switched from the folder header.
+- [x] Geometry-only relayout when a card expands or a folder changes level: columns and order are kept, only the folders around the change are measured again.
 
 Exit: every control on screen does something real, and nothing shows mock data for a real project.
 
@@ -165,12 +174,11 @@ Exit: pipelines are generated automatically on both real repos, and each one can
 
 ### Phase 5: Wire presentation
 
-Goal: wires that are readable at any zoom, now that layout and data are right.
+Goal: wires that are readable at any zoom. Routing and the basic look are set in Phase 0 by the [visual language](VISUAL_LANGUAGE.md); this phase builds on it.
 
-- Bundle wires between collapsed or distant groups, with counts.
 - Focus and context: emphasize the wires of the selection and its neighbours.
 - Toggles per wire kind and tier.
-- Animated flow direction.
+- Line styles and colour-blind variants.
 
 ### Phase 6: On-canvas editing and inspection
 

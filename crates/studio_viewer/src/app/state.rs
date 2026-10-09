@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use studio_canvas::CanvasState;
 use studio_graph::{Graph, NodeArchetype};
-use studio_parser::{spawn_load_project, SymbolSearchIndex, ViewGranularity};
+use studio_parser::{spawn_load_project, SymbolSearchIndex};
 use studio_ui::apply_theme;
 
 use super::settings::PersistedSettings;
@@ -30,8 +30,8 @@ impl StudioApp {
             .as_ref()
             .map(|rs| crate::telemetry::GpuDeviceInfo::from_adapter_info(&rs.adapter.get_info()));
         if let Some(render_state) = &cc.wgpu_render_state {
-            let pipeline = studio_canvas::GpuWirePipeline::new(&render_state.device, render_state.target_format);
-            render_state.renderer.write().callback_resources.insert(pipeline);
+            let gpu = studio_canvas::CanvasGpu::new(&render_state.device, render_state.target_format);
+            render_state.renderer.write().callback_resources.insert(gpu);
             canvas_state.use_gpu_wires = true;
         } else {
             canvas_state.use_gpu_wires = false;
@@ -103,7 +103,7 @@ impl StudioApp {
         self.canvas_state.status_message = Some(format!("Loading {}...", path.display()));
 
         let (tx, rx) = std::sync::mpsc::channel();
-        spawn_load_project(path_buf, ViewGranularity::FilesAndFolders, tx);
+        spawn_load_project(path_buf, tx);
         self.loader_rx = Some(rx);
     }
 

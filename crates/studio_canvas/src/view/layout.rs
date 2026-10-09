@@ -1,5 +1,5 @@
 use egui::Pos2;
-use studio_graph::{Node, NodeArchetype, PortDirection, PortId};
+use studio_graph::{Edge, Graph, Node, NodeArchetype, PortDirection, PortId};
 
 /// Calculates the size of a File node based on whether its member dropdown or code drawer is expanded.
 pub fn calculate_file_node_size(node: &Node) -> [f32; 2] {
@@ -26,9 +26,15 @@ pub fn calculate_file_node_size(node: &Node) -> [f32; 2] {
     }
 }
 
+pub use studio_graph::DOC_PORT_OFFSET_Y;
+
 /// Computes the world position of a port socket on a node card.
 pub fn port_world_position(node: &Node, port_id: PortId) -> Option<Pos2> {
     let (idx, dir) = node.port_index(port_id)?;
+    // The documentation port sits at the top of the left side, above the code inputs.
+    if node.doc_port() == Some(port_id) {
+        return Some(Pos2::new(node.position[0], node.position[1] + DOC_PORT_OFFSET_Y));
+    }
     let y = if node.archetype == NodeArchetype::File && !node.is_code_expanded {
         if node.is_dropdown_expanded {
             if let Some((m_idx, _)) = node
@@ -88,4 +94,49 @@ pub fn port_world_position(node: &Node, port_id: PortId) -> Option<Pos2> {
     };
 
     Some(Pos2::new(x, y))
+}
+
+/// World points of a routed wire (code or documentation), with its ends moved to the edge's
+/// actual ports (a member row rather than the card's file-level port). `None` when the wire has no
+/// route.
+pub fn routed_wire_points(graph: &Graph, edge: &Edge) -> Option<Vec<Pos2>> {
+    let mut points = Vec::new();
+    routed_wire_points_into(graph, edge, &mut points).then_some(points)
+}
+
+/// [`routed_wire_points`] into a reused buffer. Returns false (and leaves `points` empty) when the
+/// wire has no route.
+pub fn routed_wire_points_into(graph: &Graph, edge: &Edge, points: &mut Vec<Pos2>) -> bool {
+    points.clear();
+    let Some(route) = graph.route_of(edge) else { return false };
+    if route.points.len() < 2 {
+        return false;
+    }
+    points.extend(route.points.iter().map(|p| Pos2::new(p[0], p[1])));
+    // A card hidden in a collapsed folder is represented by that folder's gate, where the route
+    // already ends.
+    let port = |node, port| {
+        (!graph.is_node_in_collapsed_cluster(node))
+            .then(|| graph.nodes.get(&node).and_then(|n| port_world_position(n, port)))
+            .flatten()
+    };
+    let start = port(edge.from_node, edge.from_port);
+    let end = port(edge.to_node, edge.to_port);
+    if points.len() == 2 {
+        // A straight route: give the ends room to step to their rows halfway along.
+        let mid = (points[0].x + points[1].x) * 0.5;
+        let (y0, y1) = (points[0].y, points[1].y);
+        points.insert(1, Pos2::new(mid, y0));
+        points.insert(2, Pos2::new(mid, y1));
+    }
+    let n = points.len();
+    if let Some(p) = start {
+        points[0] = p;
+        points[1].y = p.y;
+    }
+    if let Some(p) = end {
+        points[n - 1] = p;
+        points[n - 2].y = p.y;
+    }
+    true
 }

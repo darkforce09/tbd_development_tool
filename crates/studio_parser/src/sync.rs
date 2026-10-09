@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use studio_graph::{EdgeId, Graph, NodeArchetype, NodeId, PortId};
+use studio_graph::{EdgeId, EdgeKind, Graph, NodeArchetype, NodeId, PortId};
 
-use crate::builder::members::{attach_member_ports, build_member_nodes, member_calls, MemberPortIndex};
+use crate::builder::common::{node_rel_path, resolve_link};
+use crate::builder::members::{attach_member_ports, build_member_nodes, link_member_id, member_calls, MemberPortIndex};
 use crate::extractor::{extract_source, ExtractedFile};
 
 /// Outcome of a save + re-parse.
@@ -10,37 +11,24 @@ use crate::extractor::{extract_source, ExtractedFile};
 pub struct SaveReport {
     /// Graph nodes whose content was refreshed.
     pub updated_nodes: usize,
-    /// An item card no longer matches any item in the file; a project reload is needed to re-layout.
-    pub needs_reload: bool,
 }
 
-/// Saves edited code to disk atomically and refreshes the nodes that belong to that file, using the
-/// same extraction and member-building code as a full project load.
+/// Saves edited code to disk atomically and refreshes the file cards that belong to that file, using
+/// the same extraction and member-building code as a full project load.
 pub fn save_and_reparse(path: &Path, new_content: &str, graph: &mut Graph) -> Result<SaveReport, String> {
     crate::edit::atomic_write(path, new_content.as_bytes())
         .map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
 
     let extracted = extract_source(path, path, new_content);
     let mut report = SaveReport::default();
-    let mut item_nodes = Vec::new();
 
     for node_id in nodes_for_path(graph, path) {
-        match graph.nodes[&node_id].archetype {
-            NodeArchetype::File => {
-                refresh_file_node(graph, node_id, &extracted, new_content);
-                report.updated_nodes += 1;
-            }
-            NodeArchetype::Struct | NodeArchetype::Enum | NodeArchetype::Trait | NodeArchetype::Function => {
-                item_nodes.push(node_id);
-            }
-            // Module cards summarise the file and hold no editable source.
-            _ => {}
+        if graph.nodes[&node_id].archetype == NodeArchetype::File {
+            refresh_file_node(graph, node_id, &extracted, new_content);
+            report.updated_nodes += 1;
         }
     }
 
-    let (updated, needs_reload) = refresh_item_nodes(graph, &item_nodes, &extracted);
-    report.updated_nodes += updated;
-    report.needs_reload = needs_reload;
     graph.rebuild_fast_indices();
     Ok(report)
 }
@@ -111,8 +99,8 @@ fn refresh_file_node(graph: &mut Graph, node_id: NodeId, extracted: &ExtractedFi
 
     attach_member_ports(graph, node_id, &mut members);
 
-    let out_port_by_member: HashMap<String, PortId> =
-        members.iter().filter_map(|m| Some((m.id.clone(), m.out_port_id?))).collect();
+    let ports_by_member: HashMap<String, (PortId, PortId)> =
+        members.iter().filter_map(|m| Some((m.id.clone(), (m.in_port_id?, m.out_port_id?)))).collect();
     if let Some(node) = graph.nodes.get_mut(&node_id) {
         if node.source_code.is_some() {
             node.source_code = Some(content.to_string());
@@ -120,22 +108,29 @@ fn refresh_file_node(graph: &mut Graph, node_id: NodeId, extracted: &ExtractedFi
         node.member_nodes = members;
     }
 
-    rewire_member_calls(graph, node_id, extracted, &out_port_by_member);
+    rewire_member_edges(graph, node_id, extracted, &ports_by_member);
 }
 
-/// Re-wires the card's outgoing member call edges from the new extraction, in the same order and
-/// with the same input-port semantics as the Files builder, so a save matches a fresh load.
-fn rewire_member_calls(
+/// Re-wires the card's member edges from the new extraction the same way the Files builder does,
+/// so a save matches a fresh load: calls its members make (provider → member input) and the
+/// documentation links its rows hold (link row → target's documentation port).
+fn rewire_member_edges(
     graph: &mut Graph,
     node_id: NodeId,
     extracted: &ExtractedFile,
-    out_port_by_member: &HashMap<String, PortId>,
+    ports_by_member: &HashMap<String, (PortId, PortId)>,
 ) {
-    let member_out_ports: HashSet<PortId> = out_port_by_member.values().copied().collect();
+    let member_inputs: HashSet<PortId> = ports_by_member.values().map(|&(i, _)| i).collect();
+    let member_outputs: HashSet<PortId> = ports_by_member.values().map(|&(_, o)| o).collect();
     let stale: Vec<EdgeId> = graph
         .edges
         .iter()
-        .filter(|e| e.from_node == node_id && member_out_ports.contains(&e.from_port))
+        .filter(|e| {
+            (e.to_node == node_id && e.kind == EdgeKind::Call && member_inputs.contains(&e.to_port))
+                || (e.from_node == node_id
+                    && e.kind == EdgeKind::Documentation
+                    && member_outputs.contains(&e.from_port))
+        })
         .map(|e| e.id)
         .collect();
     for edge_id in stale {
@@ -143,66 +138,34 @@ fn rewire_member_calls(
     }
 
     let index = MemberPortIndex::from_graph(graph);
-    let mut step = graph.edges.iter().filter_map(|e| e.step_number).max().unwrap_or(0) + 1;
-    let mut connected: HashSet<(PortId, NodeId, PortId)> = HashSet::new();
+    let mut connected: HashSet<(PortId, PortId)> = HashSet::new();
     for (member_id, calls) in member_calls(extracted) {
-        let Some(&out_port) = out_port_by_member.get(&member_id) else { continue };
+        let Some(&(consumer_in, own_out)) = ports_by_member.get(&member_id) else { continue };
         for call in calls {
-            let Some((target_node, in_port)) = index.resolve(call) else { continue };
-            if (target_node != node_id || in_port != out_port) && connected.insert((out_port, target_node, in_port)) {
-                graph.connect_labeled(
-                    node_id,
-                    out_port,
-                    target_node,
-                    in_port,
-                    Some("call".to_string()),
-                    Some(step),
-                    None,
-                );
-                step += 1;
+            let Some((provider, provider_out)) = index.resolve_provider(call) else { continue };
+            if provider_out != own_out && connected.insert((provider_out, consumer_in)) {
+                graph.connect_kind(provider, provider_out, node_id, consumer_in, EdgeKind::Call);
             }
         }
     }
-}
 
-/// Updates per-item cards (Items / Public API views) in place. Each card is matched to the item with
-/// the same title nearest its previous line. Returns (updated, needs_reload).
-fn refresh_item_nodes(graph: &mut Graph, node_ids: &[NodeId], extracted: &ExtractedFile) -> (usize, bool) {
-    let mut candidates: HashMap<String, Vec<(usize, &str, &str)>> = HashMap::new();
-    for s in &extracted.structs {
-        candidates.entry(format!("struct {}", s.name)).or_default().push((s.line, &s.source_code, &s.docs));
-    }
-    for e in &extracted.enums {
-        candidates.entry(format!("enum {}", e.name)).or_default().push((e.line, &e.source_code, &e.docs));
-    }
-    for t in &extracted.traits {
-        candidates.entry(format!("trait {}", t.name)).or_default().push((t.line, &t.source_code, &t.docs));
-    }
-    for f in extracted.functions.iter().chain(extracted.impls.iter().flat_map(|i| i.methods.iter())) {
-        candidates.entry(format!("fn {}", f.name)).or_default().push((f.line, &f.source_code, &f.docs));
-    }
-
-    let mut updated = 0;
-    let mut needs_reload = false;
-    let mut used: HashSet<(String, usize)> = HashSet::new();
-    for &node_id in node_ids {
-        let Some(node) = graph.nodes.get_mut(&node_id) else { continue };
-        let old_line = node.line_number.unwrap_or(0);
-        let best = candidates.get(&node.title).and_then(|list| {
-            list.iter()
-                .filter(|(line, _, _)| !used.contains(&(node.title.clone(), *line)))
-                .min_by_key(|(line, _, _)| line.abs_diff(old_line))
-        });
-        match best {
-            Some(&(line, src, docs)) => {
-                used.insert((node.title.clone(), line));
-                node.line_number = Some(line);
-                node.source_code = Some(src.to_string());
-                node.doc_comment = if docs.is_empty() { None } else { Some(docs.to_string()) };
-                updated += 1;
-            }
-            None => needs_reload = true,
+    let Some(from) = graph.nodes.get(&node_id).and_then(node_rel_path) else { return };
+    let path_to_node: HashMap<String, NodeId> = graph
+        .nodes
+        .iter()
+        .filter(|(_, n)| n.archetype == NodeArchetype::File)
+        .filter_map(|(&id, n)| Some((node_rel_path(n)?, id)))
+        .collect();
+    for link in &extracted.links {
+        let Some(&(_, link_out)) = ports_by_member.get(&link_member_id(link)) else { continue };
+        let Some(target) = resolve_link(&from, &link.target).and_then(|t| path_to_node.get(&t).copied()) else {
+            continue;
+        };
+        if target == node_id {
+            continue;
+        }
+        if let Some(doc_in) = graph.nodes.get(&target).and_then(|n| n.doc_port()) {
+            graph.connect_kind(node_id, link_out, target, doc_in, EdgeKind::Documentation);
         }
     }
-    (updated, needs_reload)
 }

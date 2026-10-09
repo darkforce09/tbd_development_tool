@@ -95,8 +95,7 @@ impl App for StudioApp {
                             self.graph = graph;
                             self.project_stats = Some(stats.clone());
                             self.search_index = search_index;
-                            self.canvas_state.spatial_grid.build_from_graph(&self.graph);
-                            self.canvas_state.spatial_grid_dirty = false;
+                            self.canvas_state.mark_scene_dirty();
                             self.pending_fit_view = true;
                             self.is_loading = false;
                             self.canvas_state.status_message = Some(format!(
@@ -109,8 +108,7 @@ impl App for StudioApp {
                             self.project_stats = Some(stats.clone());
                             self.search_index = search_index;
                             self.is_from_cache = from_cache;
-                            self.canvas_state.spatial_grid.build_from_graph(&self.graph);
-                            self.canvas_state.spatial_grid_dirty = false;
+                            self.canvas_state.mark_scene_dirty();
                             if self.is_loading {
                                 self.pending_fit_view = true;
                             }
@@ -190,7 +188,7 @@ impl App for StudioApp {
                         self.canvas_state.transform.center_on_world_pos(center_world, ctx.content_rect(), None);
                     }
                 }
-                CanvasAction::ExpandFolder(cluster_id) => self.start_folder_load(cluster_id),
+                CanvasAction::ExpandFolder(cluster_id, detail) => self.start_folder_load(cluster_id, detail),
                 CanvasAction::ToggleMemberWires(id) => {
                     if let Some(n) = self.graph.nodes.get_mut(&id) {
                         n.show_member_wires = !n.show_member_wires;
@@ -218,7 +216,9 @@ impl App for StudioApp {
                     self.pending_fit_view = false;
                 }
 
+                let started = std::time::Instant::now();
                 CanvasView::new(&mut self.canvas_state, &mut self.graph).show(ui);
+                self.debug.canvas_ms = started.elapsed().as_secs_f32() * 1000.0;
             },
         );
 

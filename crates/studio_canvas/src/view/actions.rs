@@ -1,18 +1,18 @@
 use egui::{Pos2, Rect};
-use studio_graph::{Graph, NodeArchetype};
+use studio_graph::{FolderDetail, Graph, NodeArchetype};
 
 use super::layout::calculate_file_node_size;
 use super::types::{CanvasAction, CanvasState, ContextMenuAction, RenderEvents, ZoomAction};
 
 pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph: &mut Graph, rect: Rect) {
-    if let Some(cid) = events.toggle_cluster_id {
-        let unloaded = graph.clusters.iter().any(|c| c.id == cid && c.is_collapsed && c.lazy.is_some());
-        if unloaded {
-            // The host loads the folder's contents, then expands it.
-            state.action_request = Some(CanvasAction::ExpandFolder(cid));
-        } else {
-            graph.toggle_cluster_collapse(&cid);
-            state.spatial_grid_dirty = true;
+    if let Some((cid, detail)) = events.folder_detail {
+        let unloaded = graph.clusters.iter().any(|c| c.id == cid && c.is_collapsed() && c.lazy.is_some());
+        if unloaded && detail != FolderDetail::Minimised {
+            // The host loads the folder's contents, then shows it at that level.
+            state.action_request = Some(CanvasAction::ExpandFolder(cid, detail));
+        } else if !unloaded {
+            graph.set_folder_detail(&cid, detail);
+            state.mark_scene_dirty();
         }
     }
 
@@ -27,11 +27,12 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
         if let Some(bounds) = new_bounds {
             if graph.tree_layout {
                 // A taller card shifts its row and every folder below it.
-                graph.layout_folder_tree();
-                state.spatial_grid_dirty = true;
+                graph.relayout_resized(&[node_id]);
+                state.mark_scene_dirty();
             } else {
                 state.spatial_grid.update(node_id, bounds);
                 graph.update_cluster_bounds();
+                state.mark_scene_dirty();
             }
         }
     }
@@ -54,11 +55,12 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
         if let Some(bounds) = new_bounds {
             if graph.tree_layout {
                 // A taller card shifts its row and every folder below it.
-                graph.layout_folder_tree();
-                state.spatial_grid_dirty = true;
+                graph.relayout_resized(&[node_id]);
+                state.mark_scene_dirty();
             } else {
                 state.spatial_grid.update(node_id, bounds);
                 graph.update_cluster_bounds();
+                state.mark_scene_dirty();
             }
         }
     }
@@ -155,11 +157,12 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
         if let Some(bounds) = new_bounds {
             if graph.tree_layout {
                 // A taller card shifts its row and every folder below it.
-                graph.layout_folder_tree();
-                state.spatial_grid_dirty = true;
+                graph.relayout_resized(&[node_id]);
+                state.mark_scene_dirty();
             } else {
                 state.spatial_grid.update(node_id, bounds);
                 graph.update_cluster_bounds();
+                state.mark_scene_dirty();
             }
         }
     }
@@ -213,10 +216,11 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
                 };
                 if let Some(bounds) = new_bounds {
                     if graph.tree_layout {
-                        graph.layout_folder_tree();
-                        state.spatial_grid_dirty = true;
+                        graph.relayout_resized(&[id]);
+                        state.mark_scene_dirty();
                     } else {
                         graph.update_cluster_bounds();
+                        state.mark_scene_dirty();
                         state.spatial_grid.update(id, bounds);
                     }
                 }
@@ -245,10 +249,11 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
                 };
                 if let Some(bounds) = new_bounds {
                     if graph.tree_layout {
-                        graph.layout_folder_tree();
-                        state.spatial_grid_dirty = true;
+                        graph.relayout_resized(&[id]);
+                        state.mark_scene_dirty();
                     } else {
                         graph.update_cluster_bounds();
+                        state.mark_scene_dirty();
                         state.spatial_grid.update(id, bounds);
                     }
                 }
@@ -271,10 +276,11 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
                 };
                 if let Some(bounds) = new_bounds {
                     if graph.tree_layout {
-                        graph.layout_folder_tree();
-                        state.spatial_grid_dirty = true;
+                        graph.relayout_resized(&[id]);
+                        state.mark_scene_dirty();
                     } else {
                         graph.update_cluster_bounds();
+                        state.mark_scene_dirty();
                         state.spatial_grid.update(id, bounds);
                     }
                 }
@@ -283,6 +289,7 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
             CanvasAction::DeleteNode(id) => {
                 graph.remove_node(id);
                 state.selected_nodes.remove(&id);
+                state.mark_scene_dirty();
                 state.action_request = None;
             }
             CanvasAction::FitGraph => {

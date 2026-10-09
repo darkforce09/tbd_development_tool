@@ -8,8 +8,8 @@ pub mod sync;
 pub mod tree;
 
 pub use builder::{
-    build_files_graph, build_items_graph, build_modules_graph, build_project_graph, build_skeleton_files_graph,
-    folder_cluster_id, materialize_folder, ProjectStats, ViewGranularity,
+    build_files_graph, build_project_graph, build_skeleton_files_graph, folder_cluster_id, materialize_folder,
+    ProjectStats,
 };
 pub use cache::{
     clear_project_cache, load_project_cache, save_project_cache, user_cache_dir_for_project, CachedProjectData,
@@ -17,7 +17,7 @@ pub use cache::{
 pub use edit::{apply_edit, atomic_write, content_hash, EditError, EditOrigin};
 pub use extractor::{
     extract_file, extract_project, EnumItem, ExtractedCrate, ExtractedFile, ExtractedProject, FieldInfo, FunctionItem,
-    ImplItem, ItemVisibility, ParamInfo, StructItem, TraitItem, UseItem,
+    ImplItem, ItemVisibility, LinkItem, ParamInfo, StructItem, TraitItem, UseItem,
 };
 pub use project::{scan_project, CrateInfo, ProjectError, RustProject};
 pub use search_index::{SearchItem, SymbolSearchIndex};
@@ -47,31 +47,23 @@ pub fn load_folder_contents(folder: &Path) -> (tree::ProjectTree, Vec<extractor:
 }
 
 /// Convenience function to scan, extract, and build a Graph for a Rust project at given path.
-pub fn load_rust_project(
-    path: impl AsRef<Path>,
-    granularity: ViewGranularity,
-) -> Result<(Graph, ProjectStats), ProjectError> {
+pub fn load_rust_project(path: impl AsRef<Path>) -> Result<(Graph, ProjectStats), ProjectError> {
     let scanned = scan_project(path)?;
     let extracted = extract_project(&scanned);
-    let (graph, stats) = build_project_graph(&extracted, granularity);
+    let (graph, stats) = build_project_graph(&extracted);
     Ok((graph, stats))
 }
 
 /// Spawns a background worker thread that extracts and builds the graph asynchronously,
 /// streaming non-blocking progress messages to the UI thread.
 /// Checks and populates user rkyv cache by default.
-pub fn spawn_load_project(
-    path: PathBuf,
-    granularity: ViewGranularity,
-    tx: Sender<LoaderMessage>,
-) -> std::thread::JoinHandle<()> {
-    spawn_load_project_opt(path, granularity, false, tx)
+pub fn spawn_load_project(path: PathBuf, tx: Sender<LoaderMessage>) -> std::thread::JoinHandle<()> {
+    spawn_load_project_opt(path, false, tx)
 }
 
 /// Spawns a background worker thread with an option to force re-parsing (bypassing cache).
 pub fn spawn_load_project_opt(
     path: PathBuf,
-    granularity: ViewGranularity,
     force_reparse: bool,
     tx: Sender<LoaderMessage>,
 ) -> std::thread::JoinHandle<()> {
@@ -85,7 +77,7 @@ pub fn spawn_load_project_opt(
                 percentage: 0.10,
             });
 
-            match cache::load_project_cache(&path, granularity) {
+            match cache::load_project_cache(&path) {
                 Ok(Some((graph, stats))) => {
                     let _ = tx.send(LoaderMessage::Progress {
                         stage: "Instant zero-copy load from user rkyv cache...".to_string(),
@@ -122,15 +114,10 @@ pub fn spawn_load_project_opt(
         };
 
         // Tier 1 instant layout: immediately emit skeleton files & clusters (< 100ms)
-        if granularity == ViewGranularity::FilesAndFolders {
-            let (skeleton_graph, skeleton_stats) = builder::build_skeleton_files_graph(&scanned);
-            let search_index = SymbolSearchIndex::build(&skeleton_graph);
-            let _ = tx.send(LoaderMessage::InitialLayoutReady {
-                graph: skeleton_graph,
-                stats: skeleton_stats,
-                search_index,
-            });
-        }
+        let (skeleton_graph, skeleton_stats) = builder::build_skeleton_files_graph(&scanned);
+        let search_index = SymbolSearchIndex::build(&skeleton_graph);
+        let _ =
+            tx.send(LoaderMessage::InitialLayoutReady { graph: skeleton_graph, stats: skeleton_stats, search_index });
 
         let total_files = scanned.total_files();
         let _ = tx.send(LoaderMessage::Progress {
@@ -153,7 +140,7 @@ pub fn spawn_load_project_opt(
             percentage: 0.85,
         });
 
-        let (graph, stats) = build_project_graph(&extracted, granularity);
+        let (graph, stats) = build_project_graph(&extracted);
 
         let _ = tx.send(LoaderMessage::Progress {
             stage: "Building in-memory Trigram search index...".to_string(),
@@ -175,7 +162,7 @@ pub fn spawn_load_project_opt(
         // Save to user rkyv cache asynchronously in background thread
         let save_root = path.clone();
         std::thread::spawn(move || {
-            if let Err(e) = cache::save_project_cache(&save_root, granularity, &graph, &stats) {
+            if let Err(e) = cache::save_project_cache(&save_root, &graph, &stats) {
                 eprintln!("Failed to save project cache: {}", e);
             }
         });
@@ -189,8 +176,7 @@ mod tests {
     #[test]
     fn test_parse_single_crate() {
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let (graph, stats) =
-            load_rust_project(manifest_dir, ViewGranularity::AllItems).expect("Failed to load studio_parser crate");
+        let (graph, stats) = load_rust_project(manifest_dir).expect("Failed to load studio_parser crate");
 
         assert!(!graph.nodes.is_empty(), "Graph should contain nodes");
         assert_eq!(stats.crate_count, 1);
@@ -207,23 +193,12 @@ mod tests {
     fn test_parse_workspace_root() {
         let workspace_root =
             Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2).expect("Workspace root should exist");
-        let (graph, stats) =
-            load_rust_project(workspace_root, ViewGranularity::AllItems).expect("Failed to load workspace");
+        let (graph, stats) = load_rust_project(workspace_root).expect("Failed to load workspace");
 
         assert!(!graph.nodes.is_empty(), "Graph should contain nodes");
         assert!(stats.crate_count >= 4, "Should detect workspace crates");
         assert!(stats.file_count >= 10, "Should detect source files");
         assert!(stats.node_count > 50, "Node count should be substantial");
-    }
-
-    #[test]
-    fn test_parse_modules_view() {
-        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let (graph, stats) = load_rust_project(manifest_dir, ViewGranularity::Modules)
-            .expect("Failed to load studio_parser in modules view");
-
-        assert!(!graph.nodes.is_empty(), "Modules graph should contain nodes");
-        assert_eq!(stats.node_count, graph.nodes.len());
     }
 
     #[test]
@@ -239,9 +214,9 @@ mod tests {
 
         let mut graph = Graph::new();
         let node_id = graph.add_node(
-            "fn add_numbers",
-            studio_graph::NodeArchetype::Function,
-            "Adds two numbers",
+            "sample.rs",
+            studio_graph::NodeArchetype::File,
+            "sample",
             None,
             vec![],
             vec![],
@@ -270,38 +245,11 @@ mod tests {
         assert_eq!(disk_content, updated_code, "Disk file must match saved content");
     }
 
-    #[test]
-    fn test_item_node_save_keeps_other_items() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("Cargo.toml"),
-            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
-        )
-        .unwrap();
-        std::fs::create_dir_all(dir.path().join("src")).unwrap();
-        let lib = dir.path().join("src/lib.rs");
-        let original = "pub fn alpha() -> i32 {\n    1\n}\n\npub fn beta() -> i32 {\n    2\n}\n";
-        std::fs::write(&lib, original).unwrap();
-
-        let (mut graph, _) = load_rust_project(dir.path(), ViewGranularity::AllItems).unwrap();
-        let beta = graph.nodes.values().find(|n| n.title == "fn beta").expect("item node for beta");
-        let snippet = beta.source_code.clone().unwrap();
-        assert!(!snippet.contains("alpha"), "item node holds only its own snippet");
-
-        let origin = EditOrigin::Snippet { original: snippet };
-        let disk = std::fs::read_to_string(&lib).unwrap();
-        let new_content = apply_edit(&disk, &origin, "pub fn beta() -> i32 {\n    20\n}").unwrap();
-        save_and_reparse(&lib, &new_content, &mut graph).unwrap();
-
-        let saved = std::fs::read_to_string(&lib).unwrap();
-        assert!(saved.contains("pub fn alpha() -> i32 {\n    1\n}"), "other items must survive: {saved}");
-        assert!(saved.contains("    20\n"));
-    }
-
     /// (member id, visibility, signature, line) per member, and (caller, callee) member ids per call edge.
     type CardShape = (Vec<(String, String, String, usize)>, Vec<(String, String)>);
 
-    /// Member list + call edges of a file card, by name, for comparing a saved graph with a fresh load.
+    /// Member list + the calls a file card's members make (provider member → consumer member), for
+    /// comparing a saved graph with a fresh load.
     fn file_card_shape(graph: &Graph, title: &str) -> CardShape {
         let node = graph.nodes.values().find(|n| n.title == title).expect("file card");
         let members = node
@@ -320,7 +268,7 @@ mod tests {
         let mut calls: Vec<(String, String)> = graph
             .edges
             .iter()
-            .filter(|e| e.from_node == node.id)
+            .filter(|e| e.to_node == node.id && e.kind == studio_graph::EdgeKind::Call)
             .filter_map(|e| Some((port_owner(e.from_port)?, port_owner(e.to_port)?)))
             .collect();
         calls.sort();
@@ -340,14 +288,17 @@ mod tests {
         let a = dir.path().join("src/a.rs");
         std::fs::write(&a, "pub fn alpha() {\n    beta();\n}\n").unwrap();
 
-        let (mut graph, _) = load_rust_project(dir.path(), ViewGranularity::FilesAndFolders).unwrap();
+        let (mut graph, _) = load_rust_project(dir.path()).unwrap();
         let edited = "/// doc\npub fn gamma() {\n    delta();\n}\n\nfn alpha() {\n    beta();\n    delta();\n}\n\nimpl S {\n    fn m(&self) { beta(); }\n}\n";
         save_and_reparse(&a, edited, &mut graph).unwrap();
 
-        let (fresh, _) = load_rust_project(dir.path(), ViewGranularity::FilesAndFolders).unwrap();
+        let (fresh, _) = load_rust_project(dir.path()).unwrap();
         let saved_shape = file_card_shape(&graph, "a.rs");
         assert_eq!(saved_shape, file_card_shape(&fresh, "a.rs"));
-        assert!(saved_shape.1.iter().any(|(_, to)| to == "fn:delta"), "new call wired: {saved_shape:?}");
+        assert!(
+            saved_shape.1.iter().any(|(from, to)| from == "fn:delta" && to == "fn:gamma"),
+            "new call wired from provider to caller: {saved_shape:?}"
+        );
         assert!(saved_shape.0.iter().any(|m| m.0 == "method:S::m"), "impl methods are kept: {saved_shape:?}");
 
         let card = graph.nodes.values().find(|n| n.title == "a.rs").unwrap();
@@ -356,7 +307,8 @@ mod tests {
         for m in &card.member_nodes {
             assert!(port_ids.contains(&m.in_port_id.unwrap()) && port_ids.contains(&m.out_port_id.unwrap()));
         }
-        assert_eq!(card.inputs.len(), card.member_nodes.len() + 1, "stale member ports removed");
+        // Code input + documentation port + one input per member.
+        assert_eq!(card.inputs.len(), card.member_nodes.len() + 2, "stale member ports removed");
     }
 
     #[test]
@@ -377,7 +329,7 @@ mod tests {
         std::fs::create_dir_all(r.join("empty")).unwrap();
         std::fs::create_dir_all(r.join("nest/only/dirs")).unwrap();
 
-        let (mut graph, stats) = load_rust_project(r, ViewGranularity::FilesAndFolders).unwrap();
+        let (mut graph, stats) = load_rust_project(r).unwrap();
         let scanned = tree::scan_tree(&r.canonicalize().unwrap(), tree::ScanOptions::default());
         assert_eq!(stats.file_count, scanned.files.len());
 
@@ -406,7 +358,7 @@ mod tests {
 
         // node_modules is a collapsed placeholder with totals and no cards yet.
         let nm = graph.clusters.iter().find(|c| c.id == "dir:node_modules").unwrap().clone();
-        assert!(nm.is_collapsed);
+        assert!(nm.is_collapsed());
         assert_eq!(nm.lazy.as_ref().map(|l| l.file_count), Some(2));
         assert!(nm.node_ids.is_empty() && nm.child_cluster_ids.is_empty());
         assert!(graph.clusters.iter().find(|c| c.id == "dir:empty").unwrap().subtitle.as_deref() == Some("empty"));
@@ -416,7 +368,7 @@ mod tests {
         let added = materialize_folder(&mut graph, "dir:node_modules", &subtree, &parsed).unwrap();
         assert_eq!(added, 2);
         let nm = graph.clusters.iter().find(|c| c.id == "dir:node_modules").unwrap();
-        assert!(!nm.is_collapsed && nm.lazy.is_none());
+        assert!(!nm.is_collapsed() && nm.lazy.is_none());
         let pkg = graph.clusters.iter().find(|c| c.id == "dir:node_modules/pkg").expect("nested folder");
         assert_eq!(pkg.parent_id.as_deref(), Some("dir:node_modules"));
         assert_eq!(pkg.node_ids.len(), 2);
@@ -427,7 +379,7 @@ mod tests {
     fn test_spawn_load_project() {
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf();
         let (tx, rx) = std::sync::mpsc::channel();
-        let handle = spawn_load_project(manifest_dir, ViewGranularity::AllItems, tx);
+        let handle = spawn_load_project(manifest_dir, tx);
         handle.join().expect("Thread should join");
 
         let mut got_progress = false;
@@ -454,7 +406,7 @@ mod tests {
     fn test_spawn_load_project_initial_layout() {
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf();
         let (tx, rx) = std::sync::mpsc::channel();
-        let handle = spawn_load_project_opt(manifest_dir, ViewGranularity::FilesAndFolders, true, tx);
+        let handle = spawn_load_project_opt(manifest_dir, true, tx);
         handle.join().expect("Thread should join");
 
         let mut got_initial_layout = false;
@@ -480,8 +432,7 @@ mod tests {
     #[test]
     fn test_parse_files_and_folders_view() {
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let (graph, stats) =
-            load_rust_project(manifest_dir, ViewGranularity::FilesAndFolders).expect("Should load files and folders");
+        let (graph, stats) = load_rust_project(manifest_dir).expect("Should load files and folders");
 
         assert!(!graph.nodes.is_empty(), "Should contain file nodes");
         assert!(stats.file_count >= 5, "Should have scanned files");
@@ -546,8 +497,7 @@ Link back: [Hub](../README.md)
 "#;
         std::fs::write(&sat_path, sat_content).unwrap();
 
-        let (graph, stats) =
-            load_rust_project(&temp_dir, ViewGranularity::FilesAndFolders).expect("Should load mixed project");
+        let (graph, stats) = load_rust_project(&temp_dir).expect("Should load mixed project");
 
         assert_eq!(stats.file_count, 3, "Should detect 3 files");
         assert_eq!(graph.nodes.len(), 3, "Should create 3 file cards");
@@ -570,8 +520,60 @@ Link back: [Hub](../README.md)
         let engine_members = &engine_node.member_nodes;
         assert!(engine_members.iter().any(|m| m.visibility == "MOD"));
 
-        // Verify wires exist connecting markdown links to destination files
-        assert!(!graph.edges.is_empty(), "Should connect wires between linked files");
+        // Documentation links become documentation wires into the target's documentation port.
+        let doc_wires: Vec<(&str, &str)> = graph
+            .edges
+            .iter()
+            .filter(|e| e.kind == studio_graph::EdgeKind::Documentation)
+            .map(|e| {
+                let target = &graph.nodes[&e.to_node];
+                assert_eq!(Some(e.to_port), target.doc_port(), "doc wires end at the documentation port");
+                (graph.nodes[&e.from_node].title.as_str(), target.title.as_str())
+            })
+            .collect();
+        for (from, to) in [("README.md", "satellite.md"), ("README.md", "engine.c"), ("satellite.md", "README.md")] {
+            assert!(doc_wires.contains(&(from, to)), "{from} → {to} missing: {doc_wires:?}");
+        }
+        assert!(
+            graph.edges.iter().all(|e| e.kind == studio_graph::EdgeKind::Documentation),
+            "markdown links are not code wires"
+        );
+    }
+
+    #[test]
+    fn test_wires_run_from_provider_to_consumer() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/util.rs"), "pub fn helper() {}\n").unwrap();
+        std::fs::write(dir.path().join("src/main.rs"), "use crate::util::helper;\n\nfn main() {\n    helper();\n}\n")
+            .unwrap();
+
+        let (graph, _) = load_rust_project(dir.path()).unwrap();
+        let id = |title: &str| graph.nodes.values().find(|n| n.title == title).unwrap().id;
+        let (util, main) = (id("util.rs"), id("main.rs"));
+
+        let file_wire = graph
+            .edges
+            .iter()
+            .find(|e| e.from_port == graph.nodes[&util].outputs[0].id)
+            .expect("util.rs provides to main.rs");
+        assert_eq!((file_wire.from_node, file_wire.to_node), (util, main));
+        assert_eq!(file_wire.to_port, graph.nodes[&main].inputs[0].id, "into the consumer's code input");
+        assert_eq!(file_wire.kind, studio_graph::EdgeKind::Import, "an import outranks a call");
+        assert!(graph.edges.iter().all(|e| e.from_node != main), "main.rs provides nothing");
+
+        let member = |node: studio_graph::NodeId, member_id: &str| {
+            graph.nodes[&node].member_nodes.iter().find(|m| m.id == member_id).unwrap().clone()
+        };
+        let (helper, caller) = (member(util, "fn:helper"), member(main, "fn:main"));
+        let call = graph.edges.iter().find(|e| e.kind == studio_graph::EdgeKind::Call).expect("member call wire");
+        assert_eq!(call.from_port, helper.out_port_id.unwrap(), "from the called function's output");
+        assert_eq!(call.to_port, caller.in_port_id.unwrap(), "into the caller's input");
     }
 
     #[test]

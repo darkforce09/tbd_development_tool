@@ -1,38 +1,51 @@
-use std::collections::HashMap;
-use studio_graph::{NodeId, PortId};
-
-#[allow(dead_code)]
-pub struct NodeLookup {
-    pub node_id: NodeId,
-    pub exec_in_port: Option<PortId>,
-    pub call_out_port: Option<PortId>,
-    pub self_out_port: Option<PortId>,
-    pub type_inputs: HashMap<String, PortId>,
-    pub type_outputs: HashMap<String, PortId>,
-}
-
-pub fn truncate_str(s: &str, max_len: usize) -> &str {
-    match s.char_indices().nth(max_len) {
-        None => s,
-        Some((idx, _)) => &s[..idx],
-    }
-}
-
-pub fn clean_type_key(s: &str) -> String {
-    let clean = s.trim_start_matches('&').trim_start_matches("mut ").trim();
-    // If it's a path like `crate::model::NodeId`, take the last segment
-    clean.split("::").last().unwrap_or(clean).to_string()
-}
-
 /// Path as a `/`-separated string, the form import paths and markdown links use on every OS.
 pub fn slash_path(path: &std::path::Path) -> String {
     path.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/")
 }
 
+/// Project-relative `/` path of a file card, from its folder cluster id (`dir:<folder>`) and title.
+pub fn node_rel_path(node: &studio_graph::Node) -> Option<String> {
+    let folder = node.group_id.as_deref()?.strip_prefix("dir:")?;
+    Some(if folder == "." { node.title.clone() } else { format!("{folder}/{}", node.title) })
+}
+
+/// Resolves a link written in the file at `from` (project-relative) to a project-relative path.
+/// Targets starting with `/` are relative to the project root. Returns `None` for links that
+/// leave the project.
+pub fn resolve_link(from: &str, target: &str) -> Option<String> {
+    let mut parts: Vec<&str> = match target.strip_prefix('/') {
+        Some(_) => Vec::new(),
+        None => from.split('/').filter(|s| !s.is_empty()).collect(),
+    };
+    if target.strip_prefix('/').is_none() {
+        parts.pop(); // the linking file itself
+    }
+    for segment in target.split(['/', '\\']) {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            s => parts.push(s),
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("/"))
+}
+
 #[cfg(test)]
 mod slash_path_tests {
-    use super::slash_path;
+    use super::{resolve_link, slash_path};
     use std::path::PathBuf;
+
+    #[test]
+    fn links_resolve_relative_to_the_linking_file() {
+        assert_eq!(resolve_link("docs/guide.md", "api.md").as_deref(), Some("docs/api.md"));
+        assert_eq!(resolve_link("docs/guide.md", "../src/lib.rs").as_deref(), Some("src/lib.rs"));
+        assert_eq!(resolve_link("docs/guide.md", "./img/a.png").as_deref(), Some("docs/img/a.png"));
+        assert_eq!(resolve_link("docs/guide.md", "/README.md").as_deref(), Some("README.md"));
+        assert_eq!(resolve_link("README.md", "crates/x/src/lib.rs").as_deref(), Some("crates/x/src/lib.rs"));
+        assert_eq!(resolve_link("README.md", "../outside.md"), None);
+    }
 
     #[test]
     fn joins_components_with_forward_slashes() {

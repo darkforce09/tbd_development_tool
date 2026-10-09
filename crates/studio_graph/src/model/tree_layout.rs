@@ -36,6 +36,13 @@ impl Graph {
         if !self.tree_layout || self.clusters.is_empty() {
             return;
         }
+        if self.flow_layout {
+            self.layout_dataflow();
+            return;
+        }
+        self.flow = None;
+        self.route_index.clear();
+        self.doc_route_index.clear();
         let index: HashMap<String, usize> = self.clusters.iter().enumerate().map(|(i, c)| (c.id.clone(), i)).collect();
         let children: Vec<Vec<usize>> = self
             .clusters
@@ -61,10 +68,17 @@ impl Graph {
 
     /// Re-runs whichever layout the graph uses after a size or collapse change.
     pub fn relayout(&mut self) {
-        if self.tree_layout {
-            self.layout_folder_tree();
-        } else {
+        self.relayout_resized(&[]);
+    }
+
+    /// Lays the graph out again after `cards` changed size or folders changed detail level. The
+    /// dataflow layout keeps every container's order and only measures what changed (see
+    /// [`Graph::relayout_geometry`]); otherwise the whole layout runs again.
+    pub fn relayout_resized(&mut self, cards: &[super::types::NodeId]) {
+        if !self.tree_layout {
             self.update_cluster_bounds();
+        } else if !(self.flow_layout && self.relayout_geometry(cards)) {
+            self.layout_folder_tree();
         }
     }
 
@@ -73,7 +87,7 @@ impl Graph {
             self.measure(child, children, out);
         }
         let cluster = &self.clusters[idx];
-        if cluster.is_collapsed {
+        if cluster.is_collapsed() {
             out.insert(
                 idx,
                 Measured { size: COLLAPSED_FOLDER_SIZE, node_offsets: Vec::new(), child_offsets: Vec::new() },
@@ -134,7 +148,7 @@ impl Graph {
 
     fn place(&mut self, idx: usize, origin: [f32; 2], depth: usize, measured: &HashMap<usize, Measured>) {
         let m = &measured[&idx];
-        let collapsed = self.clusters[idx].is_collapsed;
+        let collapsed = self.clusters[idx].is_collapsed();
         {
             let cluster = &mut self.clusters[idx];
             cluster.position = origin;

@@ -1,9 +1,13 @@
 use egui::{Color32, Pos2, Rect, Vec2};
 use std::collections::BTreeSet;
-use studio_graph::{DataType, EdgeId, Graph, NodeArchetype, NodeId};
+use studio_graph::{DataType, EdgeId, EdgeKind, FolderDetail, Graph, NodeArchetype, NodeId};
 use studio_ui::color_tokens::*;
 
+use std::sync::Arc;
+
+use crate::gpu::CardLayer;
 use crate::interaction::{HoverState, InteractionMode};
+use crate::scene::CanvasScene;
 use crate::spatial::SpatialHashGrid;
 use crate::transform::CanvasTransform;
 
@@ -17,6 +21,7 @@ pub fn data_type_color(data_type: &DataType) -> Color32 {
         DataType::Flow => TYPE_FLOW,
         DataType::Composite => TYPE_COMPOSITE,
         DataType::RustFlow => TYPE_FLOW,
+        DataType::Documentation => KIND_DOCUMENTATION,
         DataType::RustType(name) => {
             let s = name.trim_start_matches('&').trim_start_matches("mut ").trim();
             match s {
@@ -70,12 +75,25 @@ pub fn archetype_color(archetype: NodeArchetype) -> Color32 {
         NodeArchetype::Compute => ARCHETYPE_COMPUTE,
         NodeArchetype::State => ARCHETYPE_STATE,
         NodeArchetype::Egress => ARCHETYPE_EGRESS,
-        NodeArchetype::Module => Color32::from_rgb(56, 189, 248),
-        NodeArchetype::Function => Color32::from_rgb(168, 85, 247),
-        NodeArchetype::Struct => Color32::from_rgb(251, 146, 60),
-        NodeArchetype::Enum => Color32::from_rgb(250, 204, 21),
-        NodeArchetype::Trait => Color32::from_rgb(52, 211, 153),
+        NodeArchetype::Module => KIND_IMPORT,
+        NodeArchetype::Function => KIND_CALL,
+        NodeArchetype::Struct => KIND_TYPE_USE,
+        NodeArchetype::Enum => KIND_ENUM,
+        NodeArchetype::Trait => KIND_IMPLEMENTS,
         NodeArchetype::File => ARCHETYPE_FILE,
+        NodeArchetype::Link => KIND_DOCUMENTATION,
+    }
+}
+
+/// Colour of a wire, by what it means (docs/VISUAL_LANGUAGE.md).
+pub fn edge_kind_color(kind: EdgeKind) -> Color32 {
+    match kind {
+        EdgeKind::Call => KIND_CALL,
+        EdgeKind::TypeUse => KIND_TYPE_USE,
+        EdgeKind::Implements => KIND_IMPLEMENTS,
+        EdgeKind::Import => KIND_IMPORT,
+        EdgeKind::Documentation => KIND_DOCUMENTATION,
+        EdgeKind::Asset => KIND_ASSET,
     }
 }
 
@@ -94,8 +112,9 @@ pub enum CanvasAction {
     DeleteNode(NodeId),
     FitGraph,
     ResetGraph,
-    /// Load a collapsed folder whose contents are not in the graph yet (cluster id).
-    ExpandFolder(String),
+    /// Load a minimised folder whose contents are not in the graph yet (cluster id), then show it
+    /// at the given detail level.
+    ExpandFolder(String, FolderDetail),
 }
 
 pub use studio_ui::ContextMenuItem as ContextMenuAction;
@@ -110,7 +129,42 @@ pub struct NodeContextMenu {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CanvasFrameStats {
     pub visible_nodes: usize,
+    /// Wire instances submitted: straight segments in visible tiles, curves and highlights.
     pub visible_wires: usize,
+}
+
+/// Which kinds of wire are shown, one switch per kind (docs/VISUAL_LANGUAGE.md colours).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WireKinds {
+    pub calls: bool,
+    pub type_uses: bool,
+    pub implements: bool,
+    pub imports: bool,
+    pub documentation: bool,
+    pub assets: bool,
+}
+
+impl Default for WireKinds {
+    fn default() -> Self {
+        Self { calls: true, type_uses: true, implements: true, imports: true, documentation: true, assets: true }
+    }
+}
+
+impl WireKinds {
+    /// Bit `EdgeKind as u32` set for every kind shown.
+    pub fn mask(&self) -> u32 {
+        [
+            (EdgeKind::Call, self.calls),
+            (EdgeKind::TypeUse, self.type_uses),
+            (EdgeKind::Implements, self.implements),
+            (EdgeKind::Import, self.imports),
+            (EdgeKind::Documentation, self.documentation),
+            (EdgeKind::Asset, self.assets),
+        ]
+        .into_iter()
+        .filter(|&(_, shown)| shown)
+        .fold(0, |mask, (kind, _)| mask | 1 << kind as u32)
+    }
 }
 
 /// State of the canvas viewport, camera, and interactions.
@@ -131,10 +185,19 @@ pub struct CanvasState {
     pub action_request: Option<CanvasAction>,
     pub context_menu: Option<NodeContextMenu>,
     pub spatial_grid: SpatialHashGrid,
-    pub spatial_grid_dirty: bool,
+    /// Static world-space contents (wires, folder frames, gates), rebuilt when geometry changes.
+    pub scene: Arc<CanvasScene>,
+    /// The layout or a card's size changed: rebuild the spatial grid and the scene next frame.
+    pub scene_dirty: bool,
+    /// Which kinds of wire are shown.
+    pub wire_kinds: WireKinds,
+    /// Cards as rects for far zoom, and the inputs they were built from.
+    pub card_layer: Option<(u64, CardLayer)>,
     pub interactive_rects: Vec<Rect>,
     pub use_gpu_wires: bool,
     pub frame_stats: CanvasFrameStats,
+    /// Frames drawn, for telling frames apart on the GPU.
+    pub frame_counter: u64,
 }
 
 impl Default for CanvasState {
@@ -154,15 +217,44 @@ impl Default for CanvasState {
             action_request: None,
             context_menu: None,
             spatial_grid: SpatialHashGrid::default(),
-            spatial_grid_dirty: true,
+            scene: Arc::new(CanvasScene::default()),
+            scene_dirty: true,
+            wire_kinds: WireKinds::default(),
+            card_layer: None,
             interactive_rects: Vec::new(),
             use_gpu_wires: true,
             frame_stats: CanvasFrameStats::default(),
+            frame_counter: 0,
         }
     }
 }
 
 impl CanvasState {
+    /// Marks the layout as changed: the spatial grid and the scene are rebuilt before the next
+    /// frame draws.
+    pub fn mark_scene_dirty(&mut self) {
+        self.scene_dirty = true;
+    }
+
+    /// Rebuilds the spatial grid and the scene if the layout changed or the member-wire switch
+    /// differs from the one the scene was built with.
+    pub fn refresh_scene(&mut self, graph: &Graph) {
+        if self.scene_dirty || self.scene.member_wires != self.show_subnode_wires_globally || self.scene.revision == 0 {
+            self.spatial_grid.build_from_graph(graph);
+            self.scene = Arc::new(CanvasScene::build(graph, self.show_subnode_wires_globally));
+            // The hover index is only needed once the pointer is over a wire: build it off the
+            // UI thread.
+            let scene = self.scene.clone();
+            rayon::spawn(move || scene.build_hit_index());
+            self.scene_dirty = false;
+        }
+    }
+
+    /// Whether wires of this kind (`EdgeKind as u32`) are shown.
+    pub fn wire_kind_visible(&self, kind: u32) -> bool {
+        self.wire_kinds.mask() & (1 << kind) != 0
+    }
+
     pub fn reset_view(&mut self) {
         self.transform.reset();
     }
@@ -225,7 +317,8 @@ pub enum ZoomAction {
 
 #[derive(Default)]
 pub struct RenderEvents {
-    pub toggle_cluster_id: Option<String>,
+    /// A folder's detail-level button was clicked: (cluster id, level).
+    pub folder_detail: Option<(String, FolderDetail)>,
     pub file_dropdown_toggle_clicked: Option<NodeId>,
     pub file_wires_toggle_clicked: Option<NodeId>,
     pub file_code_expand_clicked: Option<NodeId>,

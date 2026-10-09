@@ -1,27 +1,33 @@
 use egui::{Pos2, Rect};
 use std::path::PathBuf;
 use std::time::Instant;
-use studio_canvas::SpatialHashGrid;
+use studio_canvas::{CanvasState, CanvasView, SpatialHashGrid};
 use studio_graph::{DataType, Graph, NodeArchetype};
 use studio_parser::{
     build_project_graph, clear_project_cache, extract_project, load_project_cache, save_project_cache, scan_project,
-    ProjectStats, SymbolSearchIndex, ViewGranularity,
+    ProjectStats, SymbolSearchIndex,
 };
 use studio_viewer::telemetry::{TelemetryBudget, TimelineTracker};
 
 const USAGE: &str = "usage: bench_scale [PROJECT_DIR] [--ram-budget-gb GB] [--target-fps FPS]
   PROJECT_DIR      project to load for the real-world benchmark (default: current directory)
   --ram-budget-gb  RAM ceiling checked by the benchmark (default: half of system RAM)
-  --target-fps     frame rate the render simulation must sustain (default: 60)";
+  --target-fps     frame rate the render simulation must sustain (default: 60)
+  --real-only      only benchmark the project, skip the synthetic suites
+  --layout-report  print the shape of the project's layout: size, aspect, widest and tallest folders";
 
 struct BenchArgs {
     project: PathBuf,
     budget: TelemetryBudget,
+    real_only: bool,
+    layout_report: bool,
 }
 
 fn parse_args() -> Result<BenchArgs, String> {
     let mut budget = TelemetryBudget::for_this_machine();
     let mut project = None;
+    let mut real_only = false;
+    let mut layout_report = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let mut number = |flag: &str| -> Result<f64, String> {
@@ -31,6 +37,8 @@ fn parse_args() -> Result<BenchArgs, String> {
         match arg.as_str() {
             "--ram-budget-gb" => budget.ram_bytes = (number("--ram-budget-gb")? * 1_073_741_824.0) as u64,
             "--target-fps" => budget.target_fps = number("--target-fps")?,
+            "--real-only" => real_only = true,
+            "--layout-report" => layout_report = true,
             "-h" | "--help" => return Err(String::new()),
             flag if flag.starts_with('-') => return Err(format!("unknown option {flag}")),
             path if project.is_none() => project = Some(PathBuf::from(path)),
@@ -41,7 +49,7 @@ fn parse_args() -> Result<BenchArgs, String> {
         Some(p) => p,
         None => std::env::current_dir().map_err(|e| format!("no project given and cwd unavailable: {e}"))?,
     };
-    Ok(BenchArgs { project, budget })
+    Ok(BenchArgs { project, budget, real_only, layout_report })
 }
 
 fn main() {
@@ -65,7 +73,11 @@ fn main() {
     println!("  Budget: {}\n", tracker.budget.describe());
 
     // Part 1: Real-world project benchmark
-    benchmark_real_project(&mut tracker, &args.project);
+    benchmark_real_project(&mut tracker, &args.project, args.layout_report);
+    if args.real_only {
+        tracker.print_timeline_summary();
+        return;
+    }
 
     // Part 2: rkyv Zero-Copy Caching Benchmark
     benchmark_rkyv_caching(&mut tracker);
@@ -76,14 +88,11 @@ fn main() {
     // Part 4: Ultra Scale Verification: 100,000 Folders, 500,000 Files, 5,000,000 Nodes & Wires
     benchmark_ultra_scale_5m(&mut tracker);
 
-    // Part 5: GPU Wire Batching & VRAM Efficiency Verification
-    benchmark_gpu_wire_throughput(&mut tracker);
-
     // Final Timeline Summary Report
     tracker.print_timeline_summary();
 }
 
-fn benchmark_real_project(tracker: &mut TimelineTracker, target_path: &std::path::Path) {
+fn benchmark_real_project(tracker: &mut TimelineTracker, target_path: &std::path::Path, layout_report: bool) {
     if !target_path.exists() {
         println!("[-] Target path does not exist: {}", target_path.display());
         return;
@@ -148,7 +157,7 @@ fn benchmark_real_project(tracker: &mut TimelineTracker, target_path: &std::path
 
     // 3. Graph Construction
     let t2 = Instant::now();
-    let (mut graph, stats) = build_project_graph(&extracted, ViewGranularity::FilesAndFolders);
+    let (mut graph, stats) = build_project_graph(&extracted);
     let _build_dur = t2.elapsed();
     tracker.record_stage(
         "Graph Assembly",
@@ -171,6 +180,48 @@ fn benchmark_real_project(tracker: &mut TimelineTracker, target_path: &std::path
         Some(stats.node_count),
         Some(stats.wire_count),
     );
+
+    // 4b. Dataflow layout of the whole folder tree, timed on its own
+    graph.flow_layout = true;
+    let t_layout = Instant::now();
+    graph.layout_folder_tree();
+    let layout_dur = t_layout.elapsed();
+    let (gates, boxes, routes, points, doc_routes) = graph.flow.as_ref().map_or((0, 0, 0, 0, 0), |f| {
+        let points = f.routes.iter().map(|r| r.points.len()).sum::<usize>();
+        (f.gates.len(), f.cycle_boxes.len(), f.routes.len(), points, f.doc_routes.len())
+    });
+    // Segments shared by several routes (one provider fanning out) are drawn once.
+    let unique_segments: std::collections::HashSet<[i32; 4]> = graph
+        .flow
+        .iter()
+        .flat_map(|f| f.routes.iter())
+        .flat_map(|r| r.points.windows(2))
+        .map(|w| {
+            let q = |v: f32| (v * 10.0).round() as i32;
+            [q(w[0][0]), q(w[0][1]), q(w[1][0]), q(w[1][1])]
+        })
+        .collect();
+    println!("    route segments: {} total, {} distinct", points.saturating_sub(routes), unique_segments.len());
+    tracker.record_stage(
+        "Dataflow Layout",
+        format!(
+            "{:.1} ms: {} gates, {} cycle boxes, {} routes ({} points), {} documentation routes",
+            layout_dur.as_secs_f64() * 1000.0,
+            gates,
+            boxes,
+            routes,
+            points,
+            doc_routes
+        ),
+        None,
+        None,
+        Some(stats.node_count),
+        Some(stats.wire_count),
+    );
+
+    if layout_report {
+        print_layout_report(&graph);
+    }
 
     // 5. Symbol Search Index (Trigram DDR5)
     let t4 = Instant::now();
@@ -210,73 +261,244 @@ fn benchmark_real_project(tracker: &mut TimelineTracker, target_path: &std::path
     }
     println!();
 
-    // 7. Viewport Render Simulation across Zoom Levels (frame budget verification)
-    println!(
-        "  Simulating Real-World Viewport Frames across Zoom Levels ({:.0} FPS budget):",
-        tracker.budget.target_fps
-    );
-    let real_scenarios = [
-        ("Real LOD 0 (High Zoom 200% 2.0x)", 2.0, 500),
-        ("Real LOD 0 (Standard 100% 1.0x)", 1.0, 500),
-        ("Real LOD 0 (Mid Zoom 47% 0.47x)", 0.47, 500),
-        ("Real LOD 2 (Full Project 4.1% 0.041x)", 0.041, 500),
-    ];
-    let screen_w = 2560.0;
-    let screen_h = 1440.0;
-    for (name, zoom, count) in real_scenarios {
-        let mut scenario_us = 0.0;
-        let world_w = screen_w / zoom;
-        let world_h = screen_h / zoom;
-        let center = if let Some(wb) = grid.world_bounds() {
-            Pos2::new((wb[0] + wb[2]) * 0.5 - world_w * 0.5, (wb[1] + wb[3]) * 0.5 - world_h * 0.5)
-        } else {
-            Pos2::new(0.0, 0.0)
-        };
-        let visible_rect = Rect::from_min_size(center, egui::vec2(world_w, world_h));
+    // 7. Real canvas frames across zoom levels (frame budget verification)
+    benchmark_canvas_frames(tracker, &mut graph);
 
-        let mut sample_nodes = 0;
-        let mut sample_wires = 0;
+    // 8. Geometry-only relayout: a card opening, a folder changing level.
+    benchmark_relayout(tracker, &mut graph);
+}
 
-        for _ in 0..count {
-            let frame_start = Instant::now();
-            let visible_nodes = grid.query_rect(visible_rect);
-            sample_nodes = visible_nodes.len();
-
-            let wire_cull_rect = visible_rect.expand(200.0);
-            let visible_edges = grid.query_edges_rect(wire_cull_rect);
-            sample_wires = visible_edges.len();
-
-            let mut batch = studio_canvas::GpuWireBatch::new([screen_w, screen_h], zoom, 0.0);
-            for &e_id in &visible_edges {
-                if let Some(edge) = graph.get_edge(e_id) {
-                    if let (Some(fn_node), Some(tn_node)) =
-                        (graph.nodes.get(&edge.from_node), graph.nodes.get(&edge.to_node))
-                    {
-                        let p0 = Pos2::new(fn_node.position[0], fn_node.position[1]);
-                        let p3 = Pos2::new(tn_node.position[0], tn_node.position[1]);
-                        batch.push_wire(p0, p3, egui::Color32::WHITE, None, 2.0, 0.0, false);
-                    }
-                }
-            }
-
-            let _ = search_index.search("config", 8);
-
-            let frame_us = frame_start.elapsed().as_secs_f64() * 1_000_000.0;
-            scenario_us += frame_us;
-        }
-
-        let avg_us = scenario_us / count as f64;
-        let fps = 1_000_000.0 / avg_us.max(0.1);
+/// Times what the user waits for when a card opens or a folder changes level: the geometry-only
+/// relayout plus rebuilding the scene and spatial grid.
+fn benchmark_relayout(tracker: &mut TimelineTracker, graph: &mut Graph) {
+    let mut state = CanvasState::default();
+    state.refresh_scene(graph);
+    // The card with the most members, in the deepest folder: the most containers to re-measure.
+    let Some(card) = graph
+        .nodes
+        .values()
+        .filter(|n| n.archetype == NodeArchetype::File && !graph.is_node_in_collapsed_cluster(n.id))
+        .max_by_key(|n| (n.group_id.as_deref().map_or(0, |g| g.matches('/').count()), n.member_nodes.len(), n.id))
+        .map(|n| n.id)
+    else {
+        return;
+    };
+    let mut time = |name: &str, graph: &mut Graph, change: &dyn Fn(&mut Graph) -> bool| {
+        let t = Instant::now();
+        let geometry = change(graph);
+        let layout_ms = t.elapsed().as_secs_f64() * 1000.0;
+        state.mark_scene_dirty();
+        let t_scene = Instant::now();
+        state.refresh_scene(graph);
+        let scene_ms = t_scene.elapsed().as_secs_f64() * 1000.0;
         tracker.record_stage(
-            name,
-            format!("zoom: {:.3}x | nodes: {} | wires: {}", zoom, sample_nodes, sample_wires),
-            Some(fps),
+            name.to_string(),
+            format!(
+                "{} {:.1} ms + scene {:.1} ms = {:.1} ms",
+                if geometry { "geometry relayout" } else { "FULL layout" },
+                layout_ms,
+                scene_ms,
+                layout_ms + scene_ms
+            ),
+            None,
+            Some((layout_ms + scene_ms) * 1000.0),
+            None,
+            None,
+        );
+    };
+    let toggle = |graph: &mut Graph| {
+        let node = graph.nodes.get_mut(&card).expect("card");
+        node.is_dropdown_expanded = !node.is_dropdown_expanded;
+        node.size = studio_canvas::calculate_file_node_size(node);
+        graph.relayout_geometry(&[card])
+    };
+    time("Relayout: card opens", graph, &toggle);
+    time("Relayout: card closes", graph, &toggle);
+    let folder = graph.nodes[&card].group_id.clone().unwrap_or_default();
+    let level = |detail: studio_graph::FolderDetail| {
+        let folder = folder.clone();
+        move |graph: &mut Graph| {
+            let geometry = graph.has_layout_cache();
+            graph.set_folder_detail(&folder, detail);
+            geometry
+        }
+    };
+    time("Relayout: folder to node view", graph, &level(studio_graph::FolderDetail::NodeView));
+    time("Relayout: folder opens again", graph, &level(studio_graph::FolderDetail::Open));
+}
+
+/// Times real canvas frames: `CanvasView::show` in a headless egui context plus tessellation,
+/// which is the CPU work of one frame. GPU time is not included.
+fn benchmark_canvas_frames(tracker: &mut TimelineTracker, graph: &mut Graph) {
+    const WARMUP: usize = 3;
+    const FRAMES: usize = 30;
+    println!("  Canvas frames, CPU only ({:.0} FPS budget):", tracker.budget.target_fps);
+    let ctx = egui::Context::default();
+    studio_ui::apply_theme(&ctx);
+    let screen = Rect::from_min_size(Pos2::ZERO, egui::vec2(2560.0, 1440.0));
+    let mut state = CanvasState::default();
+
+    let t_scene = Instant::now();
+    state.refresh_scene(graph);
+    let scene = &state.scene;
+    // Wires left without a route, by kind and why.
+    let mut unrouted: std::collections::BTreeMap<(&str, &str), usize> = Default::default();
+    for &id in &scene.curve_owner {
+        let Some(e) = graph.get_edge(id) else { continue };
+        let homed = |n| graph.clusters.iter().any(|c| c.node_ids.contains(&n));
+        let why = if e.from_node == e.to_node {
+            "same card"
+        } else if !homed(e.from_node) || !homed(e.to_node) {
+            "card in no folder"
+        } else {
+            "no route"
+        };
+        *unrouted.entry((e.kind.label(), why)).or_default() += 1;
+    }
+    println!("    wires drawn as curves: {unrouted:?}");
+    tracker.record_stage(
+        "Canvas Scene Build",
+        format!(
+            "{:.1} ms (scene {:.1} ms): {} segments in {} tiles, {} curves, {} boxes, {} gates",
+            t_scene.elapsed().as_secs_f64() * 1000.0,
+            scene.build_ms,
+            scene.segments.len(),
+            scene.tiles.len(),
+            scene.curves.len(),
+            scene.boxes.len(),
+            scene.gates.len()
+        ),
+        None,
+        None,
+        Some(graph.nodes.len()),
+        Some(graph.edges.len()),
+    );
+
+    state.zoom_to_fit(graph, screen);
+    let fit = state.transform.zoom;
+    let fit_center = state.transform.screen_to_world(screen.center());
+    let dense = densest_point(graph).unwrap_or(fit_center);
+    for (name, zoom) in [("fit-all", fit), ("2%", 0.02), ("10%", 0.1), ("30%", 0.3), ("100%", 1.0)] {
+        let center = if zoom == fit { fit_center } else { dense };
+        state.transform.center_on_world_pos(center, screen, Some(zoom));
+        let mut total = 0.0;
+        let mut vertices = 0;
+        for frame in 0..WARMUP + FRAMES {
+            let start = Instant::now();
+            let raw = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
+            let output = ctx.run_ui(raw, |ui| {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
+                    CanvasView::new(&mut state, graph).show(ui);
+                });
+            });
+            vertices = ctx
+                .tessellate(output.shapes, output.pixels_per_point)
+                .iter()
+                .map(|p| match &p.primitive {
+                    egui::epaint::Primitive::Mesh(mesh) => mesh.vertices.len(),
+                    egui::epaint::Primitive::Callback(_) => 0,
+                })
+                .sum();
+            if frame >= WARMUP {
+                total += start.elapsed().as_secs_f64();
+            }
+        }
+        let avg_us = total / FRAMES as f64 * 1_000_000.0;
+        let stats = state.frame_stats;
+        tracker.record_stage(
+            format!("Canvas Frame {name}"),
+            format!(
+                "zoom {:.4} | {:.2} ms | {} nodes, {} wires, {} egui vertices",
+                zoom,
+                avg_us / 1000.0,
+                stats.visible_nodes,
+                stats.visible_wires,
+                vertices
+            ),
+            Some(1_000_000.0 / avg_us.max(0.1)),
             Some(avg_us),
-            Some(sample_nodes),
-            Some(sample_wires),
+            Some(stats.visible_nodes),
+            Some(stats.visible_wires),
         );
     }
     println!();
+}
+
+/// Prints the overall size and aspect of the layout, and the folders that make it that size.
+fn print_layout_report(graph: &Graph) {
+    let roots: Vec<&studio_graph::GroupCluster> = graph.clusters.iter().filter(|c| c.parent_id.is_none()).collect();
+    let (mut min, mut max) = ([f32::MAX; 2], [f32::MIN; 2]);
+    for c in &roots {
+        min = [min[0].min(c.position[0]), min[1].min(c.position[1])];
+        max = [max[0].max(c.position[0] + c.size[0]), max[1].max(c.position[1] + c.size[1])];
+    }
+    let (w, h) = (max[0] - min[0], max[1] - min[1]);
+    let stats = &graph.layout_stats;
+    println!("\n  LAYOUT REPORT");
+    println!(
+        "    world: {w:.0} x {h:.0} (aspect {:.1}:1), {} roots, {} containers",
+        w / h.max(1.0),
+        roots.len(),
+        stats.len()
+    );
+    let sum = |f: fn(&studio_graph::ContainerStats) -> f32| stats.iter().map(f).sum::<f32>();
+    println!(
+        "    totals: columns {:.0}, gaps {:.0}, gate bands {:.0}, documentation strips {:.0} high",
+        sum(|s| s.columns_width),
+        sum(|s| s.gaps_width),
+        sum(|s| s.in_band + s.out_band),
+        sum(|s| s.doc_strip)
+    );
+    let row = |s: &studio_graph::ContainerStats| {
+        let name: String = s.id.chars().rev().take(44).collect::<String>().chars().rev().collect();
+        println!(
+            "    {:<44} d{:<2} {:>8.0} x {:>7.0} ({:>5.1}:1) | {:>3} layers, {:>4} wired (max {:>3}/col, {:>4} lanes, col h {:>6.0}) | shelf {:>4} in {:>3} rows | cols {:>7.0} gaps {:>7.0} (max {:>3} tracks) | gates {:>4} in {:>4} out {:>4} doc, bands {:>5.0}+{:<5.0} strip {:>4.0}",
+            name,
+            s.depth,
+            s.size[0],
+            s.size[1],
+            s.size[0] / s.size[1].max(1.0),
+            s.layers,
+            s.column_items,
+            s.max_column_items,
+            s.max_column_lanes,
+            s.max_column_height,
+            s.shelf_items,
+            s.shelf_rows,
+            s.columns_width,
+            s.gaps_width,
+            s.max_gap_tracks,
+            s.in_gates,
+            s.out_gates,
+            s.doc_gates,
+            s.in_band,
+            s.out_band,
+            s.doc_strip
+        );
+    };
+    let mut sorted: Vec<&studio_graph::ContainerStats> = stats.iter().collect();
+    sorted.sort_by(|a, b| b.size[0].total_cmp(&a.size[0]));
+    println!("    widest:");
+    sorted.iter().take(15).for_each(|s| row(s));
+    sorted.sort_by(|a, b| b.size[1].total_cmp(&a.size[1]));
+    println!("    tallest:");
+    sorted.iter().take(10).for_each(|s| row(s));
+    sorted.sort_by_key(|s| std::cmp::Reverse(s.in_gates + s.out_gates));
+    println!("    most gates:");
+    sorted.iter().take(10).for_each(|s| row(s));
+    println!();
+}
+
+/// Centre of the 4096-unit cell holding the most cards: where zoomed-in frames are busiest.
+fn densest_point(graph: &Graph) -> Option<Pos2> {
+    const CELL: f32 = 4096.0;
+    let mut counts: std::collections::HashMap<(i32, i32), usize> = std::collections::HashMap::new();
+    for node in graph.nodes.values() {
+        let key = ((node.position[0] / CELL).floor() as i32, (node.position[1] / CELL).floor() as i32);
+        *counts.entry(key).or_default() += 1;
+    }
+    let (&(x, y), _) = counts.iter().max_by_key(|(&key, &n)| (n, std::cmp::Reverse(key)))?;
+    Some(Pos2::new((x as f32 + 0.5) * CELL, (y as f32 + 0.5) * CELL))
 }
 
 fn benchmark_rkyv_caching(tracker: &mut TimelineTracker) {
@@ -339,8 +561,7 @@ fn benchmark_rkyv_caching(tracker: &mut TimelineTracker) {
     let _ = std::fs::write(&sample_file, "[package]\nname = \"bench_proj\"\nversion = \"0.1.0\"\n");
 
     // Measure serialization
-    let cache_path =
-        save_project_cache(&temp_proj, ViewGranularity::AllItems, &graph, &stats).expect("Failed to save rkyv cache");
+    let cache_path = save_project_cache(&temp_proj, &graph, &stats).expect("Failed to save rkyv cache");
     let file_size_mb = std::fs::metadata(&cache_path).map(|m| m.len() as f64 / 1_048_576.0).unwrap_or(0.0);
     tracker.record_stage(
         "rkyv Serialization",
@@ -353,7 +574,7 @@ fn benchmark_rkyv_caching(tracker: &mut TimelineTracker) {
 
     // Measure zero-copy load
     let t_load = Instant::now();
-    let loaded = load_project_cache(&temp_proj, ViewGranularity::AllItems).expect("Failed to load rkyv cache");
+    let loaded = load_project_cache(&temp_proj).expect("Failed to load rkyv cache");
     let load_dur = t_load.elapsed();
 
     assert!(loaded.is_some(), "Cache must be valid");
@@ -436,6 +657,7 @@ fn benchmark_extreme_scale(tracker: &mut TimelineTracker) {
 
     let mut spatial_grid = SpatialHashGrid::new(768.0);
     spatial_grid.build_from_graph(&graph);
+    let scene = studio_canvas::CanvasScene::build(&graph, true);
     let search_index = SymbolSearchIndex::build(&graph);
 
     tracker.record_stage(
@@ -478,10 +700,9 @@ fn benchmark_extreme_scale(tracker: &mut TimelineTracker) {
                 let _ = graph.is_node_in_collapsed_cluster(nid);
             }
 
-            // 4. Bezier Wire Curve Spatial Query & Evaluation
+            // 4. Visible wire tiles
             let wire_cull_rect = visible_rect.expand(200.0);
-            let visible_edges = spatial_grid.query_edges_rect(wire_cull_rect);
-            let _ = visible_edges.len();
+            let _ = scene.visible_ranges(wire_cull_rect).len() + scene.visible_curve_ranges(wire_cull_rect).len();
 
             // 5. Spotlight Search query
             let _ = search_index.search("component_node_10", 12);
@@ -493,7 +714,13 @@ fn benchmark_extreme_scale(tracker: &mut TimelineTracker) {
         let avg_us = scenario_us / (count as f64);
         let fps = 1_000_000.0 / avg_us;
         let sample_nodes = spatial_grid.query_rect(visible_rect).len();
-        let sample_wires = spatial_grid.query_edges_rect(visible_rect.expand(200.0)).len();
+        let cull = visible_rect.expand(200.0);
+        let sample_wires: usize = scene
+            .visible_ranges(cull)
+            .into_iter()
+            .chain(scene.visible_curve_ranges(cull))
+            .map(|r| (r.end - r.start) as usize)
+            .sum();
 
         tracker.record_stage(
             name,
@@ -604,6 +831,7 @@ fn benchmark_ultra_scale_5m(tracker: &mut TimelineTracker) {
 
     graph.rebuild_fast_indices();
     spatial_grid.build_from_graph(&graph);
+    let scene = studio_canvas::CanvasScene::build(&graph, true);
 
     tracker.record_stage(
         "Ultra 5M Graph & Spatial Grid",
@@ -665,11 +893,9 @@ fn benchmark_ultra_scale_5m(tracker: &mut TimelineTracker) {
                 let _ = graph.is_node_in_collapsed_cluster(nid);
             }
 
-            // 4. Wire Culling & Evaluation:
-            // Connection wires are active and queried across all zoom levels
+            // 4. Visible wire tiles, at every zoom level
             let wire_cull_rect = visible_rect.expand(200.0);
-            let visible_edges = spatial_grid.query_edges_rect(wire_cull_rect);
-            let _ = visible_edges.len();
+            let _ = scene.visible_ranges(wire_cull_rect).len() + scene.visible_curve_ranges(wire_cull_rect).len();
 
             let frame_us = frame_start.elapsed().as_secs_f64() * 1_000_000.0;
             scenario_us += frame_us;
@@ -682,7 +908,13 @@ fn benchmark_ultra_scale_5m(tracker: &mut TimelineTracker) {
         let avg_us = scenario_us / (count as f64);
         let fps = 1_000_000.0 / avg_us;
         let sample_nodes = if zoom >= 0.005 { spatial_grid.query_rect(visible_rect).len() } else { 0 };
-        let sample_wires = spatial_grid.query_edges_rect(visible_rect.expand(200.0)).len();
+        let cull = visible_rect.expand(200.0);
+        let sample_wires: usize = scene
+            .visible_ranges(cull)
+            .into_iter()
+            .chain(scene.visible_curve_ranges(cull))
+            .map(|r| (r.end - r.start) as usize)
+            .sum();
 
         tracker.record_stage(
             name,
@@ -729,40 +961,4 @@ fn benchmark_ultra_scale_5m(tracker: &mut TimelineTracker) {
         budget.target_fps,
         budget.ram_gb()
     );
-}
-
-fn benchmark_gpu_wire_throughput(tracker: &mut TimelineTracker) {
-    println!("--------------------------------------------------------------------------------");
-    println!(">>> BENCHMARK 5: GPU WIRE BATCHING & VRAM EFFICIENCY VERIFICATION");
-    println!("    Target: Sub-millisecond staging, compact 64B descriptors, {:.0} FPS", tracker.budget.target_fps);
-    println!("--------------------------------------------------------------------------------");
-
-    let wire_counts = [1_000, 10_000, 100_000, 500_000];
-    for count in wire_counts {
-        let t0 = Instant::now();
-        let mut batch = studio_canvas::GpuWireBatch::new([2560.0, 1440.0], 1.0, 123.45);
-        for i in 0..count {
-            let offset = (i as f32) * 1.5;
-            let p0 = Pos2::new(100.0 + offset, 200.0 + offset);
-            let p3 = Pos2::new(500.0 + offset, 400.0 + offset);
-            let is_animated = (i % 8) == 0;
-            let glow = if is_animated { Some(egui::Color32::from_rgba_premultiplied(100, 200, 255, 90)) } else { None };
-            batch.push_wire(p0, p3, egui::Color32::WHITE, glow, 2.0, 6.0, is_animated);
-        }
-        let dur = t0.elapsed();
-        let dur_us = dur.as_secs_f64() * 1_000_000.0;
-        let vram_kb = (count * std::mem::size_of::<studio_canvas::GpuWireInstance>()) as f64 / 1024.0;
-        let ns_per_wire = (dur.as_nanos() as f64) / (count as f64);
-        let fps_equiv = 1_000_000.0 / dur_us.max(0.1);
-
-        tracker.record_stage(
-            format!("GPU Wire Batch ({}k)", count / 1000),
-            format!("{:.1} ns/wire | VRAM: {:.1} KB | Batch: {:.2?}", ns_per_wire, vram_kb, dur),
-            Some(fps_equiv),
-            Some(dur_us),
-            None,
-            Some(count),
-        );
-    }
-    println!();
 }

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use super::cluster::GroupCluster;
-use super::edge::Edge;
+use super::edge::{Edge, EdgeKind};
 use super::node::Node;
 use super::types::{DataType, EdgeId, FileContent, NodeArchetype, NodeId, Port, PortDirection, PortId};
 
@@ -17,6 +17,12 @@ pub struct Graph {
     /// Clusters form a folder tree laid out by [`Graph::layout_folder_tree`] (Files view).
     #[serde(default)]
     pub tree_layout: bool,
+    /// Lay the folder tree out left to right by code flow instead of as a packed grid.
+    #[serde(default)]
+    pub flow_layout: bool,
+    /// Gates and cycle boxes from the last dataflow layout.
+    #[serde(default)]
+    pub flow: Option<crate::layout::FlowLayout>,
 
     // Fast O(1) indices (ignored by serialization, rebuilt on load)
     #[serde(skip)]
@@ -33,7 +39,7 @@ pub struct Graph {
     pub isolated_nodes_count: usize,
     #[serde(skip)]
     #[rkyv(with = rkyv::with::Skip)]
-    pub archetype_counts: [usize; 10],
+    pub archetype_counts: [usize; NodeArchetype::COUNT],
     #[serde(skip)]
     #[rkyv(with = rkyv::with::Skip)]
     pub collapsed_clusters_count: usize,
@@ -44,6 +50,22 @@ pub struct Graph {
     #[serde(skip)]
     #[rkyv(with = rkyv::with::Skip)]
     pub hidden_cluster_ids: HashSet<String>,
+    /// (provider, consumer) → index into `flow.routes`.
+    #[serde(skip)]
+    #[rkyv(with = rkyv::with::Skip)]
+    pub route_index: HashMap<(NodeId, NodeId), usize>,
+    /// (documentation file, documented card) → index into `flow.doc_routes`.
+    #[serde(skip)]
+    #[rkyv(with = rkyv::with::Skip)]
+    pub doc_route_index: HashMap<(NodeId, NodeId), usize>,
+    /// Shape of every container from the last dataflow layout, for the layout report.
+    #[serde(skip)]
+    #[rkyv(with = rkyv::with::Skip)]
+    pub layout_stats: Vec<crate::layout::ContainerStats>,
+    /// What the last dataflow layout found, so a resize or detail change can keep the order.
+    #[serde(skip)]
+    #[rkyv(with = rkyv::with::Skip)]
+    pub(crate) layout_cache: Option<Box<crate::layout::LayoutCache>>,
 }
 
 impl Graph {
@@ -54,14 +76,54 @@ impl Graph {
             clusters: Vec::new(),
             next_id: 1,
             tree_layout: false,
+            flow_layout: false,
+            flow: None,
             port_edges: HashMap::new(),
             edge_indices: HashMap::new(),
             node_degrees: HashMap::new(),
             isolated_nodes_count: 0,
-            archetype_counts: [0; 10],
+            archetype_counts: [0; NodeArchetype::COUNT],
             collapsed_clusters_count: 0,
             collapsed_node_ids: HashSet::new(),
             hidden_cluster_ids: HashSet::new(),
+            route_index: HashMap::new(),
+            doc_route_index: HashMap::new(),
+            layout_stats: Vec::new(),
+            layout_cache: None,
+        }
+    }
+
+    /// The routed path of a wire: code wires follow their card pair's code route, documentation
+    /// wires their documentation route. `None` for other kinds and unrouted pairs.
+    pub fn route_of(&self, edge: &Edge) -> Option<&crate::layout::WireRoute> {
+        let flow = self.flow.as_ref()?;
+        let key = (edge.from_node, edge.to_node);
+        match edge.kind {
+            EdgeKind::Documentation => flow.doc_routes.get(*self.doc_route_index.get(&key)?),
+            EdgeKind::Asset => None,
+            _ => flow.routes.get(*self.route_index.get(&key)?),
+        }
+    }
+
+    /// Whether [`Graph::route_of`] finds a route for this wire.
+    pub fn has_route(&self, edge: &Edge) -> bool {
+        let key = (edge.from_node, edge.to_node);
+        match edge.kind {
+            EdgeKind::Documentation => self.doc_route_index.contains_key(&key),
+            EdgeKind::Asset => false,
+            _ => self.route_index.contains_key(&key),
+        }
+    }
+
+    pub fn rebuild_route_index(&mut self) {
+        self.route_index.clear();
+        self.doc_route_index.clear();
+        let Some(flow) = &self.flow else { return };
+        for (i, r) in flow.routes.iter().enumerate() {
+            self.route_index.insert((r.provider, r.consumer), i);
+        }
+        for (i, r) in flow.doc_routes.iter().enumerate() {
+            self.doc_route_index.insert((r.provider, r.consumer), i);
         }
     }
 
@@ -69,13 +131,13 @@ impl Graph {
         self.port_edges.clear();
         self.edge_indices.clear();
         self.node_degrees.clear();
-        self.archetype_counts = [0; 10];
+        self.archetype_counts = [0; NodeArchetype::COUNT];
         self.rebuild_collapsed_cache();
 
         for (&id, node) in &self.nodes {
             self.node_degrees.insert(id, 0);
             let idx = node.archetype.index();
-            if idx < 10 {
+            if idx < NodeArchetype::COUNT {
                 self.archetype_counts[idx] += 1;
             }
         }
@@ -89,6 +151,7 @@ impl Graph {
         }
 
         self.isolated_nodes_count = self.node_degrees.values().filter(|&&deg| deg == 0).count();
+        self.rebuild_route_index();
     }
 
     fn index_edge(&mut self, edge: &Edge) {
@@ -106,6 +169,14 @@ impl Graph {
             self.isolated_nodes_count -= 1;
         }
         *to_deg += 1;
+    }
+
+    /// Rebuilds the edge id → position table after edges were removed from the middle.
+    fn reindex_edge_positions(&mut self) {
+        self.edge_indices.clear();
+        for (idx, e) in self.edges.iter().enumerate() {
+            self.edge_indices.insert(e.id, idx);
+        }
     }
 
     fn unindex_edge(&mut self, edge: &Edge) {
@@ -218,7 +289,7 @@ impl Graph {
         };
 
         let arch_idx = archetype.index();
-        if arch_idx < 10 {
+        if arch_idx < NodeArchetype::COUNT {
             self.archetype_counts[arch_idx] += 1;
         }
         self.node_degrees.insert(node_id, 0);
@@ -253,7 +324,7 @@ impl Graph {
     pub fn remove_node(&mut self, node_id: NodeId) {
         if let Some(removed_node) = self.nodes.remove(&node_id) {
             let arch_idx = removed_node.archetype.index();
-            if arch_idx < 10 && self.archetype_counts[arch_idx] > 0 {
+            if arch_idx < NodeArchetype::COUNT && self.archetype_counts[arch_idx] > 0 {
                 self.archetype_counts[arch_idx] -= 1;
             }
             if let Some(deg) = self.node_degrees.remove(&node_id) {
@@ -272,8 +343,11 @@ impl Graph {
                 }
             });
 
-            for e in removed_edges {
-                self.unindex_edge(&e);
+            for e in &removed_edges {
+                self.unindex_edge(e);
+            }
+            if !removed_edges.is_empty() {
+                self.reindex_edge_positions();
             }
 
             for c in &mut self.clusters {
@@ -282,6 +356,7 @@ impl Graph {
         }
     }
 
+    /// Adds an import wire. An input port accepts any number of wires.
     pub fn connect(
         &mut self,
         from_node: NodeId,
@@ -289,9 +364,23 @@ impl Graph {
         to_node: NodeId,
         to_port: PortId,
     ) -> Option<EdgeId> {
-        self.connect_labeled(from_node, from_port, to_node, to_port, None, None, None)
+        self.connect_kind(from_node, from_port, to_node, to_port, EdgeKind::Import)
     }
 
+    /// Adds a wire of the given kind with no label.
+    pub fn connect_kind(
+        &mut self,
+        from_node: NodeId,
+        from_port: PortId,
+        to_node: NodeId,
+        to_port: PortId,
+        kind: EdgeKind,
+    ) -> Option<EdgeId> {
+        self.connect_labeled(from_node, from_port, to_node, to_port, kind, None, None, None)
+    }
+
+    /// Adds a wire. An input port accepts any number of wires: a file used by many files keeps
+    /// every incoming wire.
     #[allow(clippy::too_many_arguments)]
     pub fn connect_labeled(
         &mut self,
@@ -299,33 +388,39 @@ impl Graph {
         from_port: PortId,
         to_node: NodeId,
         to_port: PortId,
+        kind: EdgeKind,
         label: Option<String>,
         step_number: Option<usize>,
         source_line: Option<usize>,
     ) -> Option<EdgeId> {
-        // Disconnect any existing edge feeding this exact input port (O(1) lookup via port_edges)
-        if let Some(existing_edge_ids) = self.port_edges.get(&(to_node, to_port)).cloned() {
-            for eid in existing_edge_ids {
-                if let Some(pos) =
-                    self.edges.iter().position(|e| e.id == eid && e.to_node == to_node && e.to_port == to_port)
-                {
-                    let edge = self.edges.remove(pos);
-                    self.unindex_edge(&edge);
-                }
-            }
-        }
-
         let edge_id = EdgeId(self.next_raw_id());
-        let edge = Edge { id: edge_id, from_node, from_port, to_node, to_port, label, step_number, source_line };
+        let edge = Edge { id: edge_id, from_node, from_port, to_node, to_port, kind, label, step_number, source_line };
         self.index_edge(&edge);
+        self.edge_indices.insert(edge_id, self.edges.len());
         self.edges.push(edge);
         Some(edge_id)
+    }
+
+    /// Removes every wire into an input port. Returns how many were removed.
+    pub fn disconnect_input(&mut self, to_node: NodeId, to_port: PortId) -> usize {
+        let ids: Vec<EdgeId> = self
+            .port_edges
+            .get(&(to_node, to_port))
+            .map(|ids| {
+                ids.iter()
+                    .copied()
+                    .filter(|id| self.get_edge(*id).is_some_and(|e| e.to_node == to_node && e.to_port == to_port))
+                    .collect()
+            })
+            .unwrap_or_default();
+        ids.into_iter().filter(|&id| self.disconnect_edge(id)).count()
     }
 
     pub fn disconnect_edge(&mut self, edge_id: EdgeId) -> bool {
         if let Some(pos) = self.edges.iter().position(|e| e.id == edge_id) {
             let edge = self.edges.remove(pos);
             self.unindex_edge(&edge);
+            self.reindex_edge_positions();
             true
         } else {
             false
@@ -348,6 +443,9 @@ impl Graph {
         });
         for e in removed_edges {
             self.unindex_edge(&e);
+        }
+        if !removed.is_empty() {
+            self.reindex_edge_positions();
         }
         removed
     }

@@ -383,7 +383,7 @@ fn test_clicking_unloaded_folder_requests_load_instead_of_toggling() {
     let mut graph = studio_graph::Graph::new();
     graph.tree_layout = true;
     let mut lazy = studio_graph::GroupCluster::new("dir:node_modules", "node_modules", "Folder", 0);
-    lazy.is_collapsed = true;
+    lazy.detail = studio_graph::FolderDetail::Minimised;
     lazy.lazy = Some(studio_graph::LazyFolder {
         abs_path: "/p/node_modules".into(),
         file_count: 3,
@@ -392,23 +392,28 @@ fn test_clicking_unloaded_folder_requests_load_instead_of_toggling() {
         reason: "dependencies".into(),
     });
     let mut normal = studio_graph::GroupCluster::new("dir:src", "src", "Folder", 0);
-    normal.is_collapsed = true;
+    normal.detail = studio_graph::FolderDetail::Minimised;
     graph.clusters = vec![lazy, normal];
     let mut state = CanvasState::default();
     let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
 
-    let events =
-        super::types::RenderEvents { toggle_cluster_id: Some("dir:node_modules".into()), ..Default::default() };
-    super::actions::apply_render_events(events, &mut state, &mut graph, rect);
-    assert!(
-        matches!(state.action_request.take(), Some(super::types::CanvasAction::ExpandFolder(id)) if id == "dir:node_modules")
-    );
-    assert!(graph.clusters[0].is_collapsed, "stays collapsed until its contents arrive");
+    use studio_graph::FolderDetail;
+    let pick = |id: &str, detail| super::types::RenderEvents {
+        folder_detail: Some((id.to_string(), detail)),
+        ..Default::default()
+    };
+    super::actions::apply_render_events(pick("dir:node_modules", FolderDetail::NodeView), &mut state, &mut graph, rect);
+    assert!(matches!(
+        state.action_request.take(),
+        Some(super::types::CanvasAction::ExpandFolder(id, FolderDetail::NodeView)) if id == "dir:node_modules"
+    ));
+    assert!(graph.clusters[0].is_collapsed(), "stays minimised until its contents arrive");
 
-    let events = super::types::RenderEvents { toggle_cluster_id: Some("dir:src".into()), ..Default::default() };
-    super::actions::apply_render_events(events, &mut state, &mut graph, rect);
+    super::actions::apply_render_events(pick("dir:src", FolderDetail::NodeView), &mut state, &mut graph, rect);
     assert!(state.action_request.is_none());
-    assert!(!graph.clusters[1].is_collapsed, "loaded folders toggle directly");
+    assert_eq!(graph.clusters[1].detail, FolderDetail::NodeView, "loaded folders switch directly");
+    super::actions::apply_render_events(pick("dir:src", FolderDetail::Open), &mut state, &mut graph, rect);
+    assert_eq!(graph.clusters[1].detail, FolderDetail::Open);
 }
 
 #[test]
@@ -417,7 +422,7 @@ fn test_wires_toggle_hides_every_wire() {
     graph.rebuild_fast_indices();
     assert!(!graph.edges.is_empty());
     let mut state = CanvasState::default();
-    state.spatial_grid.build_from_graph(&graph);
+    state.refresh_scene(&graph);
     let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1600.0, 1000.0));
     state.zoom_to_fit(&graph, rect);
     state.use_gpu_wires = false;
@@ -436,7 +441,7 @@ fn test_wires_toggle_hides_every_wire() {
                 world,
                 rect.center(),
                 false,
-                0.0,
+                None,
             )
             .1;
         });

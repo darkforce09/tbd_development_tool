@@ -1,4 +1,4 @@
-use super::types::{ExtractedFile, FunctionItem, ItemVisibility, StructItem, UseItem};
+use super::types::{ExtractedFile, FunctionItem, ItemVisibility, LinkItem, StructItem};
 use std::path::Path;
 
 /// Extracts sections, headings, links, and code blocks from a Markdown document.
@@ -7,8 +7,8 @@ pub fn extract_markdown_file(file_path: &Path, rel_path: &Path, content: &str) -
         file_path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "document".to_string());
 
     let mut structs = Vec::new(); // Used for Headings (H1, H2, H3, etc.)
-    let mut functions = Vec::new(); // Used for Markdown Links & Code Blocks
-    let mut uses = Vec::new(); // Used for Link dependencies to other files
+    let mut functions = Vec::new(); // Used for code blocks
+    let mut links = Vec::new();
 
     let mut in_code_block = false;
     let mut code_block_lang = String::new();
@@ -77,7 +77,7 @@ pub fn extract_markdown_file(file_path: &Path, rel_path: &Path, content: &str) -
         }
 
         // Extract Markdown links: [label](target) or ['label'](target) or [[wiki]]
-        extract_links_from_line(raw_line, line_num, &mut functions, &mut uses);
+        extract_links_from_line(raw_line, line_num, &mut links);
     }
 
     ExtractedFile {
@@ -89,13 +89,14 @@ pub fn extract_markdown_file(file_path: &Path, rel_path: &Path, content: &str) -
         enums: Vec::new(),
         traits: Vec::new(),
         impls: Vec::new(),
-        uses,
+        uses: Vec::new(),
+        links,
         parse_error: None,
         language: super::lang::SourceLang::Markdown,
     }
 }
 
-fn extract_links_from_line(line: &str, line_num: usize, functions: &mut Vec<FunctionItem>, uses: &mut Vec<UseItem>) {
+fn extract_links_from_line(line: &str, line_num: usize, links: &mut Vec<LinkItem>) {
     // 1. Standard Markdown links: [label](target) or ['label'](target)
     let bytes = line.as_bytes();
     let mut i = 0;
@@ -127,36 +128,17 @@ fn extract_links_from_line(line: &str, line_num: usize, functions: &mut Vec<Func
                             && !clean_target.starts_with("http://")
                             && !clean_target.starts_with("https://")
                         {
-                            let target_path = Path::new(clean_target);
-                            let target_file_name =
-                                target_path.file_name().and_then(|n| n.to_str()).unwrap_or(clean_target).to_string();
-                            let target_stem =
-                                target_path.file_stem().and_then(|n| n.to_str()).unwrap_or(clean_target).to_string();
-
-                            let mut calls = vec![clean_target.to_string()];
-                            if target_file_name != clean_target {
-                                calls.push(target_file_name.clone());
-                            }
-                            if target_stem != clean_target && target_stem != target_file_name {
-                                calls.push(target_stem.clone());
-                            }
-
-                            // Record as function item with calls to link target
-                            functions.push(FunctionItem {
-                                name: if label.is_empty() { target_file_name.clone() } else { label.to_string() },
-                                visibility: ItemVisibility::Public,
-                                is_async: false,
-                                is_method: false,
-                                self_param: None,
-                                inputs: Vec::new(),
-                                output: Some(target_file_name.clone()),
-                                calls,
-                                docs: format!("Markdown link to {}", clean_target),
+                            let target_file_name = Path::new(clean_target)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or(clean_target)
+                                .to_string();
+                            links.push(LinkItem {
+                                label: if label.is_empty() { target_file_name } else { label.to_string() },
+                                target: clean_target.to_string(),
                                 line: line_num,
                                 source_code: line.to_string(),
                             });
-
-                            uses.push(UseItem { path: clean_target.to_string(), items: vec![label.to_string()] });
                         }
                         i = label_end + 1 + close_paren + 1;
                         continue;
@@ -199,9 +181,10 @@ fn example() {}
         assert_eq!(file.structs[1].derives[0], "H2");
 
         // Links
-        let link_calls: Vec<&str> = file.functions.iter().flat_map(|f| f.calls.iter().map(|s| s.as_str())).collect();
-        assert!(link_calls.contains(&"t_090_0_map_program_hub.md"));
-        assert!(link_calls.contains(&"t_090_1_aligned_basemap.md"));
+        let targets: Vec<&str> = file.links.iter().map(|l| l.target.as_str()).collect();
+        assert_eq!(targets, ["t_090_0_map_program_hub.md", "t_090_1_aligned_basemap.md"]);
+        assert_eq!(file.links[1].label, "Basemap");
+        assert!(file.functions.iter().all(|f| f.name.starts_with("block:")), "links are not functions");
 
         // Code block
         let code_blocks: Vec<&FunctionItem> = file.functions.iter().filter(|f| f.name.starts_with("block:")).collect();

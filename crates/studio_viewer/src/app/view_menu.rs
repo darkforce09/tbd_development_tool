@@ -11,7 +11,8 @@ pub struct ViewToggle<'a> {
     pub value: &'a mut bool,
 }
 
-pub fn view_toggles(canvas: &mut CanvasState) -> [ViewToggle<'_>; 2] {
+pub fn view_toggles(canvas: &mut CanvasState) -> [ViewToggle<'_>; 8] {
+    let kinds = &mut canvas.wire_kinds;
     [
         ViewToggle { label: "Wires", tooltip: "Show or hide every wire.", value: &mut canvas.show_wires },
         ViewToggle {
@@ -20,6 +21,28 @@ pub fn view_toggles(canvas: &mut CanvasState) -> [ViewToggle<'_>; 2] {
                 "Wires between the functions and types inside files. Off bundles them into one wire per pair of files.",
             value: &mut canvas.show_subnode_wires_globally,
         },
+        ViewToggle { label: "Calls", tooltip: "Green: a function calls another.", value: &mut kinds.calls },
+        ViewToggle {
+            label: "Type uses",
+            tooltip: "Orange: code uses a type defined elsewhere.",
+            value: &mut kinds.type_uses,
+        },
+        ViewToggle {
+            label: "Implements",
+            tooltip: "Violet: a type implements or inherits.",
+            value: &mut kinds.implements,
+        },
+        ViewToggle {
+            label: "Imports",
+            tooltip: "Slate: a file imports or includes another.",
+            value: &mut kinds.imports,
+        },
+        ViewToggle {
+            label: "Documentation",
+            tooltip: "Sky blue: documentation links to code.",
+            value: &mut kinds.documentation,
+        },
+        ViewToggle { label: "Assets", tooltip: "Pink: code references an asset.", value: &mut kinds.assets },
     ]
 }
 
@@ -40,10 +63,12 @@ mod tests {
     fn toggles_switch_their_canvas_flags() {
         let mut canvas = CanvasState::default();
         assert!(canvas.show_wires && canvas.show_subnode_wires_globally);
+        assert_eq!(canvas.wire_kinds.mask().count_ones(), 6, "every kind shows by default");
         for toggle in view_toggles(&mut canvas) {
             *toggle.value = false;
         }
         assert!(!canvas.show_wires);
         assert!(!canvas.show_subnode_wires_globally);
+        assert_eq!(canvas.wire_kinds.mask(), 0, "each kind has its own toggle");
     }
 }

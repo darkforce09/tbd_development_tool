@@ -19,6 +19,8 @@ const FRAME_BUDGET_MS: f32 = 1000.0 / 60.0;
 pub struct DebugState {
     pub open: bool,
     pub frame_times_ms: VecDeque<f32>,
+    /// CPU time the canvas took to build its last frame (input, layout of shapes, scene), in ms.
+    pub canvas_ms: f32,
     probe: ProcessProbe,
     snapshot: Option<HardwareSnapshot>,
     /// Process CPU use over the last sample interval, in percent of one core.
@@ -233,13 +235,25 @@ impl StudioApp {
     fn debug_canvas(&self, ui: &mut egui::Ui) {
         section(ui, "CANVAS");
         let stats = self.canvas_state.frame_stats;
+        let scene = &self.canvas_state.scene;
         rows(
             ui,
             "debug_canvas",
             &[
                 ("Zoom", format!("{:.1}%", self.canvas_state.transform.zoom * 100.0)),
+                ("Canvas CPU", format!("{:.2} ms", self.debug.canvas_ms)),
                 ("Visible nodes", stats.visible_nodes.to_string()),
-                ("Visible wires", stats.visible_wires.to_string()),
+                ("Wires drawn", stats.visible_wires.to_string()),
+                (
+                    "Scene",
+                    format!(
+                        "{} segments, {} curves, {} gates",
+                        scene.segments.len(),
+                        scene.curves.len(),
+                        scene.gates.len()
+                    ),
+                ),
+                ("Scene build", format!("{:.1} ms", scene.build_ms)),
             ],
         );
     }

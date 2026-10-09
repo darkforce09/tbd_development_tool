@@ -121,6 +121,7 @@ pub fn extract_source(file_path: &Path, rel_path: &Path, content: &str) -> Extra
         traits,
         impls,
         uses,
+        links: Vec::new(),
         parse_error: None,
         language: super::lang::SourceLang::Rust,
     }

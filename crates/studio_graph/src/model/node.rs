@@ -43,6 +43,11 @@ pub struct Node {
 }
 
 impl Node {
+    /// The documentation port, where documentation that describes this node links in.
+    pub fn doc_port(&self) -> Option<PortId> {
+        self.inputs.iter().find(|p| p.data_type == super::types::DataType::Documentation).map(|p| p.id)
+    }
+
     pub fn find_port(&self, port_id: PortId) -> Option<&Port> {
         self.inputs.iter().chain(self.outputs.iter()).find(|p| p.id == port_id)
     }
