@@ -107,6 +107,23 @@ pub struct WireBundle {
     pub route: u32,
 }
 
+impl WireBundle {
+    /// The kind the bundle carries most (ties go to the earlier kind), for its colour.
+    pub fn main_kind(&self) -> crate::model::EdgeKind {
+        use crate::model::EdgeKind;
+        let kinds = [
+            EdgeKind::Import,
+            EdgeKind::Call,
+            EdgeKind::TypeUse,
+            EdgeKind::Implements,
+            EdgeKind::Documentation,
+            EdgeKind::Asset,
+        ];
+        let best = (0..kinds.len()).max_by_key(|&i| (self.kinds[kinds[i] as usize], std::cmp::Reverse(i))).unwrap_or(0);
+        kinds[best]
+    }
+}
+
 /// An item that feeds at least half of its connected siblings (and at least
 /// [`HUB_MIN_CONSUMERS`]): its wires are not laid out or drawn, it shows "used by N".
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize)]

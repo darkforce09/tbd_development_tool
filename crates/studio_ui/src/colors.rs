@@ -119,12 +119,12 @@ pub const BADGE_BG: Color32 = Color32::from_rgb(0x27, 0x27, 0x33);
 
 // CodeSee Group Clusters
 pub const CLUSTER_TINTS: &[(Color32, Color32)] = &[
-    (Color32::from_rgba_premultiplied(14, 30, 48, 60), Color32::from_rgba_premultiplied(56, 189, 248, 120)), // Sky
-    (Color32::from_rgba_premultiplied(35, 18, 48, 60), Color32::from_rgba_premultiplied(168, 85, 247, 120)), // Purple
-    (Color32::from_rgba_premultiplied(16, 38, 30, 60), Color32::from_rgba_premultiplied(52, 211, 153, 120)), // Emerald
-    (Color32::from_rgba_premultiplied(48, 30, 16, 60), Color32::from_rgba_premultiplied(251, 146, 60, 120)), // Orange
-    (Color32::from_rgba_premultiplied(40, 24, 40, 60), Color32::from_rgba_premultiplied(236, 72, 153, 120)), // Pink
-    (Color32::from_rgba_premultiplied(28, 28, 36, 60), Color32::from_rgba_premultiplied(148, 163, 184, 100)), // Slate
+    (Color32::from_rgba_premultiplied(6, 12, 19, 24), Color32::from_rgba_premultiplied(56, 189, 248, 120)), // Sky
+    (Color32::from_rgba_premultiplied(14, 7, 19, 24), Color32::from_rgba_premultiplied(168, 85, 247, 120)), // Purple
+    (Color32::from_rgba_premultiplied(6, 15, 12, 24), Color32::from_rgba_premultiplied(52, 211, 153, 120)), // Emerald
+    (Color32::from_rgba_premultiplied(19, 12, 6, 24), Color32::from_rgba_premultiplied(251, 146, 60, 120)), // Orange
+    (Color32::from_rgba_premultiplied(16, 10, 16, 24), Color32::from_rgba_premultiplied(236, 72, 153, 120)), // Pink
+    (Color32::from_rgba_premultiplied(11, 11, 14, 24), Color32::from_rgba_premultiplied(148, 163, 184, 100)), // Slate
 ];
 pub const CLUSTER_HEADER_BG: Color32 = Color32::from_rgb(0x1a, 0x1c, 0x24);
 

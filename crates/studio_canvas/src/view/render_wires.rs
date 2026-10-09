@@ -135,6 +135,8 @@ pub fn render_background_and_wires(
         gpu_layer(painter, f, CanvasLayer::Folders, rect);
     }
     let mut folder_detail = None;
+    // Once zoomed names are too small to read, names are drawn at a constant size instead.
+    let map_labels = 11.5 * zoom < studio_ui::FOLDER_TEXT_MIN_PX;
     for &i in &scene.folder_order {
         let Some(cluster) = graph.clusters.get(i) else { continue };
         let r = to_screen(cluster.position, cluster.size);
@@ -155,8 +157,12 @@ pub fn render_background_and_wires(
                 depth: cluster.depth,
                 zoom,
                 frame: !gpu_folders,
+                text: !map_labels,
             },
         );
+        if map_labels {
+            studio_ui::paint_folder_map_label(painter, r, &cluster.label, cluster.depth, cluster.is_collapsed());
+        }
         if pointer_clicked {
             if let Some(i) = layout.detail_buttons.iter().position(|r| r.contains(pointer_pos)) {
                 folder_detail = Some((cluster.id.clone(), FolderDetail::ALL[i]));
@@ -218,6 +224,23 @@ pub fn render_background_and_wires(
         }
     }
 
+    // How many card pairs each bundled wire carries, and the hub and documentation chips.
+    if state.show_wires && zoom >= BUNDLE_LABEL_MIN_ZOOM {
+        let mut taken: Vec<Rect> = Vec::new();
+        for label in &scene.bundle_labels {
+            let p = state.transform.world_to_screen(Pos2::from(label.at));
+            if rect.contains(p) && taken.len() < MAX_SCREEN_LABELS {
+                let color = super::types::edge_kind_color(label.kind);
+                if let Some(r) =
+                    paint_chip(painter, p, egui::Align2::CENTER_CENTER, &label.pairs.to_string(), color, &taken)
+                {
+                    taken.push(r);
+                }
+            }
+        }
+    }
+    paint_chips(painter, state, scene, rect, zoom);
+
     // Pin names of folders in node view, once they are legible.
     if zoom >= 0.5 {
         let font = egui::FontId::proportional((10.0 * zoom).clamp(7.0, 14.0));
@@ -273,15 +296,82 @@ pub fn render_background_and_wires(
     (folder_detail, drawn_wires)
 }
 
+/// Below this zoom, bundle counts are not drawn.
+const BUNDLE_LABEL_MIN_ZOOM: f32 = 0.03;
+/// Most counts or chips drawn in one frame; beyond that they would only cover each other.
+const MAX_SCREEN_LABELS: usize = 400;
+
+/// A rounded chip with `text`, anchored at `at`, unless it would overlap one already drawn.
+/// Returns its rectangle when drawn.
+fn paint_chip(
+    painter: &Painter,
+    at: Pos2,
+    align: egui::Align2,
+    text: &str,
+    accent: Color32,
+    taken: &[Rect],
+) -> Option<Rect> {
+    let font = egui::FontId::proportional(11.0);
+    let galley = painter.layout_no_wrap(text.to_string(), font, accent);
+    let size = galley.size() + egui::vec2(10.0, 4.0);
+    let r = align.anchor_size(at, size);
+    if taken.iter().any(|t| t.intersects(r)) {
+        return None;
+    }
+    painter.rect(
+        r,
+        egui::CornerRadius::from(6.0),
+        studio_ui::color_tokens::PANEL_BG,
+        Stroke::new(1.0, with_alpha(accent, 160)),
+        egui::StrokeKind::Inside,
+    );
+    painter.galley(r.min + egui::vec2(5.0, 2.0), galley, accent);
+    Some(r)
+}
+
+/// Hub badges ("used by N") under hubs and documentation chips ("docs N") on cards and folders,
+/// once their owner is big enough on screen to tell what they belong to.
+fn paint_chips(painter: &Painter, state: &CanvasState, scene: &scene::CanvasScene, rect: Rect, zoom: f32) {
+    if zoom < CHIP_MIN_ZOOM {
+        return;
+    }
+    let mut taken: Vec<Rect> = Vec::new();
+    for chip in &scene.chips {
+        if taken.len() >= MAX_SCREEN_LABELS {
+            break;
+        }
+        let p = state.transform.world_to_screen(Pos2::from(chip.at));
+        if !rect.expand(40.0).contains(p) {
+            continue;
+        }
+        let (text, accent, align) = match chip.kind {
+            scene::ChipKind::Hub => {
+                (format!("used by {}", chip.count), studio_ui::color_tokens::TEXT_SECONDARY, egui::Align2::LEFT_TOP)
+            }
+            scene::ChipKind::Docs => {
+                (format!("docs {}", chip.count), studio_ui::color_tokens::KIND_DOCUMENTATION, egui::Align2::RIGHT_TOP)
+            }
+        };
+        if let Some(r) = paint_chip(painter, p, align, &text, accent, &taken) {
+            taken.push(r);
+        }
+    }
+}
+
+/// Below this zoom, chips are not drawn: their cards are too small to tell apart.
+const CHIP_MIN_ZOOM: f32 = 0.08;
+
 /// Width of a wire on screen, as the wire shader computes it.
-fn wire_width(zoom: f32, highlighted: bool) -> f32 {
-    if highlighted {
+fn wire_width(zoom: f32, highlighted: bool, flags: u32) -> f32 {
+    let base = if highlighted {
         (3.0 * zoom).clamp(2.0, 5.0)
     } else if zoom < 0.35 {
-        (2.2 * zoom).clamp(1.4, 2.6)
+        (1.8 * zoom).clamp(1.1, 2.1)
     } else {
-        (2.4 * zoom).clamp(1.8, 3.8)
-    }
+        (1.9 * zoom).clamp(1.4, 3.0)
+    };
+    let weight = ((flags & scene::WIRE_WEIGHT_MASK) >> scene::WIRE_WEIGHT_SHIFT) as f32;
+    base * (1.0 + 0.45 * weight)
 }
 
 /// Paints the scene's wires with egui, for when no GPU is available. Correct, not fast.
@@ -295,8 +385,14 @@ fn paint_wires_cpu(painter: &Painter, state: &CanvasState, graph: &Graph, view_w
     let screen = |p: [f32; 2]| state.transform.world_to_screen(Pos2::from(p));
     let paint = |w: &WireInstance, highlighted: bool| {
         let [r, g, b, a] = w.color;
-        let alpha = if dim && !highlighted { (a as u16 * 45 / 255) as u8 } else { a };
-        let stroke = Stroke::new(wire_width(zoom, highlighted), Color32::from_rgba_unmultiplied(r, g, b, alpha));
+        let alpha = match (highlighted, dim) {
+            (true, _) => a,
+            (false, true) => (a as u16 * 45 / 255) as u8,
+            // Wires are quieter than the structure until highlighted, as in the shader.
+            (false, false) => (a as f32 * 0.72) as u8,
+        };
+        let stroke =
+            Stroke::new(wire_width(zoom, highlighted, w.flags), Color32::from_rgba_unmultiplied(r, g, b, alpha));
         if w.is_curve() {
             let (c1, c2) = world_control_points(Pos2::from(w.p0), Pos2::from(w.p1));
             let points =

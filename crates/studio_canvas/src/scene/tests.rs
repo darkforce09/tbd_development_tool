@@ -201,3 +201,56 @@ fn every_build_gets_a_new_revision() {
     assert_ne!(a.revision, b.revision);
     assert_ne!(a.revision, 0);
 }
+
+#[test]
+fn a_closed_folder_draws_one_labelled_heavier_wire() {
+    let (mut g, _) = project();
+    g.set_folder_detail("root/a", FolderDetail::NodeView);
+    let scene = CanvasScene::build(&g, true);
+    assert_eq!(scene.bundle_labels.len(), 1, "one count for the bundle from the closed folder");
+    assert_eq!(scene.bundle_labels[0].pairs, 2);
+    let weights: Vec<u32> = scene
+        .segments
+        .iter()
+        .filter(|s| s.kind_index() != EdgeKind::Documentation as u32)
+        .map(|s| (s.flags & WIRE_WEIGHT_MASK) >> WIRE_WEIGHT_SHIFT)
+        .collect();
+    assert!(!weights.is_empty());
+    assert!(weights.iter().all(|&w| w == 1), "two pairs weigh log2(2) = 1: {weights:?}");
+}
+
+#[test]
+fn weights_grow_with_the_log_of_the_pairs() {
+    assert_eq!(wire_weight(1) >> WIRE_WEIGHT_SHIFT, 0);
+    assert_eq!(wire_weight(2) >> WIRE_WEIGHT_SHIFT, 1);
+    assert_eq!(wire_weight(23) >> WIRE_WEIGHT_SHIFT, 4);
+    assert_eq!(wire_weight(1_000_000) >> WIRE_WEIGHT_SHIFT, 7, "capped");
+}
+
+#[test]
+fn hubs_get_a_badge_and_no_wires_and_documentation_a_chip() {
+    let mut g = Graph::new();
+    g.tree_layout = true;
+    g.flow_layout = true;
+    g.clusters = vec![GroupCluster::new("root", "root", "Folder", 0)];
+    let hub = card(&mut g, "types.rs", 0);
+    let users: Vec<NodeId> = (0..9).map(|i| card(&mut g, &format!("user{i}.rs"), 0)).collect();
+    for &u in &users {
+        wire(&mut g, hub, u, EdgeKind::Import);
+    }
+    let readme = card(&mut g, "readme.md", 0);
+    wire(&mut g, readme, users[0], EdgeKind::Documentation);
+    g.rebuild_fast_indices();
+    g.layout_folder_tree();
+    let scene = CanvasScene::build(&g, true);
+    let hubs: Vec<&Chip> = scene.chips.iter().filter(|c| c.kind == ChipKind::Hub).collect();
+    assert_eq!(hubs.len(), 1);
+    assert_eq!(hubs[0].count, 9, "used by 9");
+    let hub_edges: std::collections::BTreeSet<EdgeId> =
+        g.edges.iter().filter(|e| e.from_node == hub).map(|e| e.id).collect();
+    assert!(scene.segment_owner.iter().all(|id| !hub_edges.contains(id)), "the hub's wires are not drawn");
+    assert!(scene.curves.is_empty() || scene.curve_owner.iter().all(|id| !hub_edges.contains(id)));
+    let docs: Vec<&Chip> = scene.chips.iter().filter(|c| c.kind == ChipKind::Docs).collect();
+    assert_eq!(docs.len(), 1);
+    assert_eq!(docs[0].count, 1);
+}

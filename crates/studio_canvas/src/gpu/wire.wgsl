@@ -27,6 +27,7 @@ struct VertexOutput {
 };
 
 const CURVE_SEGMENTS: u32 = 32u;
+const QUIET_ALPHA: f32 = 0.72;
 const FLAG_CURVE: u32 = 16u;
 const FLAG_HIGHLIGHT: u32 = 32u;
 const FLAG_ACTIVE: u32 = 64u;
@@ -64,14 +65,19 @@ fn vs_main(
     let s0 = p0_world * z + u.pan;
     let s1 = p1_world * z + u.pan;
 
-    var core_width = clamp(2.4 * z, 1.8, 3.8);
+    var core_width = clamp(1.9 * z, 1.4, 3.0);
     if (highlight) {
         core_width = clamp(3.0 * z, 2.0, 5.0);
     } else if (z < 0.35) {
-        core_width = clamp(2.2 * z, 1.4, 2.6);
+        core_width = clamp(1.8 * z, 1.1, 2.1);
     }
+    // A wire standing for many card pairs (bits 7-9: log2 of the count) is drawn thicker.
+    let weight = f32((flags >> 7u) & 7u);
+    core_width = core_width * (1.0 + 0.45 * weight);
     var alpha = color.a;
     if (!highlight && !in_flow) {
+        // Wires are quieter than the structure until highlighted.
+        alpha = alpha * QUIET_ALPHA;
         let near = smoothstep(FADE_END, FADE_START, z);
         core_width = mix(1.0, core_width, near);
         alpha = alpha * mix(FADE_MIN_ALPHA, 1.0, near);

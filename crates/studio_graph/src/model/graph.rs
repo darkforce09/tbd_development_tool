@@ -110,6 +110,15 @@ impl Graph {
         }
     }
 
+    /// The bundle a routed code wire is drawn as: what it stands for once folders are closed.
+    pub fn bundle_of(&self, edge: &Edge) -> Option<&crate::layout::WireBundle> {
+        if !edge.kind.is_code_flow() {
+            return None;
+        }
+        let route = self.route_of(edge)?;
+        self.flow.as_ref()?.bundles.get(route.bundle as usize)
+    }
+
     /// Whether [`Graph::route_of`] finds a route for this wire.
     pub fn has_route(&self, edge: &Edge) -> bool {
         let key = (edge.from_node, edge.to_node);
