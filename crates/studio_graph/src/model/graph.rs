@@ -58,6 +58,10 @@ pub struct Graph {
     #[serde(skip)]
     #[rkyv(with = rkyv::with::Skip)]
     pub doc_route_index: HashMap<(NodeId, NodeId), usize>,
+    /// Card pairs whose code wires a hub badge stands in for (not laid out or drawn).
+    #[serde(skip)]
+    #[rkyv(with = rkyv::with::Skip)]
+    pub hub_pairs: HashSet<(NodeId, NodeId)>,
     /// Shape of every container from the last dataflow layout, for the layout report.
     #[serde(skip)]
     #[rkyv(with = rkyv::with::Skip)]
@@ -88,6 +92,7 @@ impl Graph {
             hidden_cluster_ids: HashSet::new(),
             route_index: HashMap::new(),
             doc_route_index: HashMap::new(),
+            hub_pairs: HashSet::new(),
             layout_stats: Vec::new(),
             layout_cache: None,
         }
@@ -115,10 +120,17 @@ impl Graph {
         }
     }
 
+    /// Whether a hub badge stands in for this code wire.
+    pub fn is_behind_hub(&self, edge: &Edge) -> bool {
+        edge.kind.is_code_flow() && self.hub_pairs.contains(&(edge.from_node, edge.to_node))
+    }
+
     pub fn rebuild_route_index(&mut self) {
         self.route_index.clear();
         self.doc_route_index.clear();
+        self.hub_pairs.clear();
         let Some(flow) = &self.flow else { return };
+        self.hub_pairs.extend(flow.hubs.iter().flat_map(|h| h.pairs.iter().copied()));
         for (i, r) in flow.routes.iter().enumerate() {
             self.route_index.insert((r.provider, r.consumer), i);
         }

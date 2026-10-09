@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use bytemuck::{Pod, Zeroable};
 use egui::{Color32, Pos2, Rect};
 use rustc_hash::{FxHashMap, FxHashSet};
-use studio_graph::{Edge, EdgeId, FolderDetail, GateKind, GateSide, Graph, NodeId};
+use studio_graph::{Edge, EdgeId, FolderDetail, GateKind, GateSide, Graph, NodeId, VisibleEnd};
 use studio_ui::{cluster_tint, color_tokens::*, with_alpha};
 
 use crate::view::{archetype_color, edge_kind_color, port_world_position, routed_wire_points_into};
@@ -183,6 +183,10 @@ impl CanvasScene {
             .edges
             .par_iter()
             .map(|edge| {
+                // A hub's badge stands in for its wires.
+                if graph.is_behind_hub(edge) {
+                    return Plan::Skip;
+                }
                 if graph.is_node_in_collapsed_cluster(edge.from_node)
                     || graph.is_node_in_collapsed_cluster(edge.to_node)
                 {
@@ -373,9 +377,14 @@ impl CanvasScene {
                 GateKind::Documentation => KIND_DOCUMENTATION,
             };
             self.gates.push(PinInstance { center: gate.position, fill: fill.to_srgba_unmultiplied(), ring });
-            // A folder in node view names the file behind each of its pins.
+            // A folder in node view names the file or closed folder behind each of its pins.
             if node_view.contains(gate.container.as_str()) {
-                let title = graph.nodes.get(&gate.provider).map_or_else(String::new, |n| n.title.clone());
+                let title = match &gate.source {
+                    VisibleEnd::Card(n) => graph.nodes.get(n).map_or_else(String::new, |n| n.title.clone()),
+                    VisibleEnd::Folder(id) => {
+                        graph.clusters.iter().find(|c| &c.id == id).map_or_else(String::new, |c| c.label.clone())
+                    }
+                };
                 self.pin_labels.push(PinLabel { at: gate.position, text: title, input: gate.side == GateSide::Input });
             }
         }
