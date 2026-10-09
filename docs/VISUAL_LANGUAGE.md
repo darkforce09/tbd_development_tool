@@ -37,6 +37,7 @@ Cards (files) and folders follow the same rules.
 
 - **One input gate per distinct outside item feeding in.** If one outside file feeds three files inside, that is one gate that fans out inside.
 - **One output gate per distinct inside item feeding out.** If one inside file feeds three files outside, that is one gate that fans out outside.
+- **Documentation has its own gates.** They sit on the same edges (inputs left, outputs right) but at the top of the folder, in its documentation strip, one per documentation file whose links cross that edge. They are sky blue like documentation wires.
 
 **L4. Loops are boxed.** When files depend on each other in a loop (A uses B, B uses A), "provider left of consumer" cannot hold. The files in a loop are grouped into a marked **cycle box** that is placed as one unit. Everything outside the box stays strictly left to right. Inside a box, wires that run backwards are routed around the cards, never through them.
 
@@ -53,7 +54,9 @@ Changing a folder's detail level never reorders the folders around it.
 ## Placement of things that are not code flow
 
 - Files with no code wires in their folder sit in a grid below the folder's code columns.
-- Documentation wires and asset wires do not affect the layout. They are drawn after the code flow is placed, so documentation cannot create fake loops or pull code out of order.
+- Documentation wires and asset wires do not affect the order. Documentation cannot create fake loops or pull code out of order.
+- Documentation wires follow L2 and L3 like code wires. Every folder has a documentation strip across its top, under its name. A documentation wire climbs from its file to the strip, runs along it on its own track, and comes down to the card it documents, entering that card's documentation port from the left. The strip grows when more documentation tracks cross the folder; that can move a folder's contents down, never reorder them.
+- A wire between two parts of the same file is only drawn when that file's card is open.
 
 ## Colours
 
@@ -72,6 +75,8 @@ A wire takes the colour of the kind of thing it connects. Symbols listed on card
 All wires are solid lines for now. Line styles and colour-blind variants come later.
 
 ## Limits
+
+- Where many documentation files cross the same narrow gap, their vertical tracks share space and can overlap each other (never a code wire).
 
 - Wire-on-wire crossings are minimised by heuristics, not guaranteed to be zero.
 - In Rust, `mod.rs` files and their submodules often form loops, so much of a crate can end up in one cycle box.

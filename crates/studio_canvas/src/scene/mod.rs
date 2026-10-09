@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use bytemuck::{Pod, Zeroable};
 use egui::{Color32, Pos2, Rect};
 use rustc_hash::FxHashSet;
-use studio_graph::{Edge, EdgeId, Graph, NodeId};
+use studio_graph::{Edge, EdgeId, GateKind, Graph, NodeId};
 use studio_ui::{cluster_tint, color_tokens::*, with_alpha};
 
 use crate::view::{archetype_color, edge_kind_color, port_world_position, routed_wire_points_into};
@@ -160,7 +160,7 @@ impl CanvasScene {
         let mut hidden_pairs: FxHashSet<(NodeId, NodeId)> = FxHashSet::default();
         let mut drawn_pairs: FxHashSet<(NodeId, NodeId, u32)> = FxHashSet::default();
         let mut bundled_pairs: FxHashSet<(NodeId, NodeId)> = FxHashSet::default();
-        let has_route = |e: &Edge| e.kind.is_code_flow() && graph.route_index.contains_key(&(e.from_node, e.to_node));
+        let has_route = |e: &Edge| graph.has_route(e);
         for edge in &graph.edges {
             let kind = edge.kind as u32;
             if graph.is_node_in_collapsed_cluster(edge.from_node) || graph.is_node_in_collapsed_cluster(edge.to_node) {
@@ -173,6 +173,11 @@ impl CanvasScene {
             let (Some(from), Some(to)) = (graph.nodes.get(&edge.from_node), graph.nodes.get(&edge.to_node)) else {
                 continue;
             };
+            // A wire within one card only means something once the card shows its members.
+            let opened = |n: &studio_graph::Node| n.is_dropdown_expanded || n.is_code_expanded;
+            if from.id == to.id && !opened(from) {
+                continue;
+            }
             let is_member = |n: &studio_graph::Node, port| {
                 n.member_nodes.iter().any(|m| m.in_port_id == Some(port) || m.out_port_id == Some(port))
             };
@@ -187,7 +192,6 @@ impl CanvasScene {
             }
             if has_route(edge) {
                 // Between two closed cards every wire of a pair and kind has the same path.
-                let opened = |n: &studio_graph::Node| n.is_dropdown_expanded || n.is_code_expanded;
                 if opened(from) || opened(to) || drawn_pairs.insert((from.id, to.id, kind)) {
                     routed.push(edge);
                 }
@@ -303,10 +307,13 @@ impl CanvasScene {
         let Some(flow) = &graph.flow else { return };
         let collapsed: HashSet<&str> =
             graph.clusters.iter().filter(|c| c.is_collapsed).map(|c| c.id.as_str()).collect();
-        let fill = KIND_IMPORT.to_srgba_unmultiplied();
         let ring = SOCKET_RING_IDLE.to_srgba_unmultiplied();
         for gate in flow.gates.iter().filter(|g| container_visible(graph, &collapsed, &g.container)) {
-            self.gates.push(PinInstance { center: gate.position, fill, ring });
+            let fill = match gate.kind {
+                GateKind::Code => KIND_IMPORT,
+                GateKind::Documentation => KIND_DOCUMENTATION,
+            };
+            self.gates.push(PinInstance { center: gate.position, fill: fill.to_srgba_unmultiplied(), ring });
         }
     }
 

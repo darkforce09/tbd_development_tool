@@ -286,8 +286,11 @@ fn a_loop_is_boxed_and_everything_else_flows() {
     assert_nested_without_overlap(&g);
 }
 
+/// Documentation never changes the order: every container's items keep their columns and their
+/// order, and code routes keep their shape. Only the documentation strip at the top of a folder
+/// grows to fit its tracks, which can shift the contents down.
 #[test]
-fn documentation_wires_do_not_move_code() {
+fn documentation_wires_do_not_change_the_order() {
     let mut code_only = random_graph(3, 4, 20, 40);
     code_only.edges.retain(|e| e.kind.is_code_flow());
     code_only.rebuild_fast_indices();
@@ -299,9 +302,22 @@ fn documentation_wires_do_not_move_code() {
     with_docs.rebuild_fast_indices();
     code_only.layout_folder_tree();
     with_docs.layout_folder_tree();
-    for (id, n) in &code_only.nodes {
-        assert_eq!(n.position, with_docs.nodes[id].position);
+    assert_eq!(with_docs.flow.as_ref().unwrap().doc_routes.len(), ids.len() - 1);
+    // Cards sharing a folder keep their left-to-right and top-to-bottom order.
+    for c in &code_only.clusters {
+        for (i, a) in c.node_ids.iter().enumerate() {
+            for b in &c.node_ids[i + 1..] {
+                let (pa, pb) = (code_only.nodes[a].position, code_only.nodes[b].position);
+                let (qa, qb) = (with_docs.nodes[a].position, with_docs.nodes[b].position);
+                assert_eq!(pa[0].total_cmp(&pb[0]), qa[0].total_cmp(&qb[0]), "column order changed in {}", c.id);
+                if pa[0] == pb[0] {
+                    assert_eq!(pa[1].total_cmp(&pb[1]), qa[1].total_cmp(&qb[1]), "row order changed in {}", c.id);
+                }
+            }
+        }
     }
+    assert_eq!(code_only.flow.as_ref().unwrap().cycle_boxes.len(), with_docs.flow.as_ref().unwrap().cycle_boxes.len());
+    assert_routes_obey_the_laws(&with_docs);
 }
 
 #[test]
@@ -312,7 +328,7 @@ fn collapsed_folders_are_leaves_with_middle_gates() {
     g.layout_folder_tree();
     let c = g.clusters.iter().find(|c| c.id == target).unwrap();
     assert_eq!(c.size, COLLAPSED_FOLDER_SIZE);
-    for gate in g.flow.as_ref().unwrap().gates.iter().filter(|x| x.container == target) {
+    for gate in g.flow.as_ref().unwrap().gates.iter().filter(|x| x.container == target && x.kind == GateKind::Code) {
         assert!((gate.position[1] - (c.position[1] + COLLAPSED_FOLDER_SIZE[1] * 0.5)).abs() < 0.01);
     }
     assert_providers_left_visible(&g);
@@ -376,23 +392,33 @@ fn regions(g: &Graph, provider: NodeId, consumer: NodeId) -> Vec<Region> {
     out
 }
 
-/// L2 and L3 for every route: axis-aligned, from port to port, never through a card or a
-/// folder it does not belong to, and across folder edges only at a gate on the correct side.
+/// L2 and L3 for every route, code and documentation: axis-aligned, from port to port, never
+/// through a card or a folder it does not belong to, and across folder edges only at a gate of
+/// its own kind on the correct side.
 fn assert_routes_obey_the_laws(g: &Graph) {
+    let flow = g.flow.as_ref().unwrap();
+    let routes = flow.routes.iter().map(|r| (r, GateKind::Code));
+    for (route, kind) in routes.chain(flow.doc_routes.iter().map(|r| (r, GateKind::Documentation))) {
+        assert_route_obeys_the_laws(g, route, kind);
+    }
+}
+
+fn assert_route_obeys_the_laws(g: &Graph, route: &WireRoute, kind: GateKind) {
     let flow = g.flow.as_ref().unwrap();
     let gate_at = |id: &str, side: GateSide, p: [f32; 2]| {
         flow.gates.iter().any(|x| {
             x.container == id
                 && x.side == side
+                && x.kind == kind
                 && (x.position[0] - p[0]).abs() < 0.05
                 && (x.position[1] - p[1]).abs() < 0.05
         })
     };
     let cards: Vec<(NodeId, Rect)> = g.nodes.keys().map(|&id| (id, node_rect(g, id))).collect();
-    for route in &flow.routes {
+    {
         let (u, v) = (route.provider, route.consumer);
         if g.is_node_in_collapsed_cluster(u) || g.is_node_in_collapsed_cluster(v) {
-            continue;
+            return;
         }
         let pts = &route.points;
         assert!(pts.len() >= 2, "route too short");
@@ -466,14 +492,46 @@ fn assert_routes_obey_the_laws(g: &Graph) {
 
 #[test]
 fn routes_never_cross_cards_and_use_gates() {
-    let mut total = 0;
+    let (mut total, mut docs) = (0, 0);
     for seed in 0..40 {
         let mut g = random_graph(seed, 1 + (seed as usize % 7), 6 + (seed as usize * 3) % 40, 10 + seed as usize * 2);
         g.layout_folder_tree();
         assert_routes_obey_the_laws(&g);
         total += g.flow.as_ref().unwrap().routes.len();
+        docs += g.flow.as_ref().unwrap().doc_routes.len();
     }
     assert!(total > 300, "only {total} routes generated");
+    assert!(docs > 60, "only {docs} documentation routes generated");
+}
+
+#[test]
+fn documentation_routes_survive_collapsed_folders() {
+    for seed in 0..20 {
+        let mut g = random_graph(seed, 2 + seed as usize % 6, 10 + seed as usize % 30, 30 + seed as usize);
+        let n = g.clusters.len();
+        g.clusters[1 + seed as usize % (n - 1)].is_collapsed = true;
+        g.rebuild_collapsed_cache();
+        g.layout_folder_tree();
+        assert_routes_obey_the_laws(&g);
+    }
+}
+
+#[test]
+fn every_documentation_pair_gets_a_route() {
+    let mut g = random_graph(5, 6, 30, 120);
+    g.layout_folder_tree();
+    let pairs: BTreeSet<(NodeId, NodeId)> =
+        g.edges.iter().filter(|e| e.kind == EdgeKind::Documentation).map(|e| (e.from_node, e.to_node)).collect();
+    assert!(pairs.len() > 5);
+    let routed: BTreeSet<(NodeId, NodeId)> =
+        g.flow.as_ref().unwrap().doc_routes.iter().map(|r| (r.provider, r.consumer)).collect();
+    assert_eq!(pairs, routed);
+    for e in g.edges.iter().filter(|e| e.kind == EdgeKind::Documentation) {
+        let route = g.route_of(e).unwrap();
+        let end = route.points.last().unwrap();
+        let card = &g.nodes[&e.to_node];
+        assert_eq!(*end, [card.position[0], card.position[1] + DOC_PORT_OFFSET_Y], "ends at the documentation port");
+    }
 }
 
 #[test]
@@ -521,4 +579,19 @@ fn the_route_checks_catch_violations() {
     flow.gates.clear();
     let crossing = !gates.is_empty();
     assert!(crossing && fails(g), "a crossing without a gate is caught");
+
+    // A card dropped onto a documentation route.
+    let mut g = laid_out();
+    let route = g.flow.as_ref().unwrap().doc_routes.iter().find(|r| r.points.len() >= 4).unwrap().clone();
+    let mid = [(route.points[1][0] + route.points[2][0]) * 0.5, (route.points[1][1] + route.points[2][1]) * 0.5];
+    let bystander = *g.nodes.keys().find(|&&id| id != route.provider && id != route.consumer).unwrap();
+    g.nodes.get_mut(&bystander).unwrap().position = [mid[0] - 10.0, mid[1] - 10.0];
+    assert!(fails(g), "a card on a documentation wire is caught");
+
+    // Documentation wires crossing folders only at code gates.
+    let mut g = laid_out();
+    let flow = g.flow.as_mut().unwrap();
+    let before = flow.gates.len();
+    flow.gates.retain(|x| x.kind == GateKind::Code);
+    assert!(flow.gates.len() < before && fails(g), "a documentation crossing without a documentation gate is caught");
 }

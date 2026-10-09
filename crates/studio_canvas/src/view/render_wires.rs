@@ -2,9 +2,7 @@ use std::sync::Arc;
 
 use egui::{Color32, Painter, Pos2, Rect, Stroke};
 use studio_graph::{EdgeId, Graph};
-use studio_ui::{
-    color_tokens::*, paint_group_cluster, paint_pin_socket, with_alpha, GroupClusterProps, SocketVisualState,
-};
+use studio_ui::{paint_group_cluster, paint_pin_socket, with_alpha, GroupClusterProps, SocketVisualState};
 
 use crate::gpu::{CanvasFrame, CanvasLayer, CanvasPaint, CardLayer, SceneUniforms};
 use crate::grid::paint_infinite_grid;
@@ -226,7 +224,8 @@ pub fn render_background_and_wires(
                 let p = state.transform.world_to_screen(Pos2::from(gate.center));
                 if visible.contains(p) {
                     let socket = SocketVisualState { is_hovered: false, is_connected: true, is_snapped: false };
-                    paint_pin_socket(painter, p, KIND_IMPORT, socket, zoom * 0.8);
+                    let [r, g, b, a] = gate.fill;
+                    paint_pin_socket(painter, p, Color32::from_rgba_unmultiplied(r, g, b, a), socket, zoom * 0.8);
                 }
             }
         }

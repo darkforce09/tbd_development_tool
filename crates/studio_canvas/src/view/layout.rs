@@ -26,8 +26,7 @@ pub fn calculate_file_node_size(node: &Node) -> [f32; 2] {
     }
 }
 
-/// Distance of the documentation port below a card's top edge.
-pub const DOC_PORT_OFFSET_Y: f32 = 9.0;
+pub use studio_graph::DOC_PORT_OFFSET_Y;
 
 /// Computes the world position of a port socket on a node card.
 pub fn port_world_position(node: &Node, port_id: PortId) -> Option<Pos2> {
@@ -97,8 +96,9 @@ pub fn port_world_position(node: &Node, port_id: PortId) -> Option<Pos2> {
     Some(Pos2::new(x, y))
 }
 
-/// World points of a routed wire, with its ends moved to the edge's actual ports (a member row
-/// rather than the card's file-level port). `None` when the wire has no route.
+/// World points of a routed wire (code or documentation), with its ends moved to the edge's
+/// actual ports (a member row rather than the card's file-level port). `None` when the wire has no
+/// route.
 pub fn routed_wire_points(graph: &Graph, edge: &Edge) -> Option<Vec<Pos2>> {
     let mut points = Vec::new();
     routed_wire_points_into(graph, edge, &mut points).then_some(points)
@@ -108,10 +108,7 @@ pub fn routed_wire_points(graph: &Graph, edge: &Edge) -> Option<Vec<Pos2>> {
 /// wire has no route.
 pub fn routed_wire_points_into(graph: &Graph, edge: &Edge, points: &mut Vec<Pos2>) -> bool {
     points.clear();
-    if !edge.kind.is_code_flow() {
-        return false;
-    }
-    let Some(route) = graph.route_for(edge.from_node, edge.to_node) else { return false };
+    let Some(route) = graph.route_of(edge) else { return false };
     if route.points.len() < 2 {
         return false;
     }

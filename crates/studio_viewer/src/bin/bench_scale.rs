@@ -182,8 +182,9 @@ fn benchmark_real_project(tracker: &mut TimelineTracker, target_path: &std::path
     let t_layout = Instant::now();
     graph.layout_folder_tree();
     let layout_dur = t_layout.elapsed();
-    let (gates, boxes, routes, points) = graph.flow.as_ref().map_or((0, 0, 0, 0), |f| {
-        (f.gates.len(), f.cycle_boxes.len(), f.routes.len(), f.routes.iter().map(|r| r.points.len()).sum::<usize>())
+    let (gates, boxes, routes, points, doc_routes) = graph.flow.as_ref().map_or((0, 0, 0, 0, 0), |f| {
+        let points = f.routes.iter().map(|r| r.points.len()).sum::<usize>();
+        (f.gates.len(), f.cycle_boxes.len(), f.routes.len(), points, f.doc_routes.len())
     });
     // Segments shared by several routes (one provider fanning out) are drawn once.
     let unique_segments: std::collections::HashSet<[i32; 4]> = graph
@@ -200,12 +201,13 @@ fn benchmark_real_project(tracker: &mut TimelineTracker, target_path: &std::path
     tracker.record_stage(
         "Dataflow Layout",
         format!(
-            "{:.1} ms: {} gates, {} cycle boxes, {} routes ({} points)",
+            "{:.1} ms: {} gates, {} cycle boxes, {} routes ({} points), {} documentation routes",
             layout_dur.as_secs_f64() * 1000.0,
             gates,
             boxes,
             routes,
-            points
+            points,
+            doc_routes
         ),
         None,
         None,
@@ -269,6 +271,21 @@ fn benchmark_canvas_frames(tracker: &mut TimelineTracker, graph: &mut Graph) {
     let t_scene = Instant::now();
     state.refresh_scene(graph);
     let scene = &state.scene;
+    // Wires left without a route, by kind and why.
+    let mut unrouted: std::collections::BTreeMap<(&str, &str), usize> = Default::default();
+    for &id in &scene.curve_owner {
+        let Some(e) = graph.get_edge(id) else { continue };
+        let homed = |n| graph.clusters.iter().any(|c| c.node_ids.contains(&n));
+        let why = if e.from_node == e.to_node {
+            "same card"
+        } else if !homed(e.from_node) || !homed(e.to_node) {
+            "card in no folder"
+        } else {
+            "no route"
+        };
+        *unrouted.entry((e.kind.label(), why)).or_default() += 1;
+    }
+    println!("    wires drawn as curves: {unrouted:?}");
     tracker.record_stage(
         "Canvas Scene Build",
         format!(

@@ -102,7 +102,7 @@ Goal: remove everything that is mock, duplicated or in the way, so later work bu
 - [x] Wire kinds on every edge, Markdown links as documentation wires into a documentation port, provider-to-consumer direction, and keep every wire into an input (no fan-in loss).
 - [x] Left-to-right layout engine: lifting wires through folder gates, cycle boxes, layering, crossing reduction, coordinates.
 - [x] Wire routing: orthogonal routes that never pass through cards or folders, crossing folder edges only at gates.
-- [ ] Route documentation wires. They are drawn as plain curves for now and can pass over cards.
+- [x] Route documentation wires: through documentation gates and each folder's documentation strip, never over cards or folders (L2, L3).
 - [ ] Rendering of routes, gates, documentation ports and cycle boxes; folder detail levels.
 - [ ] Geometry-only relayout when a card expands, and layout performance targets.
 

@@ -10,7 +10,10 @@
 //! are reduced by barycenter sweeps, and positions are aligned to neighbours under the order
 //! constraint. Documentation and asset wires do not affect the layout.
 
+pub mod docs;
 pub mod scc;
+
+pub use docs::DOC_PORT_OFFSET_Y;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -23,7 +26,8 @@ use crate::model::{Graph, NodeId};
 const PAD_X: f32 = 22.0;
 const PAD_TOP: f32 = 44.0;
 const PAD_BOTTOM: f32 = 22.0;
-/// Band at the top of a folder kept free for documentation wires.
+/// Band at the top of a folder kept free for documentation wires; it grows with the number of
+/// documentation tracks crossing the folder.
 const DOC_STRIP: f32 = 16.0;
 const CYCLE_PAD_TOP: f32 = 26.0;
 const CYCLE_PAD: f32 = 14.0;
@@ -50,6 +54,9 @@ pub struct FlowLayout {
     pub cycle_boxes: Vec<CycleBox>,
     /// One route per (provider, consumer) card pair joined by code wires.
     pub routes: Vec<WireRoute>,
+    /// One route per (documentation file, documented card) pair.
+    #[serde(default)]
+    pub doc_routes: Vec<WireRoute>,
 }
 
 /// The path of the code wires from one card to another: horizontal and vertical segments in
@@ -73,6 +80,19 @@ pub enum GateSide {
     Output,
 }
 
+/// Which wires a gate carries.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize,
+)]
+#[rkyv(derive(Debug, PartialEq, Eq))]
+pub enum GateKind {
+    /// Code wires: on the container's sides, level with what they feed.
+    #[default]
+    Code,
+    /// Documentation wires: on the container's sides, in the documentation strip at the top.
+    Documentation,
+}
+
 /// A port on a folder or cycle box edge where a wire crosses the boundary.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize)]
 #[rkyv(derive(Debug))]
@@ -80,6 +100,8 @@ pub struct Gate {
     /// Folder cluster id, or `cycle:<n>` for a cycle box.
     pub container: String,
     pub side: GateSide,
+    #[serde(default)]
+    pub kind: GateKind,
     /// The providing card whose wires pass through this gate.
     pub provider: NodeId,
     /// World position on the container edge.
@@ -134,6 +156,15 @@ enum To {
     Gate(NodeId),
 }
 
+impl From {
+    /// The providing card the wire belongs to.
+    fn key(&self) -> NodeId {
+        match *self {
+            From::Item(_, k) | From::Gate(k) => k,
+        }
+    }
+}
+
 /// A laid-out container, relative to its own top-left corner.
 #[derive(Debug, Clone, Default)]
 struct Placed {
@@ -143,6 +174,10 @@ struct Placed {
     out_gates: BTreeMap<NodeId, f32>,
     /// Route of every wire inside the container, relative to its top-left corner.
     routes: BTreeMap<(From, To), Vec<[f32; 2]>>,
+    /// Documentation gates (y on the left and right edges) and routes.
+    doc_in: BTreeMap<NodeId, f32>,
+    doc_out: BTreeMap<NodeId, f32>,
+    doc_routes: BTreeMap<(From, To), Vec<[f32; 2]>>,
 }
 
 impl Graph {
@@ -150,11 +185,14 @@ impl Graph {
     pub fn layout_dataflow(&mut self) {
         let mut tree = Tree::build(self);
         let pairs = code_flow_pairs(self, &tree);
+        let doc_pairs = documentation_pairs(self, &tree);
         tree.box_cycles(&pairs);
         let links = tree.lift(&pairs);
-        let placed = tree.measure(self, &links);
+        let doc_links = tree.lift(&doc_pairs);
+        let placed = tree.measure(self, &links, &doc_links);
         let (mut flow, origins) = tree.place(self, &placed);
-        flow.routes = tree.compose_routes(&pairs, &placed, &origins);
+        flow.routes = tree.compose_routes(&pairs, &placed, &origins, |p| &p.routes);
+        flow.doc_routes = tree.compose_routes(&doc_pairs, &placed, &origins, |p| &p.doc_routes);
         self.flow = Some(flow);
         self.rebuild_route_index();
         self.rebuild_collapsed_cache();
@@ -167,6 +205,19 @@ fn code_flow_pairs(graph: &Graph, tree: &Tree) -> Vec<(NodeId, NodeId)> {
         .edges
         .iter()
         .filter(|e| e.kind.is_code_flow() && e.from_node != e.to_node)
+        .filter(|e| tree.home.contains_key(&e.from_node) && tree.home.contains_key(&e.to_node))
+        .map(|e| (e.from_node, e.to_node))
+        .collect();
+    pairs.into_iter().collect()
+}
+
+/// Distinct (documentation file, documented card) pairs, in a stable order. They are routed but
+/// never change the layout.
+fn documentation_pairs(graph: &Graph, tree: &Tree) -> Vec<(NodeId, NodeId)> {
+    let pairs: BTreeSet<(NodeId, NodeId)> = graph
+        .edges
+        .iter()
+        .filter(|e| e.kind == crate::model::EdgeKind::Documentation && e.from_node != e.to_node)
         .filter(|e| tree.home.contains_key(&e.from_node) && tree.home.contains_key(&e.to_node))
         .map(|e| (e.from_node, e.to_node))
         .collect();
@@ -329,8 +380,14 @@ impl Tree {
         links
     }
 
-    /// Joins each pair's pieces into one world-space route.
-    fn compose_routes(&self, pairs: &[(NodeId, NodeId)], placed: &[Placed], origins: &[[f32; 2]]) -> Vec<WireRoute> {
+    /// Joins each pair's pieces into one world-space route, using the routes `of` each container.
+    fn compose_routes(
+        &self,
+        pairs: &[(NodeId, NodeId)],
+        placed: &[Placed],
+        origins: &[[f32; 2]],
+        of: impl Fn(&Placed) -> &BTreeMap<(From, To), Vec<[f32; 2]>>,
+    ) -> Vec<WireRoute> {
         let mut routes = Vec::new();
         'pairs: for &(u, v) in pairs {
             let pieces = self.pieces(u, v);
@@ -339,7 +396,7 @@ impl Tree {
             }
             let mut points: Vec<[f32; 2]> = Vec::new();
             for (c, from, to) in pieces {
-                let Some(local) = placed[c].routes.get(&(from, to)) else { continue 'pairs };
+                let Some(local) = of(&placed[c]).get(&(from, to)) else { continue 'pairs };
                 let o = origins[c];
                 for p in local {
                     let w = [o[0] + p[0], o[1] + p[1]];
@@ -363,20 +420,33 @@ impl Tree {
     }
 
     /// Lays out every container bottom-up.
-    fn measure(&self, graph: &Graph, links: &[BTreeSet<(From, To)>]) -> Vec<Placed> {
+    fn measure(
+        &self,
+        graph: &Graph,
+        links: &[BTreeSet<(From, To)>],
+        doc_links: &[BTreeSet<(From, To)>],
+    ) -> Vec<Placed> {
         let mut order: Vec<usize> = (0..self.containers.len()).collect();
         order.sort_by_key(|&c| std::cmp::Reverse(self.depth(c)));
         let mut placed: Vec<Placed> = vec![Placed::default(); self.containers.len()];
         for c in order {
-            placed[c] = self.measure_one(graph, c, &links[c], &placed);
+            placed[c] = self.measure_one(graph, c, &links[c], &doc_links[c], &placed);
         }
         placed
     }
 
-    fn measure_one(&self, graph: &Graph, c: usize, links: &BTreeSet<(From, To)>, placed: &[Placed]) -> Placed {
+    fn measure_one(
+        &self,
+        graph: &Graph,
+        c: usize,
+        links: &BTreeSet<(From, To)>,
+        doc_links: &BTreeSet<(From, To)>,
+        placed: &[Placed],
+    ) -> Placed {
         let container = &self.containers[c];
         if container.collapsed {
-            // Minimised: every gate sits in the middle of its edge.
+            // Minimised: every code gate sits in the middle of its edge, documentation gates
+            // level with a card's documentation port.
             let mid = COLLAPSED_FOLDER_SIZE[1] * 0.5;
             let mut p = Placed { size: COLLAPSED_FOLDER_SIZE, ..Default::default() };
             for (from, to) in links {
@@ -387,9 +457,20 @@ impl Tree {
                     p.out_gates.insert(*k, mid);
                 }
             }
+            for (from, to) in doc_links {
+                if let From::Gate(k) = from {
+                    p.doc_in.insert(*k, DOC_PORT_OFFSET_Y);
+                }
+                if let To::Gate(k) = to {
+                    p.doc_out.insert(*k, DOC_PORT_OFFSET_Y);
+                }
+            }
             return p;
         }
         let is_cycle = container.kind == Kind::Cycle;
+        let doc_providers: BTreeSet<NodeId> = doc_links.iter().map(|(from, _)| from.key()).collect();
+        let strip_top = if is_cycle { CYCLE_PAD_TOP } else { PAD_TOP };
+        let strip = docs::strip_height(doc_providers.len(), if is_cycle { 0.0 } else { DOC_STRIP });
         let size_of = |it: Item| match it {
             Item::Card(n) => graph.nodes.get(&n).map_or([220.0, 42.0], |n| n.size),
             Item::Sub(s) => placed[s].size,
@@ -408,7 +489,7 @@ impl Tree {
         lay.coordinates();
 
         let (pad_top, pad_x, pad_bottom) =
-            if is_cycle { (CYCLE_PAD_TOP, CYCLE_PAD, CYCLE_PAD) } else { (PAD_TOP + DOC_STRIP, PAD_X, PAD_BOTTOM) };
+            if is_cycle { (CYCLE_PAD_TOP + strip, CYCLE_PAD, CYCLE_PAD) } else { (PAD_TOP + strip, PAD_X, PAD_BOTTOM) };
         let mut p = Placed::default();
         let content_left = pad_x + lay.in_band;
         let mut bottom = pad_top;
@@ -440,9 +521,11 @@ impl Tree {
 
         // Items with no code wires in this container: a shelf below the columns.
         let shelf: Vec<(Item, [f32; 2])> = lay.isolated.iter().map(|&it| (it, size_of(it))).collect();
-        let shelf_top = if has_columns || !p.in_gates.is_empty() { bottom + SHELF_GAP } else { pad_top };
+        let content_above_shelf = has_columns || !p.in_gates.is_empty() || !p.out_gates.is_empty();
+        let shelf_top = if content_above_shelf { bottom + SHELF_GAP } else { pad_top };
         let wrap = (right - pad_x).max(shelf.iter().map(|(_, s)| s[0] * s[1]).sum::<f32>().sqrt() * 1.4);
         let (mut x, mut y, mut row_h) = (0.0f32, 0.0f32, 0.0f32);
+        let mut rows: Vec<docs::ShelfRow> = Vec::new();
         for (it, s) in shelf {
             if x > 0.0 && x + s[0] > wrap {
                 x = 0.0;
@@ -450,6 +533,12 @@ impl Tree {
                 row_h = 0.0;
             }
             let pos = [pad_x + x, shelf_top + y];
+            if x == 0.0 {
+                rows.push(docs::ShelfRow { top: pos[1], items: Vec::new() });
+            }
+            if let Some(row) = rows.last_mut() {
+                row.items.push((it, pos[0], pos[0] + s[0]));
+            }
             p.items.push((it, pos));
             right = right.max(pos[0] + s[0]);
             bottom = bottom.max(pos[1] + s[1]);
@@ -461,6 +550,44 @@ impl Tree {
         let width = right.max(content_left + lay.content_width + lay.out_band) + pad_x;
         p.size = [width.max(min[0]), (bottom + pad_bottom).max(min[1])];
         p.routes = lay.routes([content_left, pad_top], p.size[0], back_top);
+
+        // Documentation: gates on the provider's strip track, routes through the free channels.
+        let tracks = docs::strip_tracks(&doc_providers, strip_top, strip);
+        for (from, to) in doc_links {
+            if let From::Gate(k) = from {
+                p.doc_in.insert(*k, tracks[k]);
+            }
+            if let To::Gate(k) = to {
+                p.doc_out.insert(*k, tracks[k]);
+            }
+        }
+        if !doc_links.is_empty() {
+            let channels = docs::Channels {
+                width: p.size[0],
+                tracks: &tracks,
+                columns: (0..lay.layers.len())
+                    .map(|l| {
+                        let left = content_left + lay.column_x[l];
+                        (left, left + lay.col_w[l])
+                    })
+                    .collect(),
+                column_of: lay.nodes.iter().filter_map(|n| n.item.map(|it| (it, n.layer))).collect(),
+                rows,
+                shelf_top,
+                content_above_shelf,
+                margin: pad_x,
+                rects: p.items.iter().map(|&(it, pos)| (it, (pos, size_of(it)))).collect(),
+            };
+            let exit_y = |it: Item, k: NodeId| match it {
+                Item::Card(n) => graph.nodes.get(&n).map_or(21.0, card_port_offset),
+                Item::Sub(s) => placed[s].doc_out.get(&k).copied().unwrap_or(DOC_PORT_OFFSET_Y),
+            };
+            let entry_y = |it: Item, k: NodeId| match it {
+                Item::Card(_) => DOC_PORT_OFFSET_Y,
+                Item::Sub(s) => placed[s].doc_in.get(&k).copied().unwrap_or(DOC_PORT_OFFSET_Y),
+            };
+            p.doc_routes = channels.route(doc_links, &exit_y, &entry_y);
+        }
         p
     }
 
@@ -514,21 +641,17 @@ impl Tree {
                 container.key.clone()
             }
         };
-        for (&k, &y) in &p.in_gates {
-            flow.gates.push(Gate {
-                container: id.clone(),
-                side: GateSide::Input,
-                provider: k,
-                position: [origin[0], origin[1] + y],
-            });
-        }
-        for (&k, &y) in &p.out_gates {
-            flow.gates.push(Gate {
-                container: id.clone(),
-                side: GateSide::Output,
-                provider: k,
-                position: [origin[0] + p.size[0], origin[1] + y],
-            });
+        let sides = [
+            (&p.in_gates, GateSide::Input, GateKind::Code),
+            (&p.out_gates, GateSide::Output, GateKind::Code),
+            (&p.doc_in, GateSide::Input, GateKind::Documentation),
+            (&p.doc_out, GateSide::Output, GateKind::Documentation),
+        ];
+        for (gates, side, kind) in sides {
+            let x = if side == GateSide::Input { origin[0] } else { origin[0] + p.size[0] };
+            for (&k, &y) in gates {
+                flow.gates.push(Gate { container: id.clone(), side, kind, provider: k, position: [x, origin[1] + y] });
+            }
         }
         if container.collapsed {
             self.park(graph, c, origin, depth);

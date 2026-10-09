@@ -67,15 +67,39 @@ fn every_segment_is_drawn_once() {
 }
 
 #[test]
-fn routed_wires_are_straight_and_documentation_is_a_curve() {
+fn code_and_documentation_wires_follow_their_routes() {
     let (g, [_, _, main, readme]) = project();
     let scene = CanvasScene::build(&g, true);
     assert!(scene.segments.iter().all(|w| !w.is_curve() && (w.p0[0] == w.p1[0] || w.p0[1] == w.p1[1])));
-    assert_eq!(scene.curves.len(), 1);
+    assert!(scene.curves.is_empty(), "every wire here has a route");
     let doc = g.edges.iter().find(|e| e.kind == EdgeKind::Documentation).unwrap();
     assert_eq!((doc.from_node, doc.to_node), (readme, main));
-    assert_eq!(scene.curve_owner, vec![doc.id]);
-    assert_eq!(scene.curves[0].kind_index(), EdgeKind::Documentation as u32);
+    let doc_kind = EdgeKind::Documentation as u32;
+    assert!(scene.segments.iter().any(|w| w.kind_index() == doc_kind));
+    // The documentation wire ends at main.rs's documentation port, from the left.
+    let port = Pos2::new(g.nodes[&main].position[0], g.nodes[&main].position[1] + studio_graph::DOC_PORT_OFFSET_Y);
+    assert!(scene.segments.iter().any(|w| w.kind_index() == doc_kind && Pos2::from(w.p1).distance(port) < 0.1));
+}
+
+#[test]
+fn wires_without_a_route_are_curves() {
+    let (mut g, [lib, util, ..]) = project();
+    // Same folder, no layout run since: no route for this pair.
+    wire(&mut g, util, lib, EdgeKind::Asset);
+    g.rebuild_fast_indices();
+    let scene = CanvasScene::build(&g, true);
+    assert_eq!(scene.curves.len(), 1);
+    assert_eq!(scene.curves[0].kind_index(), EdgeKind::Asset as u32);
+}
+
+#[test]
+fn wires_within_a_closed_card_are_not_drawn() {
+    let (mut g, [lib, ..]) = project();
+    wire(&mut g, lib, lib, EdgeKind::Call);
+    g.rebuild_fast_indices();
+    assert!(CanvasScene::build(&g, true).curves.is_empty(), "a closed card hides its inner calls");
+    g.nodes.get_mut(&lib).unwrap().is_dropdown_expanded = true;
+    assert_eq!(CanvasScene::build(&g, true).curves.len(), 1, "an opened card shows them");
 }
 
 #[test]

@@ -54,11 +54,10 @@ pub struct Graph {
     #[serde(skip)]
     #[rkyv(with = rkyv::with::Skip)]
     pub route_index: HashMap<(NodeId, NodeId), usize>,
-    /// Per route and segment: true when an earlier route has the identical segment (a provider
-    /// fanning out), so drawing it again would only overdraw.
+    /// (documentation file, documented card) → index into `flow.doc_routes`.
     #[serde(skip)]
     #[rkyv(with = rkyv::with::Skip)]
-    pub route_shared: Vec<Vec<bool>>,
+    pub doc_route_index: HashMap<(NodeId, NodeId), usize>,
 }
 
 impl Graph {
@@ -80,34 +79,41 @@ impl Graph {
             collapsed_node_ids: HashSet::new(),
             hidden_cluster_ids: HashSet::new(),
             route_index: HashMap::new(),
-            route_shared: Vec::new(),
+            doc_route_index: HashMap::new(),
         }
     }
 
-    /// The routed path of the code wires from `provider` to `consumer`, if the dataflow layout
-    /// produced one.
-    pub fn route_for(&self, provider: NodeId, consumer: NodeId) -> Option<&crate::layout::WireRoute> {
-        let idx = *self.route_index.get(&(provider, consumer))?;
-        self.flow.as_ref()?.routes.get(idx)
+    /// The routed path of a wire: code wires follow their card pair's code route, documentation
+    /// wires their documentation route. `None` for other kinds and unrouted pairs.
+    pub fn route_of(&self, edge: &Edge) -> Option<&crate::layout::WireRoute> {
+        let flow = self.flow.as_ref()?;
+        let key = (edge.from_node, edge.to_node);
+        match edge.kind {
+            EdgeKind::Documentation => flow.doc_routes.get(*self.doc_route_index.get(&key)?),
+            EdgeKind::Asset => None,
+            _ => flow.routes.get(*self.route_index.get(&key)?),
+        }
     }
 
-    /// Which segments of the route from `provider` to `consumer` another route already covers.
-    pub fn route_shared_segments(&self, provider: NodeId, consumer: NodeId) -> Option<&[bool]> {
-        let idx = *self.route_index.get(&(provider, consumer))?;
-        self.route_shared.get(idx).map(Vec::as_slice)
+    /// Whether [`Graph::route_of`] finds a route for this wire.
+    pub fn has_route(&self, edge: &Edge) -> bool {
+        let key = (edge.from_node, edge.to_node);
+        match edge.kind {
+            EdgeKind::Documentation => self.doc_route_index.contains_key(&key),
+            EdgeKind::Asset => false,
+            _ => self.route_index.contains_key(&key),
+        }
     }
 
     pub fn rebuild_route_index(&mut self) {
         self.route_index.clear();
-        self.route_shared.clear();
+        self.doc_route_index.clear();
         let Some(flow) = &self.flow else { return };
-        let mut seen: HashSet<[i32; 4]> = HashSet::new();
-        let q = |v: f32| (v * 10.0).round() as i32;
         for (i, r) in flow.routes.iter().enumerate() {
             self.route_index.insert((r.provider, r.consumer), i);
-            let shared =
-                r.points.windows(2).map(|w| !seen.insert([q(w[0][0]), q(w[0][1]), q(w[1][0]), q(w[1][1])])).collect();
-            self.route_shared.push(shared);
+        }
+        for (i, r) in flow.doc_routes.iter().enumerate() {
+            self.doc_route_index.insert((r.provider, r.consumer), i);
         }
     }
 
