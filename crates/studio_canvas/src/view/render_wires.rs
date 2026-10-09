@@ -5,9 +5,7 @@ use studio_ui::{color_tokens::*, paint_group_cluster, with_alpha, GroupClusterPr
 use crate::gpu::GpuWireBatch;
 use crate::grid::paint_infinite_grid;
 use crate::interaction::InteractionMode;
-use crate::wire::{
-    paint_bezier_wire, paint_pending_wire, paint_wire_badge_and_label, WireRenderProps,
-};
+use crate::wire::{paint_bezier_wire, paint_pending_wire, paint_wire_badge_and_label, WireRenderProps};
 
 use super::layout::port_world_position;
 use super::types::{data_type_color, CanvasState};
@@ -38,10 +36,7 @@ pub fn render_background_and_wires(
             continue;
         }
         let min_world = Pos2::new(cluster.position[0], cluster.position[1]);
-        let max_world = Pos2::new(
-            cluster.position[0] + cluster.size[0],
-            cluster.position[1] + cluster.size[1],
-        );
+        let max_world = Pos2::new(cluster.position[0] + cluster.size[0], cluster.position[1] + cluster.size[1]);
         // Frustum cull clusters
         if min_world.x > visible_world_rect.max.x
             || max_world.x < visible_world_rect.min.x
@@ -79,7 +74,8 @@ pub fn render_background_and_wires(
     let visible_edge_ids = state.spatial_grid.query_edges_rect(wire_cull_rect);
 
     // Track bundled connections between collapsed cards to avoid redundant overdraw
-    let mut bundled_pairs: std::collections::HashSet<(studio_graph::NodeId, studio_graph::NodeId)> = std::collections::HashSet::new();
+    let mut bundled_pairs: std::collections::HashSet<(studio_graph::NodeId, studio_graph::NodeId)> =
+        std::collections::HashSet::new();
 
     let mut gpu_batch = if state.use_gpu_wires {
         Some(GpuWireBatch::new([rect.width(), rect.height()], zoom, anim_time as f32))
@@ -89,55 +85,53 @@ pub fn render_background_and_wires(
 
     for edge_id in visible_edge_ids {
         let Some(edge) = graph.get_edge(edge_id) else { continue };
-        if graph.is_node_in_collapsed_cluster(edge.from_node)
-            || graph.is_node_in_collapsed_cluster(edge.to_node)
-        {
+        if graph.is_node_in_collapsed_cluster(edge.from_node) || graph.is_node_in_collapsed_cluster(edge.to_node) {
             continue;
         }
         let Some(from_node) = graph.nodes.get(&edge.from_node) else { continue };
         let Some(to_node) = graph.nodes.get(&edge.to_node) else { continue };
 
-        let from_is_member = from_node.member_nodes.iter().any(|m| m.in_port_id == Some(edge.from_port) || m.out_port_id == Some(edge.from_port));
-        let to_is_member = to_node.member_nodes.iter().any(|m| m.in_port_id == Some(edge.to_port) || m.out_port_id == Some(edge.to_port));
+        let from_is_member = from_node
+            .member_nodes
+            .iter()
+            .any(|m| m.in_port_id == Some(edge.from_port) || m.out_port_id == Some(edge.from_port));
+        let to_is_member = to_node
+            .member_nodes
+            .iter()
+            .any(|m| m.in_port_id == Some(edge.to_port) || m.out_port_id == Some(edge.to_port));
 
         // When both cards are collapsed and global subnode wire mode is not active:
         // Bundle connections between the same pair into a single visible card-level line
         let both_collapsed = !from_node.is_dropdown_expanded && !to_node.is_dropdown_expanded;
-        if (from_is_member || to_is_member) && both_collapsed && !state.show_subnode_wires_globally
-            && !bundled_pairs.insert((from_node.id, to_node.id)) {
-                continue;
-            }
+        if (from_is_member || to_is_member)
+            && both_collapsed
+            && !state.show_subnode_wires_globally
+            && !bundled_pairs.insert((from_node.id, to_node.id))
+        {
+            continue;
+        }
 
         let p0_w = port_world_position(from_node, edge.from_port).unwrap_or_else(|| {
             Pos2::new(from_node.position[0] + from_node.size[0], from_node.position[1] + from_node.size[1] * 0.5)
         });
-        let p3_w = port_world_position(to_node, edge.to_port).unwrap_or_else(|| {
-            Pos2::new(to_node.position[0], to_node.position[1] + to_node.size[1] * 0.5)
-        });
+        let p3_w = port_world_position(to_node, edge.to_port)
+            .unwrap_or_else(|| Pos2::new(to_node.position[0], to_node.position[1] + to_node.size[1] * 0.5));
 
-        let is_flow_active = if let Some(ref active_edges) = state.active_flow_edges {
-            active_edges.contains(&edge.id)
-        } else {
-            false
-        };
+        let is_flow_active =
+            if let Some(ref active_edges) = state.active_flow_edges { active_edges.contains(&edge.id) } else { false };
 
         let is_hovered = state.hover.hovered_edge == Some(edge.id);
-        let is_selected = state.selected_nodes.contains(&edge.from_node)
-            || state.selected_nodes.contains(&edge.to_node);
+        let is_selected =
+            state.selected_nodes.contains(&edge.from_node) || state.selected_nodes.contains(&edge.to_node);
 
         let p0 = state.transform.world_to_screen(p0_w);
         let p3 = state.transform.world_to_screen(p3_w);
 
-        let base_color = from_node
-            .find_port(edge.from_port)
-            .map(|p| data_type_color(&p.data_type))
-            .unwrap_or(WIRE_DEFAULT);
+        let base_color =
+            from_node.find_port(edge.from_port).map(|p| data_type_color(&p.data_type)).unwrap_or(WIRE_DEFAULT);
 
-        let edge_color = if state.active_flow_edges.is_none() || is_flow_active {
-            base_color
-        } else {
-            with_alpha(base_color, 45)
-        };
+        let edge_color =
+            if state.active_flow_edges.is_none() || is_flow_active { base_color } else { with_alpha(base_color, 45) };
 
         if let Some(ref mut batch) = gpu_batch {
             let core_width = if is_hovered || is_selected {
@@ -167,14 +161,7 @@ pub fn render_background_and_wires(
             );
 
             if zoom >= 0.35 && (edge.step_number.is_some() || edge.label.is_some()) {
-                paint_wire_badge_and_label(
-                    painter,
-                    p0,
-                    p3,
-                    zoom,
-                    edge.step_number,
-                    edge.label.as_deref(),
-                );
+                paint_wire_badge_and_label(painter, p0, p3, zoom, edge.step_number, edge.label.as_deref());
             }
         } else {
             paint_bezier_wire(
@@ -204,10 +191,8 @@ pub fn render_background_and_wires(
         ..
     } = &state.interaction
     {
-        let wire_color = graph
-            .find_port(*from_node, *from_port)
-            .map(|p| data_type_color(&p.data_type))
-            .unwrap_or(WIRE_ACTIVE);
+        let wire_color =
+            graph.find_port(*from_node, *from_port).map(|p| data_type_color(&p.data_type)).unwrap_or(WIRE_ACTIVE);
 
         if let Some(ref mut batch) = gpu_batch {
             let core_width = (2.4 * zoom).clamp(1.2, 5.0);

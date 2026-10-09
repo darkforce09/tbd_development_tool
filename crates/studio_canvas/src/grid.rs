@@ -1,24 +1,15 @@
 use egui::{
     epaint::{CircleShape, RectShape},
-    Color32, Painter, Pos2, Rect, CornerRadius, Stroke,
+    Color32, CornerRadius, Painter, Pos2, Rect, Stroke,
 };
 use studio_ui::{color_tokens::*, with_alpha};
 
 use crate::transform::CanvasTransform;
 
 /// Paints an infinite dot-grid canvas background scaled and panned in world coordinates.
-pub fn paint_infinite_grid(
-    painter: &Painter,
-    clip_rect: Rect,
-    transform: &CanvasTransform,
-) {
+pub fn paint_infinite_grid(painter: &Painter, clip_rect: Rect, transform: &CanvasTransform) {
     // 1. Fill base canvas background
-    painter.add(RectShape::new(
-        clip_rect,
-        CornerRadius::ZERO,
-        CANVAS_BG,
-        Stroke::NONE, egui::StrokeKind::Middle,
-    ));
+    painter.add(RectShape::new(clip_rect, CornerRadius::ZERO, CANVAS_BG, Stroke::NONE, egui::StrokeKind::Middle));
 
     // If zoomed out very far (galaxy overview), canvas background is sufficient
     if transform.zoom < 0.04 {
@@ -60,18 +51,9 @@ pub fn paint_infinite_grid(
                 continue;
             }
 
-            let (fill, r) = if is_major {
-                (major_color, dot_radius * 1.3)
-            } else {
-                (minor_color, dot_radius)
-            };
+            let (fill, r) = if is_major { (major_color, dot_radius * 1.3) } else { (minor_color, dot_radius) };
 
-            painter.add(CircleShape {
-                center: screen_pos,
-                radius: r,
-                fill,
-                stroke: Stroke::NONE,
-            });
+            painter.add(CircleShape { center: screen_pos, radius: r, fill, stroke: Stroke::NONE });
         }
     }
 
@@ -79,17 +61,11 @@ pub fn paint_infinite_grid(
     let origin_screen = transform.world_to_screen(Pos2::ZERO);
     if clip_rect.contains(origin_screen) {
         painter.line_segment(
-            [
-                origin_screen + egui::vec2(-8.0, 0.0),
-                origin_screen + egui::vec2(8.0, 0.0),
-            ],
+            [origin_screen + egui::vec2(-8.0, 0.0), origin_screen + egui::vec2(8.0, 0.0)],
             Stroke::new(1.0, with_alpha(Color32::from_rgb(0x63, 0x66, 0xf1), 80)),
         );
         painter.line_segment(
-            [
-                origin_screen + egui::vec2(0.0, -8.0),
-                origin_screen + egui::vec2(0.0, 8.0),
-            ],
+            [origin_screen + egui::vec2(0.0, -8.0), origin_screen + egui::vec2(0.0, 8.0)],
             Stroke::new(1.0, with_alpha(Color32::from_rgb(0x63, 0x66, 0xf1), 80)),
         );
     }

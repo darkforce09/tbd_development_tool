@@ -1,11 +1,11 @@
+use egui::{Pos2, Rect};
 use std::path::PathBuf;
 use std::time::Instant;
-use egui::{Pos2, Rect};
 use studio_canvas::SpatialHashGrid;
 use studio_graph::{DataType, Graph, NodeArchetype};
 use studio_parser::{
-    build_project_graph, clear_project_cache, extract_project, load_project_cache,
-    save_project_cache, scan_project, ProjectStats, SymbolSearchIndex, ViewGranularity,
+    build_project_graph, clear_project_cache, extract_project, load_project_cache, save_project_cache, scan_project,
+    ProjectStats, SymbolSearchIndex, ViewGranularity,
 };
 use studio_viewer::telemetry::{TelemetryBudget, TimelineTracker};
 
@@ -106,7 +106,10 @@ fn benchmark_real_project(tracker: &mut TimelineTracker, target_path: &std::path
     );
 
     for k in &scanned.crates {
-        if matches!(k.name.as_str(), "apps: mod" | "documentation" | ".ai" | "assets" | "contracts" | "deploy" | ".cursor" | ".github") {
+        if matches!(
+            k.name.as_str(),
+            "apps: mod" | "documentation" | ".ai" | "assets" | "contracts" | "deploy" | ".cursor" | ".github"
+        ) {
             println!("      • Subsystem {:<18} -> {} files", format!("'{}'", k.name), k.source_files.len());
         }
     }
@@ -118,7 +121,12 @@ fn benchmark_real_project(tracker: &mut TimelineTracker, target_path: &std::path
     let instant_startup_time = scan_dur + skel_dur;
     tracker.record_stage(
         "Tier 1 Instant Startup",
-        format!("Scan + Layout: {} nodes, {} clusters ready to render in {:?}", skel_stats.node_count, skel_graph.clusters.len(), instant_startup_time),
+        format!(
+            "Scan + Layout: {} nodes, {} clusters ready to render in {:?}",
+            skel_stats.node_count,
+            skel_graph.clusters.len(),
+            instant_startup_time
+        ),
         None,
         None,
         Some(skel_stats.node_count),
@@ -203,7 +211,10 @@ fn benchmark_real_project(tracker: &mut TimelineTracker, target_path: &std::path
     println!();
 
     // 7. Viewport Render Simulation across Zoom Levels (frame budget verification)
-    println!("  Simulating Real-World Viewport Frames across Zoom Levels ({:.0} FPS budget):", tracker.budget.target_fps);
+    println!(
+        "  Simulating Real-World Viewport Frames across Zoom Levels ({:.0} FPS budget):",
+        tracker.budget.target_fps
+    );
     let real_scenarios = [
         ("Real LOD 0 (High Zoom 200% 2.0x)", 2.0, 500),
         ("Real LOD 0 (Standard 100% 1.0x)", 1.0, 500),
@@ -238,7 +249,9 @@ fn benchmark_real_project(tracker: &mut TimelineTracker, target_path: &std::path
             let mut batch = studio_canvas::GpuWireBatch::new([screen_w, screen_h], zoom, 0.0);
             for &e_id in &visible_edges {
                 if let Some(edge) = graph.get_edge(e_id) {
-                    if let (Some(fn_node), Some(tn_node)) = (graph.nodes.get(&edge.from_node), graph.nodes.get(&edge.to_node)) {
+                    if let (Some(fn_node), Some(tn_node)) =
+                        (graph.nodes.get(&edge.from_node), graph.nodes.get(&edge.to_node))
+                    {
                         let p0 = Pos2::new(fn_node.position[0], fn_node.position[1]);
                         let p3 = Pos2::new(tn_node.position[0], tn_node.position[1]);
                         batch.push_wire(p0, p3, egui::Color32::WHITE, None, 2.0, 0.0, false);
@@ -326,8 +339,8 @@ fn benchmark_rkyv_caching(tracker: &mut TimelineTracker) {
     let _ = std::fs::write(&sample_file, "[package]\nname = \"bench_proj\"\nversion = \"0.1.0\"\n");
 
     // Measure serialization
-    let cache_path = save_project_cache(&temp_proj, ViewGranularity::AllItems, &graph, &stats)
-        .expect("Failed to save rkyv cache");
+    let cache_path =
+        save_project_cache(&temp_proj, ViewGranularity::AllItems, &graph, &stats).expect("Failed to save rkyv cache");
     let file_size_mb = std::fs::metadata(&cache_path).map(|m| m.len() as f64 / 1_048_576.0).unwrap_or(0.0);
     tracker.record_stage(
         "rkyv Serialization",
@@ -340,8 +353,7 @@ fn benchmark_rkyv_caching(tracker: &mut TimelineTracker) {
 
     // Measure zero-copy load
     let t_load = Instant::now();
-    let loaded = load_project_cache(&temp_proj, ViewGranularity::AllItems)
-        .expect("Failed to load rkyv cache");
+    let loaded = load_project_cache(&temp_proj, ViewGranularity::AllItems).expect("Failed to load rkyv cache");
     let load_dur = t_load.elapsed();
 
     assert!(loaded.is_some(), "Cache must be valid");
@@ -526,12 +538,7 @@ fn benchmark_ultra_scale_5m(tracker: &mut TimelineTracker) {
         let folder_y = row as f32 * (folder_h + gap);
 
         let cluster_id = format!("folder:{}", f_idx);
-        let mut cluster = studio_graph::GroupCluster::new(
-            &cluster_id,
-            format!("dir_{}", f_idx),
-            "Directory",
-            row,
-        );
+        let mut cluster = studio_graph::GroupCluster::new(&cluster_id, format!("dir_{}", f_idx), "Directory", row);
         cluster.position = [folder_x, folder_y];
         cluster.size = [folder_w, folder_h];
 
@@ -557,11 +564,8 @@ fn benchmark_ultra_scale_5m(tracker: &mut TimelineTracker) {
                 next_port_raw += 1;
                 let out_pid = studio_graph::PortId(next_port_raw);
                 next_port_raw += 1;
-                let (arch, vis) = if m_idx % 2 == 0 {
-                    (NodeArchetype::Function, "pub")
-                } else {
-                    (NodeArchetype::Struct, "pub")
-                };
+                let (arch, vis) =
+                    if m_idx % 2 == 0 { (NodeArchetype::Function, "pub") } else { (NodeArchetype::Struct, "pub") };
                 let mut member = studio_graph::FileMemberNode::new(
                     format!("member_{}", m_idx),
                     format!("fn_or_struct_{}", m_idx),
@@ -651,11 +655,7 @@ fn benchmark_ultra_scale_5m(tracker: &mut TimelineTracker) {
             // 1. Frustum Culling:
             // At galaxy zoom (< 0.005), 220px cards project to < 0.44px (completely sub-pixel).
             // Individual card queries are bypassed while the 100,000 parent folder clusters are rendered.
-            let visible_nodes = if zoom >= 0.005 {
-                spatial_grid.query_rect(visible_rect)
-            } else {
-                Vec::new()
-            };
+            let visible_nodes = if zoom >= 0.005 { spatial_grid.query_rect(visible_rect) } else { Vec::new() };
 
             // 2. Cursor hover query
             let _hover = spatial_grid.query_point(Pos2::new(10500.0, 10500.0));
@@ -702,15 +702,33 @@ fn benchmark_ultra_scale_5m(tracker: &mut TimelineTracker) {
     println!("\n================================================================================");
     println!("     ULTRA-SCALE RESULTS (100,000 FOLDERS, 500,000 FILES, 5,000,000 NODES)     ");
     println!("================================================================================");
-    println!("  Budget Target:         {:.2} ms ({:.0} µs) for {:.0} FPS", budget.frame_budget_us() / 1000.0, budget.frame_budget_us(), budget.target_fps);
+    println!(
+        "  Budget Target:         {:.2} ms ({:.0} µs) for {:.0} FPS",
+        budget.frame_budget_us() / 1000.0,
+        budget.frame_budget_us(),
+        budget.target_fps
+    );
     println!("  Average Frame Time:    {:.2} µs ({:.3} ms)", overall_avg_us, overall_avg_us / 1000.0);
     println!("  Peak Max Frame Time:   {:.2} µs ({:.3} ms)", max_frame_us, max_frame_us / 1000.0);
-    println!("  Achieved Throughput:   {:.0} FPS ({:.1}x headroom vs {:.0} FPS)", overall_fps, budget.frame_budget_us() / overall_avg_us, budget.target_fps);
+    println!(
+        "  Achieved Throughput:   {:.0} FPS ({:.1}x headroom vs {:.0} FPS)",
+        overall_fps,
+        budget.frame_budget_us() / overall_avg_us,
+        budget.target_fps
+    );
     println!("  Resident RAM:          {:.2} GB (budget {:.2} GB)", current_ram_gb, budget.ram_gb());
     println!("================================================================================\n");
 
-    assert!(overall_avg_us < budget.frame_budget_us(), "Ultra scale frame time exceeded the {:.0} FPS budget", budget.target_fps);
-    println!("[SUCCESS] {:.0} FPS sustained on 5,000,000 nodes within {:.2} GB RAM\n", budget.target_fps, budget.ram_gb());
+    assert!(
+        overall_avg_us < budget.frame_budget_us(),
+        "Ultra scale frame time exceeded the {:.0} FPS budget",
+        budget.target_fps
+    );
+    println!(
+        "[SUCCESS] {:.0} FPS sustained on 5,000,000 nodes within {:.2} GB RAM\n",
+        budget.target_fps,
+        budget.ram_gb()
+    );
 }
 
 fn benchmark_gpu_wire_throughput(tracker: &mut TimelineTracker) {
@@ -728,11 +746,7 @@ fn benchmark_gpu_wire_throughput(tracker: &mut TimelineTracker) {
             let p0 = Pos2::new(100.0 + offset, 200.0 + offset);
             let p3 = Pos2::new(500.0 + offset, 400.0 + offset);
             let is_animated = (i % 8) == 0;
-            let glow = if is_animated {
-                Some(egui::Color32::from_rgba_premultiplied(100, 200, 255, 90))
-            } else {
-                None
-            };
+            let glow = if is_animated { Some(egui::Color32::from_rgba_premultiplied(100, 200, 255, 90)) } else { None };
             batch.push_wire(p0, p3, egui::Color32::WHITE, glow, 2.0, 6.0, is_animated);
         }
         let dur = t0.elapsed();

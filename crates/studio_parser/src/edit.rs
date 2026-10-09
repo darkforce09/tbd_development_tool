@@ -25,8 +25,12 @@ impl std::fmt::Display for EditError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             EditError::ChangedOnDisk => write!(f, "file changed on disk since it was opened; reload before saving"),
-            EditError::SnippetNotFound => write!(f, "original snippet not found in file; it changed on disk, reload before saving"),
-            EditError::SnippetAmbiguous => write!(f, "original snippet occurs more than once in file; open the full file to edit"),
+            EditError::SnippetNotFound => {
+                write!(f, "original snippet not found in file; it changed on disk, reload before saving")
+            }
+            EditError::SnippetAmbiguous => {
+                write!(f, "original snippet occurs more than once in file; open the full file to edit")
+            }
         }
     }
 }
@@ -85,10 +89,7 @@ fn match_line_endings(text: &str, crlf: bool) -> String {
 /// Writes `content` to `path` atomically: a temp file in the same directory is written, flushed,
 /// given the original permissions and renamed over the target.
 pub fn atomic_write(path: &Path, content: &[u8]) -> std::io::Result<()> {
-    let dir = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
+    let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     tmp.write_all(content)?;
     tmp.as_file().sync_all()?;

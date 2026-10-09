@@ -1,5 +1,5 @@
-use std::path::Path;
 use super::*;
+use std::path::Path;
 
 #[test]
 fn all_lists_every_language_in_discriminant_order() {
@@ -111,7 +111,14 @@ async def fetch_data(url: str) -> dict:
     assert_eq!(fetch.docs, "Fetches data.");
 
     let uses: Vec<_> = file.uses.iter().map(|u| (u.path.as_str(), u.items.clone())).collect();
-    assert_eq!(uses, [("os", vec!["os".to_string()]), ("pathlib", vec!["Path".into()]), ("services.auth", vec!["verify_token".into()])]);
+    assert_eq!(
+        uses,
+        [
+            ("os", vec!["os".to_string()]),
+            ("pathlib", vec!["Path".into()]),
+            ("services.auth", vec!["verify_token".into()])
+        ]
+    );
 }
 
 #[test]

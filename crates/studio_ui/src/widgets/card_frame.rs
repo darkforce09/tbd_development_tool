@@ -1,7 +1,4 @@
-use egui::{
-    epaint::RectShape,
-    Color32, FontFamily, FontId, Painter, Pos2, Rect, CornerRadius, Stroke, Vec2,
-};
+use egui::{epaint::RectShape, Color32, CornerRadius, FontFamily, FontId, Painter, Pos2, Rect, Stroke, Vec2};
 
 use crate::colors::*;
 
@@ -43,7 +40,8 @@ pub fn paint_card_frame(painter: &Painter, props: CardFrameProps<'_>) {
         props.rect.translate(Vec2::new(0.0, 3.0 * z)),
         rounding,
         Color32::from_black_alpha(70),
-        Stroke::NONE, egui::StrokeKind::Middle,
+        Stroke::NONE,
+        egui::StrokeKind::Middle,
     );
 
     // Selection glow
@@ -52,16 +50,13 @@ pub fn paint_card_frame(painter: &Painter, props: CardFrameProps<'_>) {
             props.rect.expand(2.5 * z),
             CornerRadius::from(9.5 * z),
             Color32::TRANSPARENT,
-            Stroke::new(1.8 * z, with_alpha(CARD_BORDER_SELECTED, 180)), egui::StrokeKind::Middle,
+            Stroke::new(1.8 * z, with_alpha(CARD_BORDER_SELECTED, 180)),
+            egui::StrokeKind::Middle,
         ));
     }
 
     // Card background fill and border
-    let bg_fill = if props.is_hovered {
-        CARD_BG_HOVER
-    } else {
-        CARD_BG
-    };
+    let bg_fill = if props.is_hovered { CARD_BG_HOVER } else { CARD_BG };
 
     let border_stroke = if props.is_selected {
         Stroke::new((1.5 * z).max(1.0), CARD_BORDER_SELECTED)
@@ -78,49 +73,36 @@ pub fn paint_card_frame(painter: &Painter, props: CardFrameProps<'_>) {
 
     // Top accent indicator bar along top curved edge
     let header_height = 34.0 * z;
-    let header_rect = Rect::from_min_size(
-        props.rect.min,
-        Vec2::new(props.rect.width(), header_height),
-    );
+    let header_rect = Rect::from_min_size(props.rect.min, Vec2::new(props.rect.width(), header_height));
 
     // Header background
-    let header_rounding = CornerRadius {
-        nw: (8.0 * z).round() as u8,
-        ne: (8.0 * z).round() as u8,
-        sw: 0,
-        se: 0,
-    };
+    let header_rounding = CornerRadius { nw: (8.0 * z).round() as u8, ne: (8.0 * z).round() as u8, sw: 0, se: 0 };
     card_painter.add(RectShape::new(
         header_rect,
         header_rounding,
         CARD_HEADER_BG,
-        Stroke::NONE, egui::StrokeKind::Middle,
+        Stroke::NONE,
+        egui::StrokeKind::Middle,
     ));
 
     // Archetype accent line at very top
     let accent_rect = Rect::from_min_size(props.rect.min, Vec2::new(props.rect.width(), 3.0 * z));
     card_painter.add(RectShape::new(
         accent_rect,
-        CornerRadius {
-            nw: (8.0 * z).round() as u8,
-            ne: (8.0 * z).round() as u8,
-            sw: 0,
-            se: 0,
-        },
+        CornerRadius { nw: (8.0 * z).round() as u8, ne: (8.0 * z).round() as u8, sw: 0, se: 0 },
         props.archetype_color,
-        Stroke::NONE, egui::StrokeKind::Middle,
+        Stroke::NONE,
+        egui::StrokeKind::Middle,
     ));
 
     // Archetype mini pill badge (top-left)
-    let badge_rect = Rect::from_min_size(
-        props.rect.min + Vec2::new(10.0 * z, 9.0 * z),
-        Vec2::new(54.0 * z, 16.0 * z),
-    );
+    let badge_rect = Rect::from_min_size(props.rect.min + Vec2::new(10.0 * z, 9.0 * z), Vec2::new(54.0 * z, 16.0 * z));
     card_painter.add(RectShape::new(
         badge_rect,
         CornerRadius::from(3.0 * z),
         with_alpha(props.archetype_color, 40),
-        Stroke::new((1.0 * z).max(0.75), with_alpha(props.archetype_color, 120)), egui::StrokeKind::Middle,
+        Stroke::new((1.0 * z).max(0.75), with_alpha(props.archetype_color, 120)),
+        egui::StrokeKind::Middle,
     ));
     card_painter.text(
         badge_rect.center(),
@@ -169,35 +151,23 @@ pub fn paint_card_frame(painter: &Painter, props: CardFrameProps<'_>) {
     // Divider line between header and body
     let divider_y = props.rect.min.y + header_height;
     card_painter.line_segment(
-        [
-            Pos2::new(props.rect.min.x, divider_y),
-            Pos2::new(props.rect.max.x, divider_y),
-        ],
+        [Pos2::new(props.rect.min.x, divider_y), Pos2::new(props.rect.max.x, divider_y)],
         Stroke::new((1.0 * z).max(0.75), CARD_BORDER_NORMAL),
     );
 
     // Description Banner: dedicated row below the header
     if !props.description.is_empty() {
         let desc_height = 24.0 * z;
-        let desc_rect = Rect::from_min_size(
-            Pos2::new(props.rect.min.x, divider_y),
-            Vec2::new(props.rect.width(), desc_height),
-        );
+        let desc_rect =
+            Rect::from_min_size(Pos2::new(props.rect.min.x, divider_y), Vec2::new(props.rect.width(), desc_height));
 
         // Shaded background for description area
-        card_painter.rect_filled(
-            desc_rect,
-            CornerRadius::ZERO,
-            Color32::from_black_alpha(35),
-        );
+        card_painter.rect_filled(desc_rect, CornerRadius::ZERO, Color32::from_black_alpha(35));
 
         // Divider line below description banner separating it from ports
         let desc_bottom_y = divider_y + desc_height;
         card_painter.line_segment(
-            [
-                Pos2::new(props.rect.min.x, desc_bottom_y),
-                Pos2::new(props.rect.max.x, desc_bottom_y),
-            ],
+            [Pos2::new(props.rect.min.x, desc_bottom_y), Pos2::new(props.rect.max.x, desc_bottom_y)],
             Stroke::new((1.0 * z).max(0.75), with_alpha(CARD_BORDER_NORMAL, 100)),
         );
 

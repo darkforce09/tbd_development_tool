@@ -84,11 +84,8 @@ fn refresh_file_node(graph: &mut Graph, node_id: NodeId, extracted: &ExtractedFi
         }
         return;
     }
-    let old_ports: HashMap<String, (Option<PortId>, Option<PortId>)> = graph.nodes[&node_id]
-        .member_nodes
-        .iter()
-        .map(|m| (m.id.clone(), (m.in_port_id, m.out_port_id)))
-        .collect();
+    let old_ports: HashMap<String, (Option<PortId>, Option<PortId>)> =
+        graph.nodes[&node_id].member_nodes.iter().map(|m| (m.id.clone(), (m.in_port_id, m.out_port_id))).collect();
 
     for m in &mut members {
         if let Some(&(in_pid, out_pid)) = old_ports.get(&m.id) {
@@ -153,7 +150,15 @@ fn rewire_member_calls(
         for call in calls {
             let Some((target_node, in_port)) = index.resolve(call) else { continue };
             if (target_node != node_id || in_port != out_port) && connected.insert((out_port, target_node, in_port)) {
-                graph.connect_labeled(node_id, out_port, target_node, in_port, Some("call".to_string()), Some(step), None);
+                graph.connect_labeled(
+                    node_id,
+                    out_port,
+                    target_node,
+                    in_port,
+                    Some("call".to_string()),
+                    Some(step),
+                    None,
+                );
                 step += 1;
             }
         }

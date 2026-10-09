@@ -22,7 +22,7 @@ pub fn create_showcase_graph() -> Graph {
         Some("media_demux::audio".to_string()),
         Some("Extracts raw 48kHz PCM audio packets directly from incoming media transport streams.".to_string()),
         Some(
-r#"pub struct AudioDemuxer {
+            r#"pub struct AudioDemuxer {
     stream_id: u32,
     sample_rate: u32,
 }
@@ -36,7 +36,9 @@ impl AudioDemuxer {
         // Demux next chunk from buffer
         Some(AudioPacket::default())
     }
-}"#.to_string()),
+}"#
+            .to_string(),
+        ),
         Some("ingestion".to_string()),
     );
 
@@ -58,7 +60,7 @@ impl AudioDemuxer {
         Some("speech_engine::whisper".to_string()),
         Some("Processes AudioPackets through Whisper model to emit real-time subtitle text tokens.".to_string()),
         Some(
-r#"pub struct WhisperOcr {
+            r#"pub struct WhisperOcr {
     model_weights: PathBuf,
     confidence_threshold: f32,
 }
@@ -68,7 +70,9 @@ impl WhisperOcr {
         let tokens = run_inference_fp16(&packet.pcm_data).await?;
         Ok(SubtitleText::from_tokens(tokens))
     }
-}"#.to_string()),
+}"#
+            .to_string(),
+        ),
         Some("inference".to_string()),
     );
 
@@ -90,7 +94,7 @@ impl WhisperOcr {
         Some("video_core::cache".to_string()),
         Some("Hardware-accelerated ring buffer maintaining recent 4K decompressed video frames in VRAM.".to_string()),
         Some(
-r#"pub struct VideoFrameCache {
+            r#"pub struct VideoFrameCache {
     ring_size: usize,
     buffer: Vec<ArchivedFrame>,
 }
@@ -102,7 +106,9 @@ impl VideoFrameCache {
         }
         self.buffer.push(frame);
     }
-}"#.to_string()),
+}"#
+            .to_string(),
+        ),
         Some("ingestion".to_string()),
     );
 
@@ -112,10 +118,7 @@ impl VideoFrameCache {
         NodeArchetype::Compute,
         "Merges subtitle overlays onto active frames",
         Some("CUDA-OPT".to_string()),
-        vec![
-            ("SubtitleText".to_string(), DataType::Text),
-            ("ArchivedFrame".to_string(), DataType::Vision),
-        ],
+        vec![("SubtitleText".to_string(), DataType::Text), ("ArchivedFrame".to_string(), DataType::Vision)],
         vec![("CompositeFrame".to_string(), DataType::Composite)],
         [500.0, 380.0],
     );
@@ -127,7 +130,7 @@ impl VideoFrameCache {
         Some("compositor::inpaint".to_string()),
         Some("Performs CUDA shader compositing to render subtitle overlays on top of video frames.".to_string()),
         Some(
-r#"pub struct InpaintingEngine {
+            r#"pub struct InpaintingEngine {
     font_atlas: TextureAtlas,
 }
 
@@ -137,7 +140,9 @@ impl InpaintingEngine {
         render_subtitles(&mut out, text);
         out
     }
-}"#.to_string()),
+}"#
+            .to_string(),
+        ),
         Some("inference".to_string()),
     );
 
@@ -159,7 +164,7 @@ impl InpaintingEngine {
         Some("compositor::surface".to_string()),
         Some("Direct Wayland DRM surface presentation layer with vsync synchronization.".to_string()),
         Some(
-r#"pub struct DisplaySurface {
+            r#"pub struct DisplaySurface {
     drm_fd: RawFd,
 }
 
@@ -168,7 +173,9 @@ impl DisplaySurface {
         drm_page_flip(self.drm_fd, frame.buffer_id)?;
         Ok(())
     }
-}"#.to_string()),
+}"#
+            .to_string(),
+        ),
         Some("output".to_string()),
     );
 

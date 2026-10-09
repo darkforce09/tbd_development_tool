@@ -1,9 +1,7 @@
+use crate::extractor::{CodeLang, ExtractedFile, SourceLang};
 use std::collections::HashMap;
 use std::path::Path;
-use studio_graph::{
-    DataType, FileMemberNode, Graph, NodeArchetype, NodeId, Port, PortDirection, PortId,
-};
-use crate::extractor::{CodeLang, ExtractedFile, SourceLang};
+use studio_graph::{DataType, FileMemberNode, Graph, NodeArchetype, NodeId, Port, PortDirection, PortId};
 
 /// Lowercased file extension used for per-language labels.
 pub fn file_ext(file: &ExtractedFile) -> String {
@@ -115,7 +113,8 @@ pub fn build_member_nodes(file: &ExtractedFile) -> Vec<FileMemberNode> {
             (NodeArchetype::Module, "CODE".to_string(), f.name.clone())
         } else {
             let vis = if f.visibility.is_public() { "pub" } else { "" };
-            let params_sig = f.inputs.iter().map(|p| format!("{}: {}", p.name, p.type_str)).collect::<Vec<_>>().join(", ");
+            let params_sig =
+                f.inputs.iter().map(|p| format!("{}: {}", p.name, p.type_str)).collect::<Vec<_>>().join(", ");
             let ret_sig = f.output.as_ref().map(|o| format!(" -> {}", o)).unwrap_or_default();
             let prefix = fn_prefix(file, f.is_async);
             (NodeArchetype::Function, vis.to_string(), format!("{}{}({}){}", prefix, f.name, params_sig, ret_sig))
@@ -135,8 +134,15 @@ pub fn build_member_nodes(file: &ExtractedFile) -> Vec<FileMemberNode> {
 
     for imp in &file.impls {
         for m in &imp.methods {
-            let vis = if is_enforce { "FN" } else if m.visibility.is_public() { "pub" } else { "" };
-            let params_sig = m.inputs.iter().map(|p| format!("{}: {}", p.name, p.type_str)).collect::<Vec<_>>().join(", ");
+            let vis = if is_enforce {
+                "FN"
+            } else if m.visibility.is_public() {
+                "pub"
+            } else {
+                ""
+            };
+            let params_sig =
+                m.inputs.iter().map(|p| format!("{}: {}", p.name, p.type_str)).collect::<Vec<_>>().join(", ");
             let ret_sig = m.output.as_ref().map(|o| format!(" -> {}", o)).unwrap_or_default();
             let prefix = fn_prefix(file, m.is_async);
             member_nodes.push(FileMemberNode::new(
@@ -158,11 +164,8 @@ pub fn build_member_nodes(file: &ExtractedFile) -> Vec<FileMemberNode> {
 
 /// Calls made by each callable member, keyed by member id.
 pub fn member_calls(file: &ExtractedFile) -> Vec<(String, &[String])> {
-    let mut out: Vec<(String, &[String])> = file
-        .functions
-        .iter()
-        .map(|f| (format!("fn:{}", f.name), f.calls.as_slice()))
-        .collect();
+    let mut out: Vec<(String, &[String])> =
+        file.functions.iter().map(|f| (format!("fn:{}", f.name), f.calls.as_slice())).collect();
     for imp in &file.impls {
         for m in &imp.methods {
             out.push((format!("method:{}::{}", imp.target_type, m.name), m.calls.as_slice()));
@@ -230,10 +233,7 @@ impl MemberPortIndex {
     /// Resolves a call/link target name to a member in-port, falling back to a file's in-port.
     pub fn resolve(&self, target_name: &str) -> Option<(NodeId, PortId)> {
         let clean = target_name.trim_start_matches("./");
-        let short_name = target_name
-            .split([':', '.', '>', '-'])
-            .rfind(|s| !s.is_empty())
-            .unwrap_or(target_name);
+        let short_name = target_name.split([':', '.', '>', '-']).rfind(|s| !s.is_empty()).unwrap_or(target_name);
 
         self.member_in_ports
             .get(target_name)

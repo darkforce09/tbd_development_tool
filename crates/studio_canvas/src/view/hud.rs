@@ -1,6 +1,4 @@
-use egui::{
-    epaint::RectShape, Color32, FontFamily, FontId, Painter, Pos2, Rect, CornerRadius, Stroke, Vec2,
-};
+use egui::{epaint::RectShape, Color32, CornerRadius, FontFamily, FontId, Painter, Pos2, Rect, Stroke, Vec2};
 use studio_graph::{Graph, NodeId};
 use studio_ui::{color_tokens::*, paint_node_context_menu, with_alpha, NodeContextMenuProps};
 
@@ -49,22 +47,22 @@ pub fn render_hud(
 
     // Layer F: Interactive Bottom-Right Zoom HUD & Slider Bar (CodeSee style)
     let hud_size = Vec2::new(260.0, 34.0);
-    let hud_rect = Rect::from_min_size(
-        Pos2::new(rect.max.x - hud_size.x - 16.0, rect.max.y - hud_size.y - 16.0),
-        hud_size,
-    );
+    let hud_rect =
+        Rect::from_min_size(Pos2::new(rect.max.x - hud_size.x - 16.0, rect.max.y - hud_size.y - 16.0), hud_size);
 
     painter.rect(
         hud_rect.translate(Vec2::new(0.0, 2.0)),
         CornerRadius::from(6.0),
         Color32::from_black_alpha(80),
-        Stroke::NONE, egui::StrokeKind::Middle,
+        Stroke::NONE,
+        egui::StrokeKind::Middle,
     );
     painter.add(RectShape::new(
         hud_rect,
         CornerRadius::from(6.0),
         with_alpha(PANEL_BG, 235),
-        Stroke::new(1.0, PANEL_BORDER), egui::StrokeKind::Middle,
+        Stroke::new(1.0, PANEL_BORDER),
+        egui::StrokeKind::Middle,
     ));
 
     // Interactive buttons inside zoom HUD

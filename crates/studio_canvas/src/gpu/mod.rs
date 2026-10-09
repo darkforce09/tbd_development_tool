@@ -4,10 +4,7 @@ pub mod pipeline;
 
 pub use batch::GpuWireBatch;
 pub use callback::GpuWireCallback;
-pub use pipeline::{
-    CanvasUniforms, GpuWireInstance, GpuWirePipeline, FLAG_ANIMATED, FLAG_GLOW,
-    VERTICES_PER_CURVE,
-};
+pub use pipeline::{CanvasUniforms, GpuWireInstance, GpuWirePipeline, FLAG_ANIMATED, FLAG_GLOW, VERTICES_PER_CURVE};
 
 #[cfg(test)]
 mod tests {
@@ -21,11 +18,7 @@ mod tests {
             64,
             "GpuWireInstance must be exactly 64 bytes for optimal GPU cache alignment"
         );
-        assert_eq!(
-            std::mem::align_of::<GpuWireInstance>(),
-            4,
-            "GpuWireInstance alignment must match f32"
-        );
+        assert_eq!(std::mem::align_of::<GpuWireInstance>(), 4, "GpuWireInstance alignment must match f32");
     }
 
     #[test]
@@ -69,10 +62,6 @@ mod tests {
 
         // Validate that naga can parse the WGSL module
         let module = wgpu::naga::front::wgsl::parse_str(shader_source);
-        assert!(
-            module.is_ok(),
-            "wire.wgsl failed syntax validation: {:?}",
-            module.err()
-        );
+        assert!(module.is_ok(), "wire.wgsl failed syntax validation: {:?}", module.err());
     }
 }

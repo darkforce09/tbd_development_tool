@@ -1,5 +1,5 @@
 use eframe::egui;
-use egui::{Color32, FontFamily, FontId, Pos2, RichText, CornerRadius, Stroke, Vec2};
+use egui::{Color32, CornerRadius, FontFamily, FontId, Pos2, RichText, Stroke, Vec2};
 use studio_canvas::{archetype_color, data_type_color};
 use studio_ui::{color_tokens::*, truncate_with_ellipsis};
 
@@ -36,15 +36,33 @@ impl StudioApp {
 
                             // Header: Title + Archetype + Crate
                             ui.horizontal(|ui| {
-                                ui.label(RichText::new(&node.title).font(FontId::new(15.0, FontFamily::Proportional)).strong().color(TEXT_HIGHLIGHT));
+                                ui.label(
+                                    RichText::new(&node.title)
+                                        .font(FontId::new(15.0, FontFamily::Proportional))
+                                        .strong()
+                                        .color(TEXT_HIGHLIGHT),
+                                );
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    let arch_color = if is_markdown { Color32::from_rgb(0x2d, 0xd4, 0xbf) } else { archetype_color(node.archetype) };
-                                    let arch_label = if is_markdown { "MARKDOWN".to_string() } else { node.archetype.label().to_string() };
+                                    let arch_color = if is_markdown {
+                                        Color32::from_rgb(0x2d, 0xd4, 0xbf)
+                                    } else {
+                                        archetype_color(node.archetype)
+                                    };
+                                    let arch_label = if is_markdown {
+                                        "MARKDOWN".to_string()
+                                    } else {
+                                        node.archetype.label().to_string()
+                                    };
                                     ui.label(
                                         RichText::new(format!(" {} ", arch_label))
                                             .font(FontId::new(10.0, FontFamily::Monospace))
                                             .color(arch_color)
-                                            .background_color(Color32::from_rgba_premultiplied(arch_color.r(), arch_color.g(), arch_color.b(), 35)),
+                                            .background_color(Color32::from_rgba_premultiplied(
+                                                arch_color.r(),
+                                                arch_color.g(),
+                                                arch_color.b(),
+                                                35,
+                                            )),
                                     );
                                 });
                             });
@@ -52,7 +70,11 @@ impl StudioApp {
                             // Location & Crate Badge
                             if let Some(path) = &node.file_path {
                                 let line_str = node.line_number.map(|l| format!(":{}", l)).unwrap_or_default();
-                                ui.label(RichText::new(format!("{} {}{}", egui_phosphor::regular::MAP_PIN, path, line_str)).font(FontId::new(10.5, FontFamily::Proportional)).color(TEXT_DIM));
+                                ui.label(
+                                    RichText::new(format!("{} {}{}", egui_phosphor::regular::MAP_PIN, path, line_str))
+                                        .font(FontId::new(10.5, FontFamily::Proportional))
+                                        .color(TEXT_DIM),
+                                );
                             }
 
                             ui.add_space(4.0);
@@ -60,7 +82,10 @@ impl StudioApp {
                             // Focus button
                             let focus_label = format!("{} Focus on Canvas", egui_phosphor::regular::EYE);
                             if ui.button(focus_label).clicked() {
-                                let center_world = Pos2::new(node.position[0] + node.size[0] * 0.5, node.position[1] + node.size[1] * 0.5);
+                                let center_world = Pos2::new(
+                                    node.position[0] + node.size[0] * 0.5,
+                                    node.position[1] + node.size[1] * 0.5,
+                                );
                                 self.canvas_state.transform.center_on_world_pos(center_world, ctx.content_rect(), None);
                             }
 
@@ -72,7 +97,11 @@ impl StudioApp {
                                 // Dedicated Full-Height Markdown Document Workspace
                                 ui.horizontal(|ui| {
                                     let tab0 = format!("{} Document Preview", egui_phosphor::regular::EYE);
-                                    let tab1 = format!("{} Outline ({})", egui_phosphor::regular::LIST_NUMBERS, node.member_nodes.len());
+                                    let tab1 = format!(
+                                        "{} Outline ({})",
+                                        egui_phosphor::regular::LIST_NUMBERS,
+                                        node.member_nodes.len()
+                                    );
                                     let tab2 = format!("{} Source Editor", egui_phosphor::regular::PENCIL_SIMPLE);
 
                                     if ui.selectable_label(self.markdown_inspector_tab == 0, tab0).clicked() {
@@ -86,8 +115,10 @@ impl StudioApp {
                                     }
 
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        let split_label = if self.code_editor_expanded { "Collapse" } else { "Expand Split" };
-                                        let split_btn_text = format!("{} {}", egui_phosphor::regular::CORNERS_OUT, split_label);
+                                        let split_label =
+                                            if self.code_editor_expanded { "Collapse" } else { "Expand Split" };
+                                        let split_btn_text =
+                                            format!("{} {}", egui_phosphor::regular::CORNERS_OUT, split_label);
                                         if ui.small_button(split_btn_text).clicked() {
                                             self.code_editor_expanded = !self.code_editor_expanded;
                                         }
@@ -116,7 +147,12 @@ impl StudioApp {
                                     }
                                     1 => {
                                         // Tab 1: Outline & Headings
-                                        ui.label(RichText::new("DOCUMENT OUTLINE & HEADINGS").font(FontId::new(10.5, FontFamily::Monospace)).color(TEXT_DIM).strong());
+                                        ui.label(
+                                            RichText::new("DOCUMENT OUTLINE & HEADINGS")
+                                                .font(FontId::new(10.5, FontFamily::Monospace))
+                                                .color(TEXT_DIM)
+                                                .strong(),
+                                        );
                                         ui.add_space(4.0);
                                         egui::Frame::NONE
                                             .fill(CARD_BG)
@@ -125,24 +161,45 @@ impl StudioApp {
                                             .inner_margin(egui::Margin::symmetric(8, 6))
                                             .show(ui, |ui| {
                                                 if node.member_nodes.is_empty() {
-                                                    ui.label(RichText::new("(No headings extracted)").font(FontId::new(11.0, FontFamily::Proportional)).color(TEXT_DIM));
+                                                    ui.label(
+                                                        RichText::new("(No headings extracted)")
+                                                            .font(FontId::new(11.0, FontFamily::Proportional))
+                                                            .color(TEXT_DIM),
+                                                    );
                                                 } else {
                                                     for member in &node.member_nodes {
-                                                        let is_active = self.code_editor_member_id.as_deref() == Some(&member.id);
+                                                        let is_active =
+                                                            self.code_editor_member_id.as_deref() == Some(&member.id);
                                                         ui.horizontal(|ui| {
-                                                            let tag = if member.visibility.is_empty() { "H" } else { &member.visibility };
+                                                            let tag = if member.visibility.is_empty() {
+                                                                "H"
+                                                            } else {
+                                                                &member.visibility
+                                                            };
                                                             ui.label(
                                                                 RichText::new(format!(" {} ", tag))
                                                                     .font(FontId::new(9.5, FontFamily::Monospace))
                                                                     .color(Color32::from_rgb(0x2d, 0xd4, 0xbf))
-                                                                    .background_color(Color32::from_rgba_premultiplied(45, 212, 191, 35)),
+                                                                    .background_color(
+                                                                        Color32::from_rgba_premultiplied(
+                                                                            45, 212, 191, 35,
+                                                                        ),
+                                                                    ),
                                                             );
                                                             ui.label(
                                                                 RichText::new(&member.name)
                                                                     .font(FontId::new(11.0, FontFamily::Proportional))
-                                                                    .color(if is_active { TEXT_HIGHLIGHT } else { TEXT_PRIMARY }),
+                                                                    .color(if is_active {
+                                                                        TEXT_HIGHLIGHT
+                                                                    } else {
+                                                                        TEXT_PRIMARY
+                                                                    }),
                                                             );
-                                                            ui.label(RichText::new(format!(":{}", member.line_number)).font(FontId::new(9.5, FontFamily::Monospace)).color(TEXT_DIM));
+                                                            ui.label(
+                                                                RichText::new(format!(":{}", member.line_number))
+                                                                    .font(FontId::new(9.5, FontFamily::Monospace))
+                                                                    .color(TEXT_DIM),
+                                                            );
                                                         });
                                                         ui.add_space(3.0);
                                                     }
@@ -152,17 +209,28 @@ impl StudioApp {
                                     _ => {
                                         // Tab 2: Live Markdown Source Editor with VS Code Syntax Highlighting
                                         ui.horizontal(|ui| {
-                                            let save_label = format!("{} Save Changes (Ctrl+S)", egui_phosphor::regular::FLOPPY_DISK);
+                                            let save_label = format!(
+                                                "{} Save Changes (Ctrl+S)",
+                                                egui_phosphor::regular::FLOPPY_DISK
+                                            );
                                             if ui.button(save_label).clicked() {
                                                 self.save_current_editor_code();
                                             }
 
                                             if self.code_editor_dirty {
-                                                ui.label(RichText::new("● modified (unsaved)").font(FontId::new(10.5, FontFamily::Monospace)).color(Color32::from_rgb(251, 146, 60)));
+                                                ui.label(
+                                                    RichText::new("● modified (unsaved)")
+                                                        .font(FontId::new(10.5, FontFamily::Monospace))
+                                                        .color(Color32::from_rgb(251, 146, 60)),
+                                                );
                                             }
 
                                             if let Some(status) = &self.code_editor_status {
-                                                ui.label(RichText::new(status).font(FontId::new(10.0, FontFamily::Monospace)).color(TEXT_SECONDARY));
+                                                ui.label(
+                                                    RichText::new(status)
+                                                        .font(FontId::new(10.0, FontFamily::Monospace))
+                                                        .color(TEXT_SECONDARY),
+                                                );
                                             }
                                         });
 
@@ -189,12 +257,22 @@ impl StudioApp {
 
                                 // Documentation / Description (Rich Markdown Renderer)
                                 if let Some(docs) = &node.doc_comment {
-                                    ui.label(RichText::new("DOCUMENTATION (MARKDOWN)").font(FontId::new(10.5, FontFamily::Monospace)).color(TEXT_DIM).strong());
+                                    ui.label(
+                                        RichText::new("DOCUMENTATION (MARKDOWN)")
+                                            .font(FontId::new(10.5, FontFamily::Monospace))
+                                            .color(TEXT_DIM)
+                                            .strong(),
+                                    );
                                     ui.add_space(2.0);
                                     studio_ui::render_markdown(ui, docs);
                                     ui.add_space(8.0);
                                 } else if !node.description.is_empty() {
-                                    ui.label(RichText::new("SUMMARY").font(FontId::new(10.5, FontFamily::Monospace)).color(TEXT_DIM).strong());
+                                    ui.label(
+                                        RichText::new("SUMMARY")
+                                            .font(FontId::new(10.5, FontFamily::Monospace))
+                                            .color(TEXT_DIM)
+                                            .strong(),
+                                    );
                                     ui.add_space(2.0);
                                     studio_ui::render_markdown(ui, &node.description);
                                     ui.add_space(8.0);
@@ -235,7 +313,11 @@ impl StudioApp {
                                             } else {
                                                 format!("{} Lines: OFF", egui_phosphor::regular::PLUGS)
                                             };
-                                            if ui.small_button(wires_text).on_hover_text("Toggle sub-node connection lines for this file").clicked() {
+                                            if ui
+                                                .small_button(wires_text)
+                                                .on_hover_text("Toggle sub-node connection lines for this file")
+                                                .clicked()
+                                            {
                                                 if let Some(n) = self.graph.nodes.get_mut(&node.id) {
                                                     n.show_member_wires = !n.show_member_wires;
                                                 }
@@ -251,7 +333,8 @@ impl StudioApp {
                                         .inner_margin(egui::Margin::symmetric(8, 6))
                                         .show(ui, |ui| {
                                             for member in &node.member_nodes {
-                                                let is_active = self.code_editor_member_id.as_deref() == Some(&member.id);
+                                                let is_active =
+                                                    self.code_editor_member_id.as_deref() == Some(&member.id);
                                                 let arch_col = archetype_color(member.archetype);
 
                                                 ui.horizontal(|ui| {
@@ -259,11 +342,20 @@ impl StudioApp {
                                                         RichText::new(format!(" {} ", member.archetype.label()))
                                                             .font(FontId::new(9.5, FontFamily::Monospace))
                                                             .color(arch_col)
-                                                            .background_color(Color32::from_rgba_premultiplied(arch_col.r(), arch_col.g(), arch_col.b(), 35)),
+                                                            .background_color(Color32::from_rgba_premultiplied(
+                                                                arch_col.r(),
+                                                                arch_col.g(),
+                                                                arch_col.b(),
+                                                                35,
+                                                            )),
                                                     );
 
                                                     if member.visibility == "pub" {
-                                                        ui.label(RichText::new("pub").font(FontId::new(10.0, FontFamily::Monospace)).color(Color32::from_rgb(134, 239, 172)));
+                                                        ui.label(
+                                                            RichText::new("pub")
+                                                                .font(FontId::new(10.0, FontFamily::Monospace))
+                                                                .color(Color32::from_rgb(134, 239, 172)),
+                                                        );
                                                     }
 
                                                     let display_text = if !member.signature.is_empty() {
@@ -274,17 +366,29 @@ impl StudioApp {
                                                     ui.label(
                                                         RichText::new(truncate_with_ellipsis(display_text, 22))
                                                             .font(FontId::new(10.5, FontFamily::Monospace))
-                                                            .color(if is_active { TEXT_HIGHLIGHT } else { TEXT_PRIMARY }),
+                                                            .color(if is_active {
+                                                                TEXT_HIGHLIGHT
+                                                            } else {
+                                                                TEXT_PRIMARY
+                                                            }),
                                                     );
 
-                                                    ui.label(RichText::new(format!(":{}", member.line_number)).font(FontId::new(9.5, FontFamily::Monospace)).color(TEXT_DIM));
+                                                    ui.label(
+                                                        RichText::new(format!(":{}", member.line_number))
+                                                            .font(FontId::new(9.5, FontFamily::Monospace))
+                                                            .color(TEXT_DIM),
+                                                    );
 
-                                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                                        let btn_label = if is_active { "Active" } else { "Inspect" };
-                                                        if ui.small_button(btn_label).clicked() {
-                                                            self.request_open_member(node.id, member.id.clone());
-                                                        }
-                                                    });
+                                                    ui.with_layout(
+                                                        egui::Layout::right_to_left(egui::Align::Center),
+                                                        |ui| {
+                                                            let btn_label =
+                                                                if is_active { "Active" } else { "Inspect" };
+                                                            if ui.small_button(btn_label).clicked() {
+                                                                self.request_open_member(node.id, member.id.clone());
+                                                            }
+                                                        },
+                                                    );
                                                 });
                                                 ui.add_space(2.0);
                                             }
@@ -296,25 +400,56 @@ impl StudioApp {
                                 }
 
                                 // Haystack Ports Schema (Inputs & Outputs tables with jump-to links)
-                                ui.label(RichText::new("PORTS & CONNECTIONS (HAYSTACK)").font(FontId::new(10.5, FontFamily::Monospace)).color(TEXT_DIM).strong());
+                                ui.label(
+                                    RichText::new("PORTS & CONNECTIONS (HAYSTACK)")
+                                        .font(FontId::new(10.5, FontFamily::Monospace))
+                                        .color(TEXT_DIM)
+                                        .strong(),
+                                );
                                 ui.add_space(4.0);
 
                                 // Inputs Table
-                                ui.label(RichText::new(format!("Inputs ({})", node.inputs.len())).font(FontId::new(11.5, FontFamily::Proportional)).strong().color(TEXT_PRIMARY));
+                                ui.label(
+                                    RichText::new(format!("Inputs ({})", node.inputs.len()))
+                                        .font(FontId::new(11.5, FontFamily::Proportional))
+                                        .strong()
+                                        .color(TEXT_PRIMARY),
+                                );
                                 for port in &node.inputs {
                                     let connected_edge_ids = self.graph.get_port_edges(node_id, port.id);
                                     ui.horizontal(|ui| {
-                                        ui.label(RichText::new(format!("  ← {}", port.name)).font(FontId::new(11.0, FontFamily::Monospace)).color(data_type_color(&port.data_type)));
-                                        ui.label(RichText::new(format!("({})", port.data_type.display_name())).font(FontId::new(10.0, FontFamily::Monospace)).color(TEXT_DIM));
+                                        ui.label(
+                                            RichText::new(format!("  ← {}", port.name))
+                                                .font(FontId::new(11.0, FontFamily::Monospace))
+                                                .color(data_type_color(&port.data_type)),
+                                        );
+                                        ui.label(
+                                            RichText::new(format!("({})", port.data_type.display_name()))
+                                                .font(FontId::new(10.0, FontFamily::Monospace))
+                                                .color(TEXT_DIM),
+                                        );
 
                                         if let Some(&first_edge_id) = connected_edge_ids.first() {
                                             if let Some(edge) = self.graph.get_edge(first_edge_id) {
                                                 if let Some(src_node) = self.graph.nodes.get(&edge.from_node) {
-                                                    if ui.small_button(format!("Jump: {}", truncate_with_ellipsis(&src_node.title, 14))).clicked() {
+                                                    if ui
+                                                        .small_button(format!(
+                                                            "Jump: {}",
+                                                            truncate_with_ellipsis(&src_node.title, 14)
+                                                        ))
+                                                        .clicked()
+                                                    {
                                                         self.canvas_state.selected_nodes.clear();
                                                         self.canvas_state.selected_nodes.insert(src_node.id);
-                                                        let center_world = Pos2::new(src_node.position[0] + src_node.size[0] * 0.5, src_node.position[1] + src_node.size[1] * 0.5);
-                                                        self.canvas_state.transform.center_on_world_pos(center_world, ctx.content_rect(), None);
+                                                        let center_world = Pos2::new(
+                                                            src_node.position[0] + src_node.size[0] * 0.5,
+                                                            src_node.position[1] + src_node.size[1] * 0.5,
+                                                        );
+                                                        self.canvas_state.transform.center_on_world_pos(
+                                                            center_world,
+                                                            ctx.content_rect(),
+                                                            None,
+                                                        );
                                                     }
                                                 }
                                             }
@@ -325,21 +460,47 @@ impl StudioApp {
                                 ui.add_space(4.0);
 
                                 // Outputs Table
-                                ui.label(RichText::new(format!("Outputs ({})", node.outputs.len())).font(FontId::new(11.5, FontFamily::Proportional)).strong().color(TEXT_PRIMARY));
+                                ui.label(
+                                    RichText::new(format!("Outputs ({})", node.outputs.len()))
+                                        .font(FontId::new(11.5, FontFamily::Proportional))
+                                        .strong()
+                                        .color(TEXT_PRIMARY),
+                                );
                                 for port in &node.outputs {
                                     let connected_edge_ids = self.graph.get_port_edges(node_id, port.id);
                                     ui.horizontal(|ui| {
-                                        ui.label(RichText::new(format!("  → {}", port.name)).font(FontId::new(11.0, FontFamily::Monospace)).color(data_type_color(&port.data_type)));
-                                        ui.label(RichText::new(format!("({})", port.data_type.display_name())).font(FontId::new(10.0, FontFamily::Monospace)).color(TEXT_DIM));
+                                        ui.label(
+                                            RichText::new(format!("  → {}", port.name))
+                                                .font(FontId::new(11.0, FontFamily::Monospace))
+                                                .color(data_type_color(&port.data_type)),
+                                        );
+                                        ui.label(
+                                            RichText::new(format!("({})", port.data_type.display_name()))
+                                                .font(FontId::new(10.0, FontFamily::Monospace))
+                                                .color(TEXT_DIM),
+                                        );
 
                                         if let Some(&first_edge_id) = connected_edge_ids.first() {
                                             if let Some(edge) = self.graph.get_edge(first_edge_id) {
                                                 if let Some(dst_node) = self.graph.nodes.get(&edge.to_node) {
-                                                    if ui.small_button(format!("Jump: {}", truncate_with_ellipsis(&dst_node.title, 14))).clicked() {
+                                                    if ui
+                                                        .small_button(format!(
+                                                            "Jump: {}",
+                                                            truncate_with_ellipsis(&dst_node.title, 14)
+                                                        ))
+                                                        .clicked()
+                                                    {
                                                         self.canvas_state.selected_nodes.clear();
                                                         self.canvas_state.selected_nodes.insert(dst_node.id);
-                                                        let center_world = Pos2::new(dst_node.position[0] + dst_node.size[0] * 0.5, dst_node.position[1] + dst_node.size[1] * 0.5);
-                                                        self.canvas_state.transform.center_on_world_pos(center_world, ctx.content_rect(), None);
+                                                        let center_world = Pos2::new(
+                                                            dst_node.position[0] + dst_node.size[0] * 0.5,
+                                                            dst_node.position[1] + dst_node.size[1] * 0.5,
+                                                        );
+                                                        self.canvas_state.transform.center_on_world_pos(
+                                                            center_world,
+                                                            ctx.content_rect(),
+                                                            None,
+                                                        );
                                                     }
                                                 }
                                             }
@@ -353,11 +514,18 @@ impl StudioApp {
 
                                 // CODE CANVAS LIVE CODE EDITOR (See & Edit code with line numbers & disk save)
                                 ui.horizontal(|ui| {
-                                    ui.label(RichText::new("CODE CANVAS LIVE EDITOR").font(FontId::new(10.5, FontFamily::Monospace)).color(TEXT_DIM).strong());
+                                    ui.label(
+                                        RichText::new("CODE CANVAS LIVE EDITOR")
+                                            .font(FontId::new(10.5, FontFamily::Monospace))
+                                            .color(TEXT_DIM)
+                                            .strong(),
+                                    );
 
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        let split_label = if self.code_editor_expanded { "Collapse" } else { "Expand Split" };
-                                        let split_btn_text = format!("{} {}", egui_phosphor::regular::CORNERS_OUT, split_label);
+                                        let split_label =
+                                            if self.code_editor_expanded { "Collapse" } else { "Expand Split" };
+                                        let split_btn_text =
+                                            format!("{} {}", egui_phosphor::regular::CORNERS_OUT, split_label);
                                         if ui.small_button(split_btn_text).clicked() {
                                             self.code_editor_expanded = !self.code_editor_expanded;
                                         }
@@ -368,23 +536,38 @@ impl StudioApp {
 
                                 // Editor Controls & Save Button
                                 ui.horizontal(|ui| {
-                                    let save_label = format!("{} Save Changes (Ctrl+S)", egui_phosphor::regular::FLOPPY_DISK);
+                                    let save_label =
+                                        format!("{} Save Changes (Ctrl+S)", egui_phosphor::regular::FLOPPY_DISK);
                                     if ui.button(save_label).clicked() {
                                         self.save_current_editor_code();
                                     }
 
                                     if self.code_editor_dirty {
-                                        ui.label(RichText::new("● modified (unsaved)").font(FontId::new(10.5, FontFamily::Monospace)).color(Color32::from_rgb(251, 146, 60)));
+                                        ui.label(
+                                            RichText::new("● modified (unsaved)")
+                                                .font(FontId::new(10.5, FontFamily::Monospace))
+                                                .color(Color32::from_rgb(251, 146, 60)),
+                                        );
                                     }
 
                                     if let Some(status) = &self.code_editor_status {
-                                        ui.label(RichText::new(status).font(FontId::new(10.0, FontFamily::Monospace)).color(TEXT_SECONDARY));
+                                        ui.label(
+                                            RichText::new(status)
+                                                .font(FontId::new(10.0, FontFamily::Monospace))
+                                                .color(TEXT_SECONDARY),
+                                        );
                                     }
                                 });
 
                                 let item_snippet = node.archetype != studio_graph::NodeArchetype::File
-                                    && matches!(self.code_editor_origin, Some(studio_parser::EditOrigin::Snippet { .. }));
-                                let snippet_label = self.code_editor_member_id.clone().or_else(|| item_snippet.then(|| node.title.clone()));
+                                    && matches!(
+                                        self.code_editor_origin,
+                                        Some(studio_parser::EditOrigin::Snippet { .. })
+                                    );
+                                let snippet_label = self
+                                    .code_editor_member_id
+                                    .clone()
+                                    .or_else(|| item_snippet.then(|| node.title.clone()));
                                 if let Some(snippet_label) = snippet_label {
                                     let mut clear_inspect = false;
                                     ui.horizontal(|ui| {
@@ -393,7 +576,8 @@ impl StudioApp {
                                                 .font(FontId::new(10.0, FontFamily::Monospace))
                                                 .color(Color32::from_rgb(56, 189, 248)),
                                         );
-                                        let load_file_label = format!("{} Load Full File", egui_phosphor::regular::FILE_TEXT);
+                                        let load_file_label =
+                                            format!("{} Load Full File", egui_phosphor::regular::FILE_TEXT);
                                         if ui.small_button(load_file_label).clicked() {
                                             clear_inspect = true;
                                         }
@@ -425,7 +609,12 @@ impl StudioApp {
                         }
                     } else {
                         // No node selected: Display Haystack Pipeline Diagnostics
-                        ui.label(RichText::new("PIPELINE DIAGNOSTICS (HAYSTACK)").font(FontId::new(11.0, FontFamily::Monospace)).color(TEXT_DIM).strong());
+                        ui.label(
+                            RichText::new("PIPELINE DIAGNOSTICS (HAYSTACK)")
+                                .font(FontId::new(11.0, FontFamily::Monospace))
+                                .color(TEXT_DIM)
+                                .strong(),
+                        );
                         ui.add_space(8.0);
 
                         egui::Frame::NONE
@@ -434,30 +623,81 @@ impl StudioApp {
                             .corner_radius(CornerRadius::from(8.0))
                             .inner_margin(egui::Margin::same(12))
                             .show(ui, |ui| {
-                                let diag_label = format!("{} Architecture Graph Valid", egui_phosphor::regular::CHECK_CIRCLE);
-                                ui.label(RichText::new(diag_label).font(FontId::new(13.0, FontFamily::Proportional)).color(ARCHETYPE_EGRESS).strong());
+                                let diag_label =
+                                    format!("{} Architecture Graph Valid", egui_phosphor::regular::CHECK_CIRCLE);
+                                ui.label(
+                                    RichText::new(diag_label)
+                                        .font(FontId::new(13.0, FontFamily::Proportional))
+                                        .color(ARCHETYPE_EGRESS)
+                                        .strong(),
+                                );
                                 ui.add_space(6.0);
 
                                 let isolated_nodes = self.graph.isolated_nodes_count();
 
-                                ui.label(RichText::new(format!("• Total Components: {}", self.graph.nodes.len())).font(FontId::new(11.0, FontFamily::Monospace)).color(TEXT_PRIMARY));
-                                ui.label(RichText::new(format!("• Active Wires: {}", self.graph.edges.len())).font(FontId::new(11.0, FontFamily::Monospace)).color(TEXT_PRIMARY));
-                                ui.label(RichText::new(format!("• Isolated Nodes: {}", isolated_nodes)).font(FontId::new(11.0, FontFamily::Monospace)).color(if isolated_nodes > 0 { ARCHETYPE_STATE } else { ARCHETYPE_EGRESS }));
-                                ui.label(RichText::new(format!("• Subsystem Clusters: {}", self.graph.clusters.len())).font(FontId::new(11.0, FontFamily::Monospace)).color(TEXT_PRIMARY));
+                                ui.label(
+                                    RichText::new(format!("• Total Components: {}", self.graph.nodes.len()))
+                                        .font(FontId::new(11.0, FontFamily::Monospace))
+                                        .color(TEXT_PRIMARY),
+                                );
+                                ui.label(
+                                    RichText::new(format!("• Active Wires: {}", self.graph.edges.len()))
+                                        .font(FontId::new(11.0, FontFamily::Monospace))
+                                        .color(TEXT_PRIMARY),
+                                );
+                                ui.label(
+                                    RichText::new(format!("• Isolated Nodes: {}", isolated_nodes))
+                                        .font(FontId::new(11.0, FontFamily::Monospace))
+                                        .color(if isolated_nodes > 0 { ARCHETYPE_STATE } else { ARCHETYPE_EGRESS }),
+                                );
+                                ui.label(
+                                    RichText::new(format!("• Subsystem Clusters: {}", self.graph.clusters.len()))
+                                        .font(FontId::new(11.0, FontFamily::Monospace))
+                                        .color(TEXT_PRIMARY),
+                                );
                             });
 
                         ui.add_space(14.0);
                         ui.separator();
                         ui.add_space(8.0);
 
-                        ui.label(RichText::new("SHORTCUTS & COMMANDS").font(FontId::new(11.0, FontFamily::Monospace)).color(TEXT_DIM).strong());
+                        ui.label(
+                            RichText::new("SHORTCUTS & COMMANDS")
+                                .font(FontId::new(11.0, FontFamily::Monospace))
+                                .color(TEXT_DIM)
+                                .strong(),
+                        );
                         ui.add_space(4.0);
-                        ui.label(RichText::new("• [Ctrl+K] / [/] : Open Enso Spotlight").font(FontId::new(11.0, FontFamily::Proportional)).color(TEXT_SECONDARY));
-                        ui.label(RichText::new("• [RMB Drag] / [Space + LMB] : Pan canvas smoothly").font(FontId::new(11.0, FontFamily::Proportional)).color(TEXT_SECONDARY));
-                        ui.label(RichText::new("• [Mouse Wheel]  : Zoom in/out at pointer").font(FontId::new(11.0, FontFamily::Proportional)).color(TEXT_SECONDARY));
-                        ui.label(RichText::new("• [Click Node]   : Inspect schema & code").font(FontId::new(11.0, FontFamily::Proportional)).color(TEXT_SECONDARY));
-                        ui.label(RichText::new("• [Ctrl + S]     : Save code changes to disk").font(FontId::new(11.0, FontFamily::Proportional)).color(TEXT_SECONDARY));
-                        ui.label(RichText::new("• [Del]          : Delete selected node").font(FontId::new(11.0, FontFamily::Proportional)).color(TEXT_SECONDARY));
+                        ui.label(
+                            RichText::new("• [Ctrl+K] / [/] : Open Enso Spotlight")
+                                .font(FontId::new(11.0, FontFamily::Proportional))
+                                .color(TEXT_SECONDARY),
+                        );
+                        ui.label(
+                            RichText::new("• [RMB Drag] / [Space + LMB] : Pan canvas smoothly")
+                                .font(FontId::new(11.0, FontFamily::Proportional))
+                                .color(TEXT_SECONDARY),
+                        );
+                        ui.label(
+                            RichText::new("• [Mouse Wheel]  : Zoom in/out at pointer")
+                                .font(FontId::new(11.0, FontFamily::Proportional))
+                                .color(TEXT_SECONDARY),
+                        );
+                        ui.label(
+                            RichText::new("• [Click Node]   : Inspect schema & code")
+                                .font(FontId::new(11.0, FontFamily::Proportional))
+                                .color(TEXT_SECONDARY),
+                        );
+                        ui.label(
+                            RichText::new("• [Ctrl + S]     : Save code changes to disk")
+                                .font(FontId::new(11.0, FontFamily::Proportional))
+                                .color(TEXT_SECONDARY),
+                        );
+                        ui.label(
+                            RichText::new("• [Del]          : Delete selected node")
+                                .font(FontId::new(11.0, FontFamily::Proportional))
+                                .color(TEXT_SECONDARY),
+                        );
                     }
                 });
             });

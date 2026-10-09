@@ -7,15 +7,8 @@ use super::types::CanvasState;
 #[test]
 fn test_calculate_file_node_size() {
     let mut graph = studio_graph::Graph::new();
-    let nid = graph.add_node(
-        "lib.rs",
-        NodeArchetype::File,
-        "lib file",
-        Some("RS".to_string()),
-        vec![],
-        vec![],
-        [0.0, 0.0],
-    );
+    let nid =
+        graph.add_node("lib.rs", NodeArchetype::File, "lib file", Some("RS".to_string()), vec![], vec![], [0.0, 0.0]);
     let node = graph.nodes.get(&nid).unwrap();
     assert_eq!(calculate_file_node_size(node), [220.0, 42.0]);
 
@@ -177,10 +170,7 @@ fn test_node_tab_clicked_and_port_jump_action() {
 
     assert!(state.selected_nodes.contains(&n2));
     let n2_node = graph.nodes.get(&n2).unwrap();
-    let n2_center = Pos2::new(
-        n2_node.position[0] + n2_node.size[0] * 0.5,
-        n2_node.position[1] + n2_node.size[1] * 0.5,
-    );
+    let n2_center = Pos2::new(n2_node.position[0] + n2_node.size[0] * 0.5, n2_node.position[1] + n2_node.size[1] * 0.5);
     let screen_pos = state.transform.world_to_screen(n2_center);
     assert!((screen_pos.x - rect.center().x).abs() < 1.0);
     assert!((screen_pos.y - rect.center().y).abs() < 1.0);
@@ -268,19 +258,28 @@ fn test_context_menu_actions_and_subnode_jump() {
     assert_eq!(graph.nodes.get(&nid).unwrap().scroll_offset_y, (15 - 1) as f32 * 18.0);
 
     // 2. ContextMenuAction::ToggleExpand toggles code expansion
-    let events = super::types::RenderEvents { context_menu_action: Some((nid, super::types::ContextMenuAction::ToggleExpand)), ..Default::default() };
+    let events = super::types::RenderEvents {
+        context_menu_action: Some((nid, super::types::ContextMenuAction::ToggleExpand)),
+        ..Default::default()
+    };
     super::actions::apply_render_events(events, &mut state, &mut graph, rect);
 
     assert!(graph.nodes.get(&nid).unwrap().is_code_expanded);
 
     // 3. ContextMenuAction::ViewDocs sets active tab to Documentation (tab 1)
-    let events = super::types::RenderEvents { context_menu_action: Some((nid, super::types::ContextMenuAction::ViewDocs)), ..Default::default() };
+    let events = super::types::RenderEvents {
+        context_menu_action: Some((nid, super::types::ContextMenuAction::ViewDocs)),
+        ..Default::default()
+    };
     super::actions::apply_render_events(events, &mut state, &mut graph, rect);
 
     assert_eq!(graph.nodes.get(&nid).unwrap().expanded_tab, 1);
 
     // 4. ContextMenuAction::CopyPath sets status message
-    let events = super::types::RenderEvents { context_menu_action: Some((nid, super::types::ContextMenuAction::CopyPath)), ..Default::default() };
+    let events = super::types::RenderEvents {
+        context_menu_action: Some((nid, super::types::ContextMenuAction::CopyPath)),
+        ..Default::default()
+    };
     super::actions::apply_render_events(events, &mut state, &mut graph, rect);
 
     assert!(state.status_message.as_ref().unwrap().contains("handler.rs"));
@@ -303,12 +302,14 @@ fn test_member_fold_clicked_and_dropdown_toggle() {
     let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::new(800.0, 600.0));
 
     // Test member_fold_clicked inserts then removes from collapsed_subnodes
-    let events = super::types::RenderEvents { member_fold_clicked: Some((nid, "execute".to_string())), ..Default::default() };
+    let events =
+        super::types::RenderEvents { member_fold_clicked: Some((nid, "execute".to_string())), ..Default::default() };
     super::actions::apply_render_events(events, &mut state, &mut graph, rect);
 
     assert!(state.collapsed_subnodes.contains(&(nid, "execute".to_string())));
 
-    let events2 = super::types::RenderEvents { member_fold_clicked: Some((nid, "execute".to_string())), ..Default::default() };
+    let events2 =
+        super::types::RenderEvents { member_fold_clicked: Some((nid, "execute".to_string())), ..Default::default() };
     super::actions::apply_render_events(events2, &mut state, &mut graph, rect);
 
     assert!(!state.collapsed_subnodes.contains(&(nid, "execute".to_string())));
@@ -326,10 +327,7 @@ fn test_rmb_panning_threshold_and_state_transitions() {
 
     let start_pointer = Pos2::new(200.0, 150.0);
 
-    let mut mode = InteractionMode::Panning {
-        start_pointer,
-        has_panned: false,
-    };
+    let mut mode = InteractionMode::Panning { start_pointer, has_panned: false };
 
     // 1. Small movement (< 4px) should not trigger panning
     let tiny_move = Pos2::new(202.0, 151.0); // distance = sqrt(4 + 1) = 2.236 < 4.0
@@ -342,11 +340,7 @@ fn test_rmb_panning_threshold_and_state_transitions() {
     let drag_pos = Pos2::new(230.0, 170.0);
     assert!(drag_pos.distance(start_pointer) >= 4.0);
 
-    if let InteractionMode::Panning {
-        start_pointer: start,
-        has_panned,
-    } = &mut mode
-    {
+    if let InteractionMode::Panning { start_pointer: start, has_panned } = &mut mode {
         if drag_pos.distance(*start) >= 4.0 {
             *has_panned = true;
         }
@@ -383,4 +377,3 @@ fn test_zoom_while_panning_maintains_cursor_anchor() {
     assert!((world_after.x - world_at_new_cursor.x).abs() < 1e-4);
     assert!((world_after.y - world_at_new_cursor.y).abs() < 1e-4);
 }
-

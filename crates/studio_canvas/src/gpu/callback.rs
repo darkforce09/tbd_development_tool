@@ -1,6 +1,6 @@
+use super::pipeline::{CanvasUniforms, GpuWireInstance, GpuWirePipeline, VERTICES_PER_CURVE};
 use egui::PaintCallbackInfo;
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
-use super::pipeline::{CanvasUniforms, GpuWireInstance, GpuWirePipeline, VERTICES_PER_CURVE};
 
 /// Custom paint callback implementing `egui_wgpu::CallbackTrait`.
 pub struct GpuWireCallback {
@@ -23,10 +23,8 @@ impl CallbackTrait for GpuWireCallback {
 
         if let Some(pipeline) = callback_resources.get_mut::<GpuWirePipeline>() {
             let ppp = screen_descriptor.pixels_per_point.max(1e-4);
-            let window_size_points = [
-                screen_descriptor.size_in_pixels[0] as f32 / ppp,
-                screen_descriptor.size_in_pixels[1] as f32 / ppp,
-            ];
+            let window_size_points =
+                [screen_descriptor.size_in_pixels[0] as f32 / ppp, screen_descriptor.size_in_pixels[1] as f32 / ppp];
             let mut uniforms = self.uniforms;
             uniforms.screen_size = window_size_points;
 
@@ -52,14 +50,7 @@ impl CallbackTrait for GpuWireCallback {
         }
 
         // Establish full-window viewport for exact 1:1 match with egui screen coordinates
-        render_pass.set_viewport(
-            0.0,
-            0.0,
-            info.screen_size_px[0] as f32,
-            info.screen_size_px[1] as f32,
-            0.0,
-            1.0,
-        );
+        render_pass.set_viewport(0.0, 0.0, info.screen_size_px[0] as f32, info.screen_size_px[1] as f32, 0.0, 1.0);
 
         // Set scissor rect to the canvas clip rect to prevent lines bleeding over sidebars
         render_pass.set_scissor_rect(

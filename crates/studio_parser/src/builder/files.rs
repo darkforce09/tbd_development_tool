@@ -1,23 +1,20 @@
+use crate::extractor::ExtractedProject;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use studio_graph::{DataType, Graph, GroupCluster, NodeArchetype, NodeId, PortId};
-use crate::extractor::ExtractedProject;
 
-use super::members::{attach_member_ports, build_member_nodes, file_ext, MemberPortIndex};
-use crate::extractor::{detect_language_by_path, SourceLang};
 use super::common::slash_path;
+use super::members::{attach_member_ports, build_member_nodes, file_ext, MemberPortIndex};
 use super::ProjectStats;
+use crate::extractor::{detect_language_by_path, SourceLang};
 
 /// Builds a compact, hierarchical File/Folder architecture graph.
 /// Inspired by CodeSee's clean nested containers, compact cards, and step numbers,
 /// combined with CodeCanvas's spatial hierarchy and expandable inline view.
 pub fn build_files_graph(project: &ExtractedProject) -> (Graph, ProjectStats) {
     let mut graph = Graph::new();
-    let mut stats = ProjectStats {
-        project_name: project.name.clone(),
-        crate_count: project.crates.len(),
-        ..Default::default()
-    };
+    let mut stats =
+        ProjectStats { project_name: project.name.clone(), crate_count: project.crates.len(), ..Default::default() };
 
     let mut file_to_node: HashMap<String, NodeId> = HashMap::new();
     let mut file_to_in_port: HashMap<NodeId, PortId> = HashMap::new();
@@ -50,12 +47,7 @@ pub fn build_files_graph(project: &ExtractedProject) -> (Graph, ProjectStats) {
             (format!("crate: {}", krate.name), "Crate Subsystem")
         };
 
-        let mut crate_cluster = GroupCluster::new(
-            &crate_cluster_id,
-            cluster_label,
-            cluster_kind,
-            crate_idx,
-        );
+        let mut crate_cluster = GroupCluster::new(&crate_cluster_id, cluster_label, cluster_kind, crate_idx);
         crate_cluster.subtitle = Some(format!("{} files", krate.files.len()));
 
         let mut dir_to_files: BTreeMap<String, Vec<&crate::extractor::ExtractedFile>> = BTreeMap::new();
@@ -96,12 +88,7 @@ pub fn build_files_graph(project: &ExtractedProject) -> (Graph, ProjectStats) {
                 Path::new(dir_path).file_name().and_then(|n| n.to_str()).unwrap_or(dir_path).to_string()
             };
 
-            let mut dir_cluster = GroupCluster::new(
-                &dir_cluster_id,
-                dir_label,
-                "Directory",
-                crate_idx,
-            );
+            let mut dir_cluster = GroupCluster::new(&dir_cluster_id, dir_label, "Directory", crate_idx);
             dir_cluster.parent_id = Some(crate_cluster_id.clone());
             dir_cluster.subtitle = Some(format!("{} files", files.len()));
 
@@ -177,7 +164,11 @@ pub fn build_files_graph(project: &ExtractedProject) -> (Graph, ProjectStats) {
                     n.member_nodes = member_nodes;
                 }
 
-                let docs_preview = file.functions.iter().find(|f| !f.docs.is_empty()).map(|f| f.docs.clone())
+                let docs_preview = file
+                    .functions
+                    .iter()
+                    .find(|f| !f.docs.is_empty())
+                    .map(|f| f.docs.clone())
                     .or_else(|| file.structs.iter().find(|s| !s.docs.is_empty()).map(|s| s.docs.clone()));
 
                 graph.set_node_metadata(
@@ -243,11 +234,8 @@ pub fn build_files_graph(project: &ExtractedProject) -> (Graph, ProjectStats) {
                 }
 
                 for u in &file.uses {
-                    let last_segment = u.path
-                        .split([':', '/', '\\', '.']).rfind(|s| !s.is_empty())
-                        .unwrap_or("")
-                        .trim()
-                        .to_string();
+                    let last_segment =
+                        u.path.split([':', '/', '\\', '.']).rfind(|s| !s.is_empty()).unwrap_or("").trim().to_string();
 
                     if !last_segment.is_empty() {
                         pending_file_deps.push((node_id, last_segment, "use"));
@@ -263,11 +251,7 @@ pub fn build_files_graph(project: &ExtractedProject) -> (Graph, ProjectStats) {
                 }
             }
 
-            let dir_content_w = if num_cols == 1 {
-                card_w + 48.0
-            } else {
-                (2.0 * card_w) + card_gap_x + 48.0
-            };
+            let dir_content_w = if num_cols == 1 { card_w + 48.0 } else { (2.0 * card_w) + card_gap_x + 48.0 };
             let dir_content_h = (rows_per_col as f32 * (card_h + card_gap_y)) + 68.0;
 
             dir_cluster.node_ids = dir_node_ids;
@@ -316,7 +300,8 @@ pub fn build_files_graph(project: &ExtractedProject) -> (Graph, ProjectStats) {
             .trim_end_matches(".py");
         let stem = Path::new(&clean).file_stem().and_then(|s| s.to_str()).unwrap_or(clean);
 
-        let target_node = module_to_file.get(&target_name)
+        let target_node = module_to_file
+            .get(&target_name)
             .or_else(|| symbol_to_file.get(&target_name))
             .or_else(|| file_to_node.get(&target_name))
             .or_else(|| file_to_node.get(clean))
@@ -327,23 +312,22 @@ pub fn build_files_graph(project: &ExtractedProject) -> (Graph, ProjectStats) {
 
         if let Some(target_file_node) = target_node {
             if target_file_node != src_file_node && connected_pairs.insert((src_file_node, target_file_node)) {
-                if let (Some(&out_port), Some(&in_port)) = (
-                        file_to_out_port.get(&src_file_node),
-                        file_to_in_port.get(&target_file_node),
-                    ) {
-                        graph.connect_labeled(
-                            src_file_node,
-                            out_port,
-                            target_file_node,
-                            in_port,
-                            Some(label.to_string()),
-                            Some(step),
-                            None,
-                        );
-                        step += 1;
-                    }
+                if let (Some(&out_port), Some(&in_port)) =
+                    (file_to_out_port.get(&src_file_node), file_to_in_port.get(&target_file_node))
+                {
+                    graph.connect_labeled(
+                        src_file_node,
+                        out_port,
+                        target_file_node,
+                        in_port,
+                        Some(label.to_string()),
+                        Some(step),
+                        None,
+                    );
+                    step += 1;
                 }
             }
+        }
     }
 
     // Connect fine-grained sub-node dependencies between individual function/method/link member ports
@@ -381,11 +365,8 @@ pub fn build_files_graph(project: &ExtractedProject) -> (Graph, ProjectStats) {
 /// Used by Tier 1 progressive startup so the user can immediately view and navigate the project canvas.
 pub fn build_skeleton_files_graph(project: &crate::project::RustProject) -> (Graph, ProjectStats) {
     let mut graph = Graph::new();
-    let mut stats = ProjectStats {
-        project_name: project.name.clone(),
-        crate_count: project.crates.len(),
-        ..Default::default()
-    };
+    let mut stats =
+        ProjectStats { project_name: project.name.clone(), crate_count: project.crates.len(), ..Default::default() };
 
     let card_w = 220.0f32;
     let card_h = 42.0f32;
@@ -415,12 +396,7 @@ pub fn build_skeleton_files_graph(project: &crate::project::RustProject) -> (Gra
             (format!("crate: {}", krate.name), "Crate Subsystem")
         };
 
-        let mut crate_cluster = GroupCluster::new(
-            &crate_cluster_id,
-            cluster_label,
-            cluster_kind,
-            crate_idx,
-        );
+        let mut crate_cluster = GroupCluster::new(&crate_cluster_id, cluster_label, cluster_kind, crate_idx);
         crate_cluster.subtitle = Some(format!("{} files", krate.source_files.len()));
 
         let mut dir_to_files: BTreeMap<String, Vec<&Path>> = BTreeMap::new();
@@ -446,12 +422,7 @@ pub fn build_skeleton_files_graph(project: &crate::project::RustProject) -> (Gra
                 Path::new(dir_path).file_name().and_then(|n| n.to_str()).unwrap_or(dir_path).to_string()
             };
 
-            let mut dir_cluster = GroupCluster::new(
-                &dir_cluster_id,
-                dir_label,
-                "Directory",
-                crate_idx,
-            );
+            let mut dir_cluster = GroupCluster::new(&dir_cluster_id, dir_label, "Directory", crate_idx);
             dir_cluster.parent_id = Some(crate_cluster_id.clone());
             dir_cluster.subtitle = Some(format!("{} files", files.len()));
 
@@ -516,11 +487,7 @@ pub fn build_skeleton_files_graph(project: &crate::project::RustProject) -> (Gra
                 crate_node_ids.push(node_id);
             }
 
-            let dir_content_w = if num_cols == 1 {
-                card_w + 48.0
-            } else {
-                (2.0 * card_w) + card_gap_x + 48.0
-            };
+            let dir_content_w = if num_cols == 1 { card_w + 48.0 } else { (2.0 * card_w) + card_gap_x + 48.0 };
             let dir_content_h = (rows_per_col as f32 * (card_h + card_gap_y)) + 68.0;
 
             dir_cluster.node_ids = dir_node_ids;

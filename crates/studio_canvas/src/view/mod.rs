@@ -64,10 +64,7 @@ impl<'a> CanvasView<'a> {
             anim_time,
         );
 
-        let mut events = RenderEvents {
-            toggle_cluster_id,
-            ..Default::default()
-        };
+        let mut events = RenderEvents { toggle_cluster_id, ..Default::default() };
 
         // Layer D, E: Node cards & sockets
         let mut interactive_rects = Vec::new();

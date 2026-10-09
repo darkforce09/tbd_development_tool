@@ -1,6 +1,4 @@
-use crate::model::{
-    DataType, FileMemberNode, Graph, GroupCluster, NodeArchetype, Port, PortDirection, PortId,
-};
+use crate::model::{DataType, FileMemberNode, Graph, GroupCluster, NodeArchetype, Port, PortDirection, PortId};
 
 /// Creates a showcase graph representing the CodeSee + CodeCanvas file/folder node system.
 pub fn create_showcase_files_graph() -> Graph {
@@ -23,7 +21,8 @@ pub fn create_showcase_files_graph() -> Graph {
         Some("media_demux".to_string()),
         Some("media_demux::audio".to_string()),
         Some("Extracts raw 48kHz PCM audio packets directly from incoming media transport streams.".to_string()),
-        Some(r#"pub struct AudioDemuxer {
+        Some(
+            r#"pub struct AudioDemuxer {
     stream_id: u32,
     sample_rate: u32,
 }
@@ -32,7 +31,9 @@ impl AudioDemuxer {
     pub fn poll_next_packet(&mut self) -> Option<AudioPacket> {
         Some(AudioPacket::default())
     }
-}"#.to_string()),
+}"#
+            .to_string(),
+        ),
         Some("media_demux_src".to_string()),
     );
     let audio_poll_out = PortId(graph.next_raw_id());
@@ -75,7 +76,8 @@ impl AudioDemuxer {
                 35,
                 "pub fn poll_next_packet(&mut self) -> Option<AudioPacket> {\n    Some(AudioPacket::default())\n}",
                 Some("Polls next raw 48kHz audio packet.".to_string()),
-            ).with_ports(None, Some(audio_poll_out)),
+            )
+            .with_ports(None, Some(audio_poll_out)),
         ];
     }
 
@@ -100,18 +102,16 @@ impl AudioDemuxer {
     );
     if let Some(n) = graph.nodes.get_mut(&demux_lib_rs) {
         n.size = [220.0, 42.0];
-        n.member_nodes = vec![
-            FileMemberNode::new(
-                "mod:audio",
-                "audio",
-                NodeArchetype::Module,
-                "pub",
-                "pub mod audio;",
-                1,
-                "pub mod audio;",
-                None,
-            ),
-        ];
+        n.member_nodes = vec![FileMemberNode::new(
+            "mod:audio",
+            "audio",
+            NodeArchetype::Module,
+            "pub",
+            "pub mod audio;",
+            1,
+            "pub mod audio;",
+            None,
+        )];
     }
 
     // 2. Speech Engine files
@@ -131,7 +131,8 @@ impl AudioDemuxer {
         Some("speech_engine".to_string()),
         Some("speech_engine::whisper".to_string()),
         Some("Processes AudioPackets through Whisper model to emit subtitle text tokens.".to_string()),
-        Some(r#"pub struct WhisperOcr {
+        Some(
+            r#"pub struct WhisperOcr {
     confidence: f32,
 }
 
@@ -139,7 +140,9 @@ impl WhisperOcr {
     pub fn transcribe(&self, packet: AudioPacket) -> SubtitleText {
         SubtitleText::new()
     }
-}"#.to_string()),
+}"#
+            .to_string(),
+        ),
         Some("speech_engine_src".to_string()),
     );
     let whisper_transcribe_in = PortId(graph.next_raw_id());
@@ -180,7 +183,8 @@ impl WhisperOcr {
                 18,
                 "pub fn transcribe(&self, packet: AudioPacket) -> SubtitleText {\n    SubtitleText::new()\n}",
                 Some("Transcribes audio packet into subtitle tokens.".to_string()),
-            ).with_ports(Some(whisper_transcribe_in), Some(whisper_transcribe_out)),
+            )
+            .with_ports(Some(whisper_transcribe_in), Some(whisper_transcribe_out)),
         ];
     }
 
@@ -205,18 +209,16 @@ impl WhisperOcr {
     );
     if let Some(n) = graph.nodes.get_mut(&speech_lib_rs) {
         n.size = [220.0, 42.0];
-        n.member_nodes = vec![
-            FileMemberNode::new(
-                "mod:whisper",
-                "whisper",
-                NodeArchetype::Module,
-                "pub",
-                "pub mod whisper;",
-                1,
-                "pub mod whisper;",
-                None,
-            ),
-        ];
+        n.member_nodes = vec![FileMemberNode::new(
+            "mod:whisper",
+            "whisper",
+            NodeArchetype::Module,
+            "pub",
+            "pub mod whisper;",
+            1,
+            "pub mod whisper;",
+            None,
+        )];
     }
 
     // 3. Video Core files
@@ -236,7 +238,8 @@ impl WhisperOcr {
         Some("video_core".to_string()),
         Some("video_core::cache".to_string()),
         Some("Hardware-accelerated ring buffer maintaining recent 4K video frames.".to_string()),
-        Some(r#"pub struct VideoFrameCache {
+        Some(
+            r#"pub struct VideoFrameCache {
     buffer: Vec<ArchivedFrame>,
 }
 
@@ -244,7 +247,9 @@ impl VideoFrameCache {
     pub fn push_frame(&mut self, frame: ArchivedFrame) {
         self.buffer.push(frame);
     }
-}"#.to_string()),
+}"#
+            .to_string(),
+        ),
         Some("video_core_src".to_string()),
     );
     if let Some(n) = graph.nodes.get_mut(&cache_rs) {
@@ -290,7 +295,8 @@ impl VideoFrameCache {
         Some("display".to_string()),
         Some("display::surface".to_string()),
         Some("Vulkan surface presenter presenting video frames to monitor.".to_string()),
-        Some(r#"pub struct DisplaySurface {
+        Some(
+            r#"pub struct DisplaySurface {
     vsync: bool,
 }
 
@@ -298,7 +304,9 @@ impl DisplaySurface {
     pub fn present_frame(&mut self, frame: CompositeFrame) {
         // Scanout to physical display surface
     }
-}"#.to_string()),
+}"#
+            .to_string(),
+        ),
         Some("display_src".to_string()),
     );
     let surface_present_in = PortId(graph.next_raw_id());
@@ -431,10 +439,14 @@ impl DisplaySurface {
     c_display_src.node_ids = vec![surface_rs];
 
     graph.clusters = vec![
-        c_demux_root, c_demux_src,
-        c_speech_root, c_speech_src,
-        c_video_root, c_video_src,
-        c_display_root, c_display_src,
+        c_demux_root,
+        c_demux_src,
+        c_speech_root,
+        c_speech_src,
+        c_video_root,
+        c_video_src,
+        c_display_root,
+        c_display_src,
     ];
 
     graph.update_cluster_bounds();

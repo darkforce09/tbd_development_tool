@@ -13,10 +13,7 @@ pub fn eval_cubic_bezier(p0: Pos2, c1: Pos2, c2: Pos2, p3: Pos2, t: f32) -> Pos2
     let b2 = 3.0 * inv_t * t * t;
     let b3 = t * t * t;
 
-    Pos2::new(
-        b0 * p0.x + b1 * c1.x + b2 * c2.x + b3 * p3.x,
-        b0 * p0.y + b1 * c1.y + b2 * c2.y + b3 * p3.y,
-    )
+    Pos2::new(b0 * p0.x + b1 * c1.x + b2 * c2.x + b3 * p3.x, b0 * p0.y + b1 * c1.y + b2 * c2.y + b3 * p3.y)
 }
 
 /// Computes horizontal cubic Bezier control points with 100% scale-invariant world-space curvature.
@@ -52,10 +49,16 @@ pub struct WireRenderProps<'a> {
 #[inline]
 fn outcode(p: Pos2, rect: egui::Rect) -> u8 {
     let mut code = 0;
-    if p.x < rect.min.x { code |= 1; }
-    else if p.x > rect.max.x { code |= 2; }
-    if p.y < rect.min.y { code |= 4; }
-    else if p.y > rect.max.y { code |= 8; }
+    if p.x < rect.min.x {
+        code |= 1;
+    } else if p.x > rect.max.x {
+        code |= 2;
+    }
+    if p.y < rect.min.y {
+        code |= 4;
+    } else if p.y > rect.max.y {
+        code |= 8;
+    }
     code
 }
 
@@ -71,11 +74,7 @@ fn segment_intersects_rect(p1: Pos2, p2: Pos2, rect: egui::Rect) -> bool {
 
 /// Paints a smooth cubic Bezier wire with viewport clipping, glow on hover/active, particles, and labels.
 pub fn paint_bezier_wire(painter: &Painter, props: WireRenderProps<'_>) {
-    let base_color = if props.is_hovered {
-        WIRE_HOVER
-    } else {
-        props.color
-    };
+    let base_color = if props.is_hovered { WIRE_HOVER } else { props.color };
 
     let clip_rect = painter.clip_rect().expand(60.0);
 
@@ -212,11 +211,8 @@ pub fn paint_wire_badge_and_label(
 
     // Edge label pill (e.g. function call name or type)
     if let Some(label_text) = label {
-        let label_offset = if step_number.is_some() {
-            Vec2::new(0.0, -14.0 * zoom)
-        } else {
-            Vec2::new(0.0, -8.0 * zoom)
-        };
+        let label_offset =
+            if step_number.is_some() { Vec2::new(0.0, -14.0 * zoom) } else { Vec2::new(0.0, -8.0 * zoom) };
         let label_pos = mid + label_offset;
         let font_size = (9.5 * zoom).max(5.0);
 
@@ -237,21 +233,10 @@ pub fn paint_wire_badge_and_label(
 }
 
 /// Paints a pending wire preview when dragging from a socket.
-pub fn paint_pending_wire(
-    painter: &Painter,
-    start: Pos2,
-    target: Pos2,
-    color: Color32,
-    is_snapped: bool,
-    zoom: f32,
-) {
+pub fn paint_pending_wire(painter: &Painter, start: Pos2, target: Pos2, color: Color32, is_snapped: bool, zoom: f32) {
     let (c1, c2) = compute_bezier_control_points(start, target, zoom);
 
-    let wire_color = if is_snapped {
-        color
-    } else {
-        with_alpha(color, 200)
-    };
+    let wire_color = if is_snapped { color } else { with_alpha(color, 200) };
 
     // Soft glow
     painter.add(CubicBezierShape::from_points_stroke(
@@ -362,13 +347,7 @@ mod tests {
         let mid_002 = eval_cubic_bezier(p0_002, c1_002, c2_002, p3_002, 0.5);
 
         // mid_002 must be EXACTLY mid_1 * 0.02 (affine scale-invariant)
-        assert!(
-            (mid_002.x - mid_1.x * 0.02).abs() < 1e-4,
-            "Curve shape X must be affine scale-invariant"
-        );
-        assert!(
-            (mid_002.y - mid_1.y * 0.02).abs() < 1e-4,
-            "Curve shape Y must be affine scale-invariant"
-        );
+        assert!((mid_002.x - mid_1.x * 0.02).abs() < 1e-4, "Curve shape X must be affine scale-invariant");
+        assert!((mid_002.y - mid_1.y * 0.02).abs() < 1e-4, "Curve shape Y must be affine scale-invariant");
     }
 }

@@ -1,26 +1,19 @@
-use std::path::Path;
 use super::types::{
-    EnumItem, ExtractedFile, FieldInfo, FunctionItem, ImplItem, ItemVisibility, ParamInfo,
-    StructItem, UseItem,
+    EnumItem, ExtractedFile, FieldInfo, FunctionItem, ImplItem, ItemVisibility, ParamInfo, StructItem, UseItem,
 };
+use std::path::Path;
 
 /// Extracts classes, modded classes, methods, fields, enums, and dependencies from an Enforce Script file.
 ///
 /// Comments, strings and preprocessor lines are blanked out first (byte offsets preserved), so brace
 /// matching and declaration scanning only ever see code. Item sources are verbatim slices of the file.
 pub fn extract_enforce_script_file(file_path: &Path, rel_path: &Path, content: &str) -> ExtractedFile {
-    let module_name = file_path
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "script".to_string());
+    let module_name =
+        file_path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "script".to_string());
 
     let masked = mask_non_code(content);
-    let mut scanner = Scanner {
-        src: content,
-        code: &masked,
-        line_starts: line_starts(content),
-        out: Extracted::default(),
-    };
+    let mut scanner =
+        Scanner { src: content, code: &masked, line_starts: line_starts(content), out: Extracted::default() };
     scanner.out.uses = collect_includes(content);
     scanner.scan_scope(0, masked.len(), None);
     let out = scanner.out;
@@ -55,13 +48,30 @@ struct ClassCtx {
 }
 
 const MODIFIERS: &[&str] = &[
-    "override", "proto", "native", "external", "static", "private", "protected", "event", "sealed",
-    "volatile", "notnull", "owned", "reference", "const", "ref", "autoptr", "local", "out", "inout",
+    "override",
+    "proto",
+    "native",
+    "external",
+    "static",
+    "private",
+    "protected",
+    "event",
+    "sealed",
+    "volatile",
+    "notnull",
+    "owned",
+    "reference",
+    "const",
+    "ref",
+    "autoptr",
+    "local",
+    "out",
+    "inout",
 ];
 
 const NOT_CALLS: &[&str] = &[
-    "if", "for", "foreach", "while", "switch", "return", "new", "delete", "sizeof", "typename", "super",
-    "this", "case", "else", "thread", "Class", "array", "set", "map",
+    "if", "for", "foreach", "while", "switch", "return", "new", "delete", "sizeof", "typename", "super", "this",
+    "case", "else", "thread", "Class", "array", "set", "map",
 ];
 
 struct Scanner<'a> {
@@ -154,7 +164,16 @@ impl Scanner<'_> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn enum_declaration(&mut self, tokens: &[&str], pos: usize, decl_start: usize, open: usize, close: usize, line: usize, body_end: usize) {
+    fn enum_declaration(
+        &mut self,
+        tokens: &[&str],
+        pos: usize,
+        decl_start: usize,
+        open: usize,
+        close: usize,
+        line: usize,
+        body_end: usize,
+    ) {
         let name = tokens[pos + 1].split(':').next().unwrap_or_default().to_string();
         let variants = enum_variants(&self.code[open + 1..close]);
         self.out.enums.push(EnumItem {
@@ -168,7 +187,16 @@ impl Scanner<'_> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn class_declaration(&mut self, tokens: &[&str], pos: usize, decl_start: usize, open: usize, close: usize, line: usize, body_end: usize) {
+    fn class_declaration(
+        &mut self,
+        tokens: &[&str],
+        pos: usize,
+        decl_start: usize,
+        open: usize,
+        close: usize,
+        line: usize,
+        body_end: usize,
+    ) {
         let Some(raw_name) = tokens.get(pos + 1) else { return };
         let (name, inline_base) = match raw_name.split_once(':') {
             Some((n, b)) => (n.to_string(), (!b.is_empty()).then(|| b.to_string())),
@@ -281,7 +309,11 @@ impl Scanner<'_> {
             calls: Vec::new(),
             docs: {
                 let docs = self.docs_above(decl_start);
-                if docs.is_empty() && is_override { "Override method".to_string() } else { docs }
+                if docs.is_empty() && is_override {
+                    "Override method".to_string()
+                } else {
+                    docs
+                }
             },
             line,
             source_code: self.slice(decl_start, source_end),
@@ -452,7 +484,12 @@ fn calls_in(body: &str, own_name: &str) -> Vec<String> {
             }
             let preceded_by_new = body[..start].trim_end().ends_with("new");
             let is_super = body[..start].ends_with("super.");
-            if j < bytes.len() && bytes[j] == b'(' && !NOT_CALLS.contains(&ident) && !preceded_by_new && (is_super || ident != own_name) {
+            if j < bytes.len()
+                && bytes[j] == b'('
+                && !NOT_CALLS.contains(&ident)
+                && !preceded_by_new
+                && (is_super || ident != own_name)
+            {
                 if is_super {
                     let sup = format!("super.{}", ident);
                     if !calls.contains(&sup) {

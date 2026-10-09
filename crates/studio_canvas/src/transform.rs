@@ -22,23 +22,13 @@ pub struct CanvasTransform {
 
 impl Default for CanvasTransform {
     fn default() -> Self {
-        Self {
-            pan: Vec2::new(120.0, 100.0),
-            zoom: 1.0,
-            min_zoom: 0.0005,
-            max_zoom: 4.0,
-        }
+        Self { pan: Vec2::new(120.0, 100.0), zoom: 1.0, min_zoom: 0.0005, max_zoom: 4.0 }
     }
 }
 
 impl CanvasTransform {
     pub fn new(pan: Vec2, zoom: f32) -> Self {
-        Self {
-            pan,
-            zoom: zoom.clamp(0.0005, 4.0),
-            min_zoom: 0.0005,
-            max_zoom: 4.0,
-        }
+        Self { pan, zoom: zoom.clamp(0.0005, 4.0), min_zoom: 0.0005, max_zoom: 4.0 }
     }
 
     #[inline]
@@ -57,7 +47,6 @@ impl CanvasTransform {
         let max_world = self.screen_to_world(screen_rect.max);
         egui::Rect::from_min_max(min_world, max_world)
     }
-
 
     /// Zoom centered accurately around the mouse cursor position.
     pub fn zoom_at_pointer(&mut self, pointer_screen: Pos2, factor: f32) {
@@ -82,10 +71,8 @@ impl CanvasTransform {
             self.zoom = z.clamp(self.min_zoom, self.max_zoom);
         }
         let screen_center = screen_rect.center();
-        self.pan = Vec2::new(
-            screen_center.x - target_world.x * self.zoom,
-            screen_center.y - target_world.y * self.zoom,
-        );
+        self.pan =
+            Vec2::new(screen_center.x - target_world.x * self.zoom, screen_center.y - target_world.y * self.zoom);
     }
 }
 

@@ -31,8 +31,8 @@ use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIterator};
 pub use registry::CodeLang;
 
 use super::types::{
-    EnumItem, ExtractedFile, FieldInfo, FunctionItem, ImplItem, ItemVisibility, ParamInfo, StructItem,
-    TraitItem, UseItem,
+    EnumItem, ExtractedFile, FieldInfo, FunctionItem, ImplItem, ItemVisibility, ParamInfo, StructItem, TraitItem,
+    UseItem,
 };
 
 /// Max lines kept per item snippet, mirroring the UI's preview budget.
@@ -233,23 +233,21 @@ fn assemble(lang: CodeLang, file: &mut ExtractedFile, collected: Collected, src:
     let Collected { defs, imports, calls } = collected;
     let mut defs: Vec<(Kind, Def)> = defs.into_iter().map(|((k, _, _), d)| (k, d)).collect();
     // A node tagged as both class and interface/enum (Kotlin `interface`, `enum class`) is the specific kind.
-    let specific: Vec<Range<usize>> = defs
-        .iter()
-        .filter(|(k, _)| matches!(k, Kind::Iface | Kind::Enum))
-        .map(|(_, d)| d.range.clone())
-        .collect();
+    let specific: Vec<Range<usize>> =
+        defs.iter().filter(|(k, _)| matches!(k, Kind::Iface | Kind::Enum)).map(|(_, d)| d.range.clone()).collect();
     defs.retain(|(k, d)| *k != Kind::Class || !specific.contains(&d.range));
     defs.sort_by(|a, b| a.1.range.start.cmp(&b.1.range.start).then(b.1.range.end.cmp(&a.1.range.end)));
 
-    let line_starts: Vec<usize> =
-        std::iter::once(0).chain(src.match_indices('\n').map(|(i, _)| i + 1)).collect();
+    let line_starts: Vec<usize> = std::iter::once(0).chain(src.match_indices('\n').map(|(i, _)| i + 1)).collect();
     let line_of = |offset: usize| line_starts.partition_point(|&s| s <= offset);
 
     // Innermost definition (other than itself) enclosing each definition.
     let parent_of = |idx: usize| -> Option<usize> {
         let r = &defs[idx].1.range;
         (0..defs.len())
-            .filter(|&j| j != idx && matches!(defs[j].0, Kind::Class | Kind::Impl | Kind::Iface | Kind::Enum | Kind::Func))
+            .filter(|&j| {
+                j != idx && matches!(defs[j].0, Kind::Class | Kind::Impl | Kind::Iface | Kind::Enum | Kind::Func)
+            })
             .filter(|&j| {
                 let o = &defs[j].1.range;
                 o.start <= r.start && r.end <= o.end && (o.start, o.end) != (r.start, r.end)
@@ -536,7 +534,24 @@ fn parse_param(p: &str) -> Option<ParamInfo> {
     }
     let p = p
         .split_whitespace()
-        .filter(|w| !matches!(*w, "public" | "private" | "protected" | "readonly" | "final" | "val" | "var" | "const" | "in" | "out" | "ref" | "params" | "override"))
+        .filter(|w| {
+            !matches!(
+                *w,
+                "public"
+                    | "private"
+                    | "protected"
+                    | "readonly"
+                    | "final"
+                    | "val"
+                    | "var"
+                    | "const"
+                    | "in"
+                    | "out"
+                    | "ref"
+                    | "params"
+                    | "override"
+            )
+        })
         .collect::<Vec<_>>()
         .join(" ");
     if let Some((name, ty)) = p.split_once(':') {
@@ -547,10 +562,7 @@ fn parse_param(p: &str) -> Option<ParamInfo> {
     let mut parts: Vec<&str> = p.split_whitespace().collect();
     let name = parts.pop()?.trim_start_matches(['*', '&']);
     let ty = parts.join(" ");
-    Some(ParamInfo {
-        name: name.to_string(),
-        type_str: if ty.is_empty() { "any".to_string() } else { ty },
-    })
+    Some(ParamInfo { name: name.to_string(), type_str: if ty.is_empty() { "any".to_string() } else { ty } })
 }
 
 fn clean_name(s: &str) -> String {
@@ -577,12 +589,7 @@ fn clean_import_path(s: &str) -> String {
     let s = ["import ", "using ", "use ", "require ", "include "]
         .iter()
         .fold(s, |acc, kw| acc.strip_prefix(kw).unwrap_or(acc));
-    s.trim()
-        .trim_end_matches(';')
-        .trim()
-        .trim_matches(['"', '\'', '`', '<', '>'])
-        .trim()
-        .to_string()
+    s.trim().trim_end_matches(';').trim().trim_matches(['"', '\'', '`', '<', '>']).trim().to_string()
 }
 
 fn last_segment(path: &str) -> &str {

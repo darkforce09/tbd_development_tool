@@ -72,12 +72,8 @@ impl SymbolSearchIndex {
         }
 
         // Fast linear scan fallback for short 1-2 character queries
-        let mut results: Vec<&SearchItem> = self
-            .items
-            .iter()
-            .filter(|item| item.title_lower.contains(&q))
-            .take(limit)
-            .collect();
+        let mut results: Vec<&SearchItem> =
+            self.items.iter().filter(|item| item.title_lower.contains(&q)).take(limit).collect();
         results.sort_by(|a, b| a.title.cmp(&b.title));
         results
     }

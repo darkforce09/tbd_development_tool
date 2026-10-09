@@ -1,14 +1,10 @@
+use super::types::{ExtractedFile, FunctionItem, ItemVisibility, StructItem, UseItem};
 use std::path::Path;
-use super::types::{
-    ExtractedFile, FunctionItem, ItemVisibility, StructItem, UseItem,
-};
 
 /// Extracts sections, headings, links, and code blocks from a Markdown document.
 pub fn extract_markdown_file(file_path: &Path, rel_path: &Path, content: &str) -> ExtractedFile {
-    let module_name = file_path
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "document".to_string());
+    let module_name =
+        file_path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "document".to_string());
 
     let mut structs = Vec::new(); // Used for Headings (H1, H2, H3, etc.)
     let mut functions = Vec::new(); // Used for Markdown Links & Code Blocks
@@ -29,11 +25,7 @@ pub fn extract_markdown_file(file_path: &Path, rel_path: &Path, content: &str) -
             if in_code_block {
                 // End code block
                 let code_content = code_block_lines.join("\n");
-                let lang_label = if code_block_lang.is_empty() {
-                    "code".to_string()
-                } else {
-                    code_block_lang.clone()
-                };
+                let lang_label = if code_block_lang.is_empty() { "code".to_string() } else { code_block_lang.clone() };
                 functions.push(FunctionItem {
                     name: format!("block:{}", lang_label),
                     visibility: ItemVisibility::Public,
@@ -103,12 +95,7 @@ pub fn extract_markdown_file(file_path: &Path, rel_path: &Path, content: &str) -
     }
 }
 
-fn extract_links_from_line(
-    line: &str,
-    line_num: usize,
-    functions: &mut Vec<FunctionItem>,
-    uses: &mut Vec<UseItem>,
-) {
+fn extract_links_from_line(line: &str, line_num: usize, functions: &mut Vec<FunctionItem>, uses: &mut Vec<UseItem>) {
     // 1. Standard Markdown links: [label](target) or ['label'](target)
     let bytes = line.as_bytes();
     let mut i = 0;
@@ -136,18 +123,15 @@ fn extract_links_from_line(
                             .unwrap_or(target_str)
                             .trim();
 
-                        if !clean_target.is_empty() && !clean_target.starts_with("http://") && !clean_target.starts_with("https://") {
+                        if !clean_target.is_empty()
+                            && !clean_target.starts_with("http://")
+                            && !clean_target.starts_with("https://")
+                        {
                             let target_path = Path::new(clean_target);
-                            let target_file_name = target_path
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or(clean_target)
-                                .to_string();
-                            let target_stem = target_path
-                                .file_stem()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or(clean_target)
-                                .to_string();
+                            let target_file_name =
+                                target_path.file_name().and_then(|n| n.to_str()).unwrap_or(clean_target).to_string();
+                            let target_stem =
+                                target_path.file_stem().and_then(|n| n.to_str()).unwrap_or(clean_target).to_string();
 
                             let mut calls = vec![clean_target.to_string()];
                             if target_file_name != clean_target {
@@ -172,10 +156,7 @@ fn extract_links_from_line(
                                 source_code: line.to_string(),
                             });
 
-                            uses.push(UseItem {
-                                path: clean_target.to_string(),
-                                items: vec![label.to_string()],
-                            });
+                            uses.push(UseItem { path: clean_target.to_string(), items: vec![label.to_string()] });
                         }
                         i = label_end + 1 + close_paren + 1;
                         continue;

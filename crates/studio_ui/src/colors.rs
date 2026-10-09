@@ -50,23 +50,23 @@ pub const ARCHETYPE_EGRESS: Color32 = Color32::from_rgb(0x10, 0xb9, 0x81);
 pub const ARCHETYPE_FILE: Color32 = Color32::from_rgb(0x38, 0xbd, 0xf8);
 
 // File Extension Badges (CodeSee Style)
-pub const FILE_RS: Color32 = Color32::from_rgb(0xe0, 0x6c, 0x3a);      // Rust Orange
+pub const FILE_RS: Color32 = Color32::from_rgb(0xe0, 0x6c, 0x3a); // Rust Orange
 pub const FILE_ENFORCE: Color32 = Color32::from_rgb(0xf9, 0x73, 0x16); // Enforce Script Coral/Orange
-pub const FILE_JS: Color32 = Color32::from_rgb(0xfa, 0xcc, 0x15);      // JavaScript Gold
-pub const FILE_TS: Color32 = Color32::from_rgb(0x38, 0xbd, 0xf8);      // TypeScript Blue
-pub const FILE_TOML: Color32 = Color32::from_rgb(0x94, 0xa3, 0xb8);    // Config Slate
-pub const FILE_JSON: Color32 = Color32::from_rgb(0xf5, 0x9e, 0x0b);    // JSON Amber
-pub const FILE_MD: Color32 = Color32::from_rgb(0x2d, 0xd4, 0xbf);      // Markdown Teal
-pub const FILE_PY: Color32 = Color32::from_rgb(0x4a, 0xde, 0x80);      // Python Green
-pub const FILE_C: Color32 = Color32::from_rgb(0x60, 0xa5, 0xfa);       // C Light Blue
-pub const FILE_CPP: Color32 = Color32::from_rgb(0x02, 0x84, 0xc7);     // C++ Deep Blue
-pub const FILE_CS: Color32 = Color32::from_rgb(0xa8, 0x55, 0xf7);      // C# Purple
-pub const FILE_GO: Color32 = Color32::from_rgb(0x06, 0xb6, 0xd4);      // Go Cyan
-pub const FILE_JAVA: Color32 = Color32::from_rgb(0xea, 0x58, 0x0c);    // Java Amber
-pub const FILE_SH: Color32 = Color32::from_rgb(0x4a, 0xde, 0x80);      // Shell Green
-pub const FILE_YAML: Color32 = Color32::from_rgb(0xf4, 0x3f, 0x5e);    // YAML Rose
-pub const FILE_HTML: Color32 = Color32::from_rgb(0xf9, 0x73, 0x16);    // HTML Orange
-pub const FILE_CSS: Color32 = Color32::from_rgb(0xa8, 0x55, 0xf7);     // CSS Purple
+pub const FILE_JS: Color32 = Color32::from_rgb(0xfa, 0xcc, 0x15); // JavaScript Gold
+pub const FILE_TS: Color32 = Color32::from_rgb(0x38, 0xbd, 0xf8); // TypeScript Blue
+pub const FILE_TOML: Color32 = Color32::from_rgb(0x94, 0xa3, 0xb8); // Config Slate
+pub const FILE_JSON: Color32 = Color32::from_rgb(0xf5, 0x9e, 0x0b); // JSON Amber
+pub const FILE_MD: Color32 = Color32::from_rgb(0x2d, 0xd4, 0xbf); // Markdown Teal
+pub const FILE_PY: Color32 = Color32::from_rgb(0x4a, 0xde, 0x80); // Python Green
+pub const FILE_C: Color32 = Color32::from_rgb(0x60, 0xa5, 0xfa); // C Light Blue
+pub const FILE_CPP: Color32 = Color32::from_rgb(0x02, 0x84, 0xc7); // C++ Deep Blue
+pub const FILE_CS: Color32 = Color32::from_rgb(0xa8, 0x55, 0xf7); // C# Purple
+pub const FILE_GO: Color32 = Color32::from_rgb(0x06, 0xb6, 0xd4); // Go Cyan
+pub const FILE_JAVA: Color32 = Color32::from_rgb(0xea, 0x58, 0x0c); // Java Amber
+pub const FILE_SH: Color32 = Color32::from_rgb(0x4a, 0xde, 0x80); // Shell Green
+pub const FILE_YAML: Color32 = Color32::from_rgb(0xf4, 0x3f, 0x5e); // YAML Rose
+pub const FILE_HTML: Color32 = Color32::from_rgb(0xf9, 0x73, 0x16); // HTML Orange
+pub const FILE_CSS: Color32 = Color32::from_rgb(0xa8, 0x55, 0xf7); // CSS Purple
 pub const FILE_DEFAULT: Color32 = Color32::from_rgb(0xa1, 0xa1, 0xaa);
 
 pub fn file_extension_color(ext: &str) -> Color32 {
@@ -110,11 +110,11 @@ pub const BADGE_BG: Color32 = Color32::from_rgb(0x27, 0x27, 0x33);
 
 // CodeSee Group Clusters
 pub const CLUSTER_TINTS: &[(Color32, Color32)] = &[
-    (Color32::from_rgba_premultiplied(14, 30, 48, 60), Color32::from_rgba_premultiplied(56, 189, 248, 120)),   // Sky
-    (Color32::from_rgba_premultiplied(35, 18, 48, 60), Color32::from_rgba_premultiplied(168, 85, 247, 120)),  // Purple
-    (Color32::from_rgba_premultiplied(16, 38, 30, 60), Color32::from_rgba_premultiplied(52, 211, 153, 120)),   // Emerald
-    (Color32::from_rgba_premultiplied(48, 30, 16, 60), Color32::from_rgba_premultiplied(251, 146, 60, 120)),  // Orange
-    (Color32::from_rgba_premultiplied(40, 24, 40, 60), Color32::from_rgba_premultiplied(236, 72, 153, 120)),  // Pink
+    (Color32::from_rgba_premultiplied(14, 30, 48, 60), Color32::from_rgba_premultiplied(56, 189, 248, 120)), // Sky
+    (Color32::from_rgba_premultiplied(35, 18, 48, 60), Color32::from_rgba_premultiplied(168, 85, 247, 120)), // Purple
+    (Color32::from_rgba_premultiplied(16, 38, 30, 60), Color32::from_rgba_premultiplied(52, 211, 153, 120)), // Emerald
+    (Color32::from_rgba_premultiplied(48, 30, 16, 60), Color32::from_rgba_premultiplied(251, 146, 60, 120)), // Orange
+    (Color32::from_rgba_premultiplied(40, 24, 40, 60), Color32::from_rgba_premultiplied(236, 72, 153, 120)), // Pink
     (Color32::from_rgba_premultiplied(28, 28, 36, 60), Color32::from_rgba_premultiplied(148, 163, 184, 100)), // Slate
 ];
 pub const CLUSTER_HEADER_BG: Color32 = Color32::from_rgb(0x1a, 0x1c, 0x24);
@@ -134,24 +134,24 @@ pub const CODE_GUTTER_BG: Color32 = Color32::from_rgb(0x16, 0x1a, 0x23);
 pub const CODE_GUTTER_TEXT: Color32 = Color32::from_rgb(0x52, 0x5a, 0x6e);
 pub const CODE_LINE_HIGHLIGHT: Color32 = Color32::from_rgba_premultiplied(35, 45, 65, 80);
 pub const CODE_KEYWORD: Color32 = Color32::from_rgb(0xf4, 0x72, 0xb6); // Pink
-pub const CODE_FN: Color32 = Color32::from_rgb(0x60, 0xa5, 0xfa);      // Blue
+pub const CODE_FN: Color32 = Color32::from_rgb(0x60, 0xa5, 0xfa); // Blue
 pub const CODE_TYPE_COLOR: Color32 = Color32::from_rgb(0x34, 0xd3, 0x99); // Emerald
 pub const CODE_STRING_COLOR: Color32 = Color32::from_rgb(0xfb, 0xbf, 0x24); // Amber
 pub const CODE_COMMENT_COLOR: Color32 = Color32::from_rgb(0x6b, 0x72, 0x80); // Gray
 
 // VS Code Dark+ Official Palette Tokens
-pub const VSCODE_KEYWORD: Color32 = Color32::from_rgb(0x56, 0x9c, 0xd6);       // #569cd6 Blue (let, fn, pub, class, def)
-pub const VSCODE_CONTROL_FLOW: Color32 = Color32::from_rgb(0xc5, 0x86, 0xc0);  // #c586c0 Purple (if, match, return, for)
-pub const VSCODE_FUNCTION: Color32 = Color32::from_rgb(0xdc, 0xdc, 0xaa);      // #dcdcaa Yellow (function calls and defs)
-pub const VSCODE_TYPE: Color32 = Color32::from_rgb(0x4e, 0xc9, 0xb0);          // #4ec9b0 Teal/Mint (Structs, Enums, Types)
-pub const VSCODE_STRING: Color32 = Color32::from_rgb(0xce, 0x91, 0x78);        // #ce9178 Orange/Coral ("string")
-pub const VSCODE_NUMBER: Color32 = Color32::from_rgb(0xb5, 0xce, 0xa8);        // #b5cea8 Light Sage Green (123, 0.5)
-pub const VSCODE_COMMENT: Color32 = Color32::from_rgb(0x6a, 0x99, 0x55);       // #6a9955 Forest Green (//, /* */)
-pub const VSCODE_VARIABLE: Color32 = Color32::from_rgb(0x9c, 0xdc, 0xfe);      // #9cdcfe Light Sky Blue (variables, fields)
-pub const VSCODE_CONSTANT: Color32 = Color32::from_rgb(0x4f, 0xc1, 0xff);      // #4fc1ff Bright Blue (CONSTANTS, UPPERCASE)
-pub const VSCODE_DELIMITER: Color32 = Color32::from_rgb(0xd4, 0xd4, 0xd4);     // #d4d4d4 Light Gray ({}, (), ;, ,)
-pub const VSCODE_MACRO: Color32 = Color32::from_rgb(0xc5, 0x86, 0xc0);         // #c586c0 Preprocessor / Attributes
-pub const VSCODE_LINK: Color32 = Color32::from_rgb(0x37, 0x94, 0xff);          // #3794ff VS Code Link Blue
+pub const VSCODE_KEYWORD: Color32 = Color32::from_rgb(0x56, 0x9c, 0xd6); // #569cd6 Blue (let, fn, pub, class, def)
+pub const VSCODE_CONTROL_FLOW: Color32 = Color32::from_rgb(0xc5, 0x86, 0xc0); // #c586c0 Purple (if, match, return, for)
+pub const VSCODE_FUNCTION: Color32 = Color32::from_rgb(0xdc, 0xdc, 0xaa); // #dcdcaa Yellow (function calls and defs)
+pub const VSCODE_TYPE: Color32 = Color32::from_rgb(0x4e, 0xc9, 0xb0); // #4ec9b0 Teal/Mint (Structs, Enums, Types)
+pub const VSCODE_STRING: Color32 = Color32::from_rgb(0xce, 0x91, 0x78); // #ce9178 Orange/Coral ("string")
+pub const VSCODE_NUMBER: Color32 = Color32::from_rgb(0xb5, 0xce, 0xa8); // #b5cea8 Light Sage Green (123, 0.5)
+pub const VSCODE_COMMENT: Color32 = Color32::from_rgb(0x6a, 0x99, 0x55); // #6a9955 Forest Green (//, /* */)
+pub const VSCODE_VARIABLE: Color32 = Color32::from_rgb(0x9c, 0xdc, 0xfe); // #9cdcfe Light Sky Blue (variables, fields)
+pub const VSCODE_CONSTANT: Color32 = Color32::from_rgb(0x4f, 0xc1, 0xff); // #4fc1ff Bright Blue (CONSTANTS, UPPERCASE)
+pub const VSCODE_DELIMITER: Color32 = Color32::from_rgb(0xd4, 0xd4, 0xd4); // #d4d4d4 Light Gray ({}, (), ;, ,)
+pub const VSCODE_MACRO: Color32 = Color32::from_rgb(0xc5, 0x86, 0xc0); // #c586c0 Preprocessor / Attributes
+pub const VSCODE_LINK: Color32 = Color32::from_rgb(0x37, 0x94, 0xff); // #3794ff VS Code Link Blue
 
 /// Helper to tint or blend colors with opacity.
 pub fn with_alpha(color: Color32, alpha: u8) -> Color32 {

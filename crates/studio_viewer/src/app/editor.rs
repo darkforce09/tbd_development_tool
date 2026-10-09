@@ -1,6 +1,6 @@
-use std::path::PathBuf;
 use eframe::egui;
-use egui::{Color32, FontFamily, FontId, RichText, CornerRadius, Stroke};
+use egui::{Color32, CornerRadius, FontFamily, FontId, RichText, Stroke};
+use std::path::PathBuf;
 use studio_graph::NodeId;
 use studio_parser::{apply_edit, content_hash, save_and_reparse, EditOrigin};
 use studio_ui::color_tokens::*;
@@ -60,9 +60,7 @@ impl StudioApp {
 
         self.code_editor_status = Some(format!("Inspecting member {}", member.name));
         self.code_editor_buffer = member.source_code.clone();
-        self.code_editor_origin = path
-            .as_ref()
-            .map(|_| EditOrigin::Snippet { original: member.source_code.clone() });
+        self.code_editor_origin = path.as_ref().map(|_| EditOrigin::Snippet { original: member.source_code.clone() });
         self.code_editor_path = path;
         self.code_editor_node_id = Some(node_id);
         self.code_editor_member_id = Some(member_id);
@@ -179,7 +177,10 @@ impl StudioApp {
                 });
                 self.code_editor_dirty = false;
                 self.code_editor_status = Some(if report.needs_reload {
-                    format!("✔ Saved ({} nodes updated). Items changed; reload the project to refresh the layout.", report.updated_nodes)
+                    format!(
+                        "✔ Saved ({} nodes updated). Items changed; reload the project to refresh the layout.",
+                        report.updated_nodes
+                    )
                 } else {
                     format!("✔ Saved to disk! ({} nodes updated)", report.updated_nodes)
                 });
@@ -242,7 +243,9 @@ impl StudioApp {
                     .as_ref()
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| "the current node".to_string());
-                ui.label(RichText::new(format!("Save your edits to {} before switching?", target)).color(TEXT_SECONDARY));
+                ui.label(
+                    RichText::new(format!("Save your edits to {} before switching?", target)).color(TEXT_SECONDARY),
+                );
                 if let Some(status) = &self.code_editor_status {
                     ui.label(RichText::new(status).font(FontId::new(10.0, FontFamily::Monospace)).color(TEXT_DIM));
                 }

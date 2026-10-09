@@ -7,11 +7,11 @@ pub mod state;
 pub mod top_nav;
 pub mod types;
 
+use eframe::{egui, App, Frame};
+use egui::{Key, Pos2};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
-use eframe::{egui, App, Frame};
-use egui::{Key, Pos2};
 use studio_canvas::{CanvasAction, CanvasState, CanvasView};
 use studio_graph::{Graph, NodeArchetype, NodeId};
 use studio_parser::{LoaderMessage, ProjectStats, SymbolSearchIndex, ViewGranularity};
@@ -100,7 +100,13 @@ impl App for StudioApp {
                             self.loading_progress = percentage;
                             if !self.is_loading {
                                 let detail = if total_files > 0 {
-                                    format!("{} ({}/{} files, {:.0}%)", stage, files_done, total_files, percentage * 100.0)
+                                    format!(
+                                        "{} ({}/{} files, {:.0}%)",
+                                        stage,
+                                        files_done,
+                                        total_files,
+                                        percentage * 100.0
+                                    )
                                 } else {
                                     format!("{} ({:.0}%)", stage, percentage * 100.0)
                                 };
@@ -151,7 +157,8 @@ impl App for StudioApp {
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                         should_clear_rx = true;
                         if self.is_loading {
-                            self.canvas_state.status_message = Some("Loader thread disconnected unexpectedly.".to_string());
+                            self.canvas_state.status_message =
+                                Some("Loader thread disconnected unexpectedly.".to_string());
                             self.is_loading = false;
                         }
                         break;
@@ -239,9 +246,9 @@ impl App for StudioApp {
         self.render_right_inspector(root);
 
         // 5. Central Infinite Canvas Viewport
-        egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(studio_ui::color_tokens::CANVAS_BG))
-            .show(root, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(studio_ui::color_tokens::CANVAS_BG)).show(
+            root,
+            |ui| {
                 if self.pending_fit_view {
                     let screen_rect = ui.ctx().content_rect();
                     self.canvas_state.zoom_to_fit(&self.graph, screen_rect);
@@ -249,7 +256,8 @@ impl App for StudioApp {
                 }
 
                 CanvasView::new(&mut self.canvas_state, &mut self.graph).show(ui);
-            });
+            },
+        );
 
         // 6. Non-blocking Async Loading HUD
         self.render_loading_hud(ctx);

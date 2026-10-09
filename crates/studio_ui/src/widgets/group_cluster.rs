@@ -1,7 +1,5 @@
-use egui::{
-    epaint::RectShape, Color32, FontFamily, FontId, Painter, Pos2, Rect, CornerRadius, Stroke, Vec2,
-};
 use crate::colors::*;
+use egui::{epaint::RectShape, Color32, CornerRadius, FontFamily, FontId, Painter, Pos2, Rect, Stroke, Vec2};
 
 pub struct GroupClusterProps<'a> {
     pub rect: Rect,
@@ -24,7 +22,7 @@ pub struct GroupClusterLayout {
 pub fn paint_group_cluster(painter: &Painter, props: GroupClusterProps<'_>) -> GroupClusterLayout {
     let z = props.zoom;
     let (base_fill, base_stroke) = CLUSTER_TINTS[props.color_index % CLUSTER_TINTS.len()];
-    
+
     // Deeper folders get slightly higher opacity so they clearly stand out from their parent
     let depth_alpha_boost = (props.depth as u8).saturating_mul(15);
     let fill_tint = Color32::from_rgba_premultiplied(
@@ -43,14 +41,16 @@ pub fn paint_group_cluster(painter: &Painter, props: GroupClusterProps<'_>) -> G
             pill_rect.translate(Vec2::new(0.0, 2.0 * z)),
             CornerRadius::from(8.0 * z),
             Color32::from_black_alpha(70),
-            Stroke::NONE, egui::StrokeKind::Middle,
+            Stroke::NONE,
+            egui::StrokeKind::Middle,
         );
 
         painter.add(RectShape::new(
             pill_rect,
             CornerRadius::from(8.0 * z),
             CLUSTER_HEADER_BG,
-            Stroke::new((1.2 * z).max(1.0), border_stroke_color), egui::StrokeKind::Middle,
+            Stroke::new((1.2 * z).max(1.0), border_stroke_color),
+            egui::StrokeKind::Middle,
         ));
 
         // Chevron ▸ + Folder Icon + Label
@@ -85,9 +85,7 @@ pub fn paint_group_cluster(painter: &Painter, props: GroupClusterProps<'_>) -> G
             TEXT_DIM,
         );
 
-        return GroupClusterLayout {
-            collapse_button_rect: pill_rect,
-        };
+        return GroupClusterLayout { collapse_button_rect: pill_rect };
     }
 
     // Expanded Mode: Full container with header tab
@@ -96,46 +94,32 @@ pub fn paint_group_cluster(painter: &Painter, props: GroupClusterProps<'_>) -> G
         props.rect,
         rounding,
         fill_tint,
-        Stroke::new((1.5 * z).clamp(1.0, 3.0), border_stroke_color), egui::StrokeKind::Middle,
+        Stroke::new((1.5 * z).clamp(1.0, 3.0), border_stroke_color),
+        egui::StrokeKind::Middle,
     ));
 
     // 2. Top Folder Header Tab
     let has_subtitle = props.subtitle.map(|s| !s.is_empty()).unwrap_or(false);
-    let header_height = if has_subtitle {
-        (42.0 * z).max(24.0)
-    } else {
-        (32.0 * z).max(18.0)
-    };
+    let header_height = if has_subtitle { (42.0 * z).max(24.0) } else { (32.0 * z).max(18.0) };
 
-    let header_width = (props.rect.width() * 0.75)
-        .clamp(200.0 * z, 420.0 * z)
-        .min(props.rect.width());
+    let header_width = (props.rect.width() * 0.75).clamp(200.0 * z, 420.0 * z).min(props.rect.width());
 
-    let header_rect = Rect::from_min_size(
-        props.rect.min,
-        Vec2::new(header_width, header_height),
-    );
+    let header_rect = Rect::from_min_size(props.rect.min, Vec2::new(header_width, header_height));
 
-    let tab_rounding = CornerRadius {
-        nw: (10.0 * z).round() as u8,
-        ne: (6.0 * z).round() as u8,
-        sw: 0,
-        se: (8.0 * z).round() as u8,
-    };
+    let tab_rounding =
+        CornerRadius { nw: (10.0 * z).round() as u8, ne: (6.0 * z).round() as u8, sw: 0, se: (8.0 * z).round() as u8 };
 
     painter.add(RectShape::new(
         header_rect,
         tab_rounding,
         CLUSTER_HEADER_BG,
-        Stroke::new((1.0 * z).max(0.75), border_stroke_color), egui::StrokeKind::Middle,
+        Stroke::new((1.0 * z).max(0.75), border_stroke_color),
+        egui::StrokeKind::Middle,
     ));
 
     // Chevron ▾ Button
     let btn_w = 22.0 * z;
-    let collapse_button_rect = Rect::from_min_size(
-        header_rect.min,
-        Vec2::new(btn_w, header_height),
-    );
+    let collapse_button_rect = Rect::from_min_size(header_rect.min, Vec2::new(btn_w, header_height));
 
     let font_size = (11.5 * z).max(6.0);
     painter.text(
@@ -190,7 +174,5 @@ pub fn paint_group_cluster(painter: &Painter, props: GroupClusterProps<'_>) -> G
         TEXT_DIM,
     );
 
-    GroupClusterLayout {
-        collapse_button_rect,
-    }
+    GroupClusterLayout { collapse_button_rect }
 }

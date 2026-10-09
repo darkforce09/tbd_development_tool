@@ -1,9 +1,9 @@
 use egui::{Color32, FontFamily, FontId, Galley, Ui};
+use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Color, FontStyle, ScopeSelectors, StyleModifier, Theme, ThemeItem, ThemeSet};
 use syntect::parsing::{SyntaxReference, SyntaxSet};
-use std::str::FromStr;
 
 use crate::colors::*;
 
@@ -158,11 +158,7 @@ impl SyntaxHighlighter {
         let mut highlighter = HighlightLines::new(syntax, &self.theme);
 
         // Highlight line with syntect
-        let line_with_newline = if line.ends_with('\n') {
-            line.to_string()
-        } else {
-            format!("{}\n", line)
-        };
+        let line_with_newline = if line.ends_with('\n') { line.to_string() } else { format!("{}\n", line) };
 
         if let Ok(ranges) = highlighter.highlight_line(&line_with_newline, &self.syntax_set) {
             let mut result = Vec::with_capacity(ranges.len());
@@ -179,11 +175,7 @@ impl SyntaxHighlighter {
                 let end = (current_offset + len).min(line.len());
                 if current_offset < end && current_offset < line.len() {
                     let slice = &line[current_offset..end];
-                    let color = Color32::from_rgb(
-                        style.foreground.r,
-                        style.foreground.g,
-                        style.foreground.b,
-                    );
+                    let color = Color32::from_rgb(style.foreground.r, style.foreground.g, style.foreground.b);
                     result.push((color, slice));
                     current_offset = end;
                 }
@@ -220,30 +212,18 @@ impl SyntaxHighlighter {
         for line in text.split_inclusive('\n') {
             if let Ok(ranges) = highlighter.highlight_line(line, &self.syntax_set) {
                 for (style, token_str) in ranges {
-                    let color = Color32::from_rgb(
-                        style.foreground.r,
-                        style.foreground.g,
-                        style.foreground.b,
-                    );
+                    let color = Color32::from_rgb(style.foreground.r, style.foreground.g, style.foreground.b);
                     job.append(
                         token_str,
                         0.0,
-                        egui::TextFormat {
-                            font_id: font_id.clone(),
-                            color,
-                            ..Default::default()
-                        },
+                        egui::TextFormat { font_id: font_id.clone(), color, ..Default::default() },
                     );
                 }
             } else {
                 job.append(
                     line,
                     0.0,
-                    egui::TextFormat {
-                        font_id: font_id.clone(),
-                        color: TEXT_PRIMARY,
-                        ..Default::default()
-                    },
+                    egui::TextFormat { font_id: font_id.clone(), color: TEXT_PRIMARY, ..Default::default() },
                 );
             }
         }
@@ -270,9 +250,7 @@ pub fn detect_language(path_or_file: Option<&str>, hint: Option<&str>) -> String
 }
 
 /// Creates a layouter function closure for egui::TextEdit to enable real-time VS Code syntax highlighting.
-pub fn code_editor_layouter(
-    lang: String,
-) -> impl FnMut(&Ui, &dyn egui::TextBuffer, f32) -> Arc<Galley> {
+pub fn code_editor_layouter(lang: String) -> impl FnMut(&Ui, &dyn egui::TextBuffer, f32) -> Arc<Galley> {
     move |ui: &Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
         let text = text.as_str();
         let highlighter = SyntaxHighlighter::global();

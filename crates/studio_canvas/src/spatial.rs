@@ -1,6 +1,6 @@
-use std::cell::{Cell, RefCell};
 use egui::{Pos2, Rect};
 use rustc_hash::FxHashMap;
+use std::cell::{Cell, RefCell};
 use studio_graph::{EdgeId, Graph, NodeId};
 
 /// Fast 2D Uniform Spatial Hash Grid for O(1) cursor hit-testing and AVX-friendly frustum culling
@@ -44,10 +44,7 @@ impl SpatialHashGrid {
 
     #[inline]
     fn to_cell_coords(&self, x: f32, y: f32) -> (i32, i32) {
-        (
-            (x / self.cell_size).floor() as i32,
-            (y / self.cell_size).floor() as i32,
-        )
+        ((x / self.cell_size).floor() as i32, (y / self.cell_size).floor() as i32)
     }
 
     pub fn clear(&mut self) {
@@ -82,12 +79,8 @@ impl SpatialHashGrid {
         self.all_edges.reserve(graph.edges.len());
 
         for (&id, node) in &graph.nodes {
-            let bounds = [
-                node.position[0],
-                node.position[1],
-                node.position[0] + node.size[0],
-                node.position[1] + node.size[1],
-            ];
+            let bounds =
+                [node.position[0], node.position[1], node.position[0] + node.size[0], node.position[1] + node.size[1]];
             self.insert(id, bounds);
         }
 
@@ -325,7 +318,8 @@ impl SpatialHashGrid {
                             if is_interior {
                                 visible.push(id);
                             } else if let Some(&[b_min_x, b_min_y, b_max_x, b_max_y]) = self.node_bounds.get(&id) {
-                                if b_min_x <= q_max_x && b_max_x >= q_min_x && b_min_y <= q_max_y && b_max_y >= q_min_y {
+                                if b_min_x <= q_max_x && b_max_x >= q_min_x && b_min_y <= q_max_y && b_max_y >= q_min_y
+                                {
                                     visible.push(id);
                                 }
                             }
@@ -408,7 +402,8 @@ impl SpatialHashGrid {
                             last_seen[idx] = epoch;
 
                             if let Some(&[b_min_x, b_min_y, b_max_x, b_max_y]) = self.edge_bounds.get(&id) {
-                                if b_min_x <= q_max_x && b_max_x >= q_min_x && b_min_y <= q_max_y && b_max_y >= q_min_y {
+                                if b_min_x <= q_max_x && b_max_x >= q_min_x && b_min_y <= q_max_y && b_max_y >= q_min_y
+                                {
                                     visible.push(id);
                                 }
                             }

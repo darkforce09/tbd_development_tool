@@ -4,12 +4,7 @@ use studio_graph::{Graph, NodeArchetype};
 use super::layout::calculate_file_node_size;
 use super::types::{CanvasAction, CanvasState, ContextMenuAction, RenderEvents, ZoomAction};
 
-pub fn apply_render_events(
-    events: RenderEvents,
-    state: &mut CanvasState,
-    graph: &mut Graph,
-    rect: Rect,
-) {
+pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph: &mut Graph, rect: Rect) {
     if let Some(cid) = events.toggle_cluster_id {
         graph.toggle_cluster_collapse(&cid);
         state.spatial_grid_dirty = true;
@@ -19,12 +14,7 @@ pub fn apply_render_events(
         let new_bounds = if let Some(node) = graph.nodes.get_mut(&node_id) {
             node.is_dropdown_expanded = !node.is_dropdown_expanded;
             node.size = calculate_file_node_size(node);
-            Some([
-                node.position[0],
-                node.position[1],
-                node.position[0] + node.size[0],
-                node.position[1] + node.size[1],
-            ])
+            Some([node.position[0], node.position[1], node.position[0] + node.size[0], node.position[1] + node.size[1]])
         } else {
             None
         };
@@ -42,18 +32,10 @@ pub fn apply_render_events(
 
     if let Some((node_id, member_id)) = events.member_code_toggle_clicked {
         let new_bounds = if let Some(node) = graph.nodes.get_mut(&node_id) {
-            node.expanded_member_id = if node.expanded_member_id.as_deref() == Some(&member_id) {
-                None
-            } else {
-                Some(member_id)
-            };
+            node.expanded_member_id =
+                if node.expanded_member_id.as_deref() == Some(&member_id) { None } else { Some(member_id) };
             node.size = calculate_file_node_size(node);
-            Some([
-                node.position[0],
-                node.position[1],
-                node.position[0] + node.size[0],
-                node.position[1] + node.size[1],
-            ])
+            Some([node.position[0], node.position[1], node.position[0] + node.size[0], node.position[1] + node.size[1]])
         } else {
             None
         };
@@ -148,12 +130,7 @@ pub fn apply_render_events(
                 let max_ports = node.inputs.len().max(node.outputs.len()).max(1);
                 node.size = [300.0, 34.0 + desc_h + (max_ports as f32 * 26.0) + 12.0];
             }
-            Some([
-                node.position[0],
-                node.position[1],
-                node.position[0] + node.size[0],
-                node.position[1] + node.size[1],
-            ])
+            Some([node.position[0], node.position[1], node.position[0] + node.size[0], node.position[1] + node.size[1]])
         } else {
             None
         };
@@ -172,10 +149,7 @@ pub fn apply_render_events(
         match action {
             CanvasAction::CenterNode(id) => {
                 if let Some(n) = graph.nodes.get(&id) {
-                    let center_world = Pos2::new(
-                        n.position[0] + n.size[0] * 0.5,
-                        n.position[1] + n.size[1] * 0.5,
-                    );
+                    let center_world = Pos2::new(n.position[0] + n.size[0] * 0.5, n.position[1] + n.size[1] * 0.5);
                     state.transform.center_on_world_pos(center_world, rect, None);
                     state.action_request = None;
                 }
@@ -209,12 +183,7 @@ pub fn apply_render_events(
                         let max_ports = n.inputs.len().max(n.outputs.len()).max(1);
                         n.size = [300.0, 34.0 + desc_h + (max_ports as f32 * 26.0) + 12.0];
                     }
-                    Some([
-                        n.position[0],
-                        n.position[1],
-                        n.position[0] + n.size[0],
-                        n.position[1] + n.size[1],
-                    ])
+                    Some([n.position[0], n.position[1], n.position[0] + n.size[0], n.position[1] + n.size[1]])
                 } else {
                     None
                 };
@@ -241,12 +210,7 @@ pub fn apply_render_events(
                 let new_bounds = if let Some(n) = graph.nodes.get_mut(&id) {
                     n.is_dropdown_expanded = !n.is_dropdown_expanded;
                     n.size = calculate_file_node_size(n);
-                    Some([
-                        n.position[0],
-                        n.position[1],
-                        n.position[0] + n.size[0],
-                        n.position[1] + n.size[1],
-                    ])
+                    Some([n.position[0], n.position[1], n.position[0] + n.size[0], n.position[1] + n.size[1]])
                 } else {
                     None
                 };
@@ -264,18 +228,10 @@ pub fn apply_render_events(
             }
             CanvasAction::ToggleMemberDrawer(id, mem_id) => {
                 let new_bounds = if let Some(n) = graph.nodes.get_mut(&id) {
-                    n.expanded_member_id = if n.expanded_member_id.as_deref() == Some(&mem_id) {
-                        None
-                    } else {
-                        Some(mem_id)
-                    };
+                    n.expanded_member_id =
+                        if n.expanded_member_id.as_deref() == Some(&mem_id) { None } else { Some(mem_id) };
                     n.size = calculate_file_node_size(n);
-                    Some([
-                        n.position[0],
-                        n.position[1],
-                        n.position[0] + n.size[0],
-                        n.position[1] + n.size[1],
-                    ])
+                    Some([n.position[0], n.position[1], n.position[0] + n.size[0], n.position[1] + n.size[1]])
                 } else {
                     None
                 };
@@ -305,10 +261,12 @@ pub fn apply_render_events(
     if let Some(za) = events.zoom_action {
         match za {
             ZoomAction::ZoomOut => {
-                state.transform.zoom = (state.transform.zoom * 0.85).clamp(state.transform.min_zoom, state.transform.max_zoom);
+                state.transform.zoom =
+                    (state.transform.zoom * 0.85).clamp(state.transform.min_zoom, state.transform.max_zoom);
             }
             ZoomAction::ZoomIn => {
-                state.transform.zoom = (state.transform.zoom * 1.15).clamp(state.transform.min_zoom, state.transform.max_zoom);
+                state.transform.zoom =
+                    (state.transform.zoom * 1.15).clamp(state.transform.min_zoom, state.transform.max_zoom);
             }
             ZoomAction::Fit => {
                 state.zoom_to_fit(graph, rect);

@@ -1,9 +1,7 @@
-use egui::{
-    epaint::RectShape, Color32, FontFamily, FontId, Painter, Pos2, Rect, CornerRadius, Stroke, Vec2,
-};
 use crate::colors::*;
 use crate::syntax::{detect_language, SyntaxHighlighter};
 use crate::widgets::file_card::FileCardMember;
+use egui::{epaint::RectShape, Color32, CornerRadius, FontFamily, FontId, Painter, Pos2, Rect, Stroke, Vec2};
 
 /// Port display metadata for the Ports & Wires tab on expanded canvas cards.
 #[derive(Clone, Debug)]
@@ -66,41 +64,32 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
         props.rect.translate(Vec2::new(0.0, 4.0 * z)),
         rounding,
         Color32::from_black_alpha(90),
-        Stroke::NONE, egui::StrokeKind::Middle,
+        Stroke::NONE,
+        egui::StrokeKind::Middle,
     );
 
-    let border_color = if props.is_selected {
-        CARD_BORDER_SELECTED
-    } else {
-        CARD_BORDER_NORMAL
-    };
+    let border_color = if props.is_selected { CARD_BORDER_SELECTED } else { CARD_BORDER_NORMAL };
 
     painter.add(RectShape::new(
         props.rect,
         rounding,
         CODE_EDITOR_BG,
-        Stroke::new((1.2 * z).max(1.0), border_color), egui::StrokeKind::Middle,
+        Stroke::new((1.2 * z).max(1.0), border_color),
+        egui::StrokeKind::Middle,
     ));
 
     let card_painter = painter.with_clip_rect(props.rect);
 
     // 2. Header Bar (32px high)
     let header_height = (32.0 * z).max(18.0);
-    let header_rect = Rect::from_min_size(
-        props.rect.min,
-        Vec2::new(props.rect.width(), header_height),
-    );
+    let header_rect = Rect::from_min_size(props.rect.min, Vec2::new(props.rect.width(), header_height));
 
     card_painter.add(RectShape::new(
         header_rect,
-        CornerRadius {
-            nw: (8.0 * z).round() as u8,
-            ne: (8.0 * z).round() as u8,
-            sw: 0,
-            se: 0,
-        },
+        CornerRadius { nw: (8.0 * z).round() as u8, ne: (8.0 * z).round() as u8, sw: 0, se: 0 },
         CARD_HEADER_BG,
-        Stroke::NONE, egui::StrokeKind::Middle,
+        Stroke::NONE,
+        egui::StrokeKind::Middle,
     ));
 
     // Language / Archetype Pill Badge
@@ -118,10 +107,8 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
 
     // Close button [X] on far right
     let btn_size = Vec2::splat(18.0 * z);
-    let close_button_rect = Rect::from_center_size(
-        Pos2::new(header_rect.max.x - 14.0 * z, header_rect.center().y),
-        btn_size,
-    );
+    let close_button_rect =
+        Rect::from_center_size(Pos2::new(header_rect.max.x - 14.0 * z, header_rect.center().y), btn_size);
 
     let is_close_hovered = props.hovered_pos.map(|p| close_button_rect.contains(p)).unwrap_or(false);
     if is_close_hovered {
@@ -163,10 +150,8 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
     // 3. Navigation Tabs Bar (28px high) right under the header
     let tab_bar_y = header_rect.max.y;
     let tab_bar_h = (28.0 * z).max(16.0);
-    let tab_bar_rect = Rect::from_min_size(
-        Pos2::new(props.rect.min.x, tab_bar_y),
-        Vec2::new(props.rect.width(), tab_bar_h),
-    );
+    let tab_bar_rect =
+        Rect::from_min_size(Pos2::new(props.rect.min.x, tab_bar_y), Vec2::new(props.rect.width(), tab_bar_h));
 
     card_painter.rect_filled(tab_bar_rect, CornerRadius::ZERO, Color32::from_rgb(18, 20, 28));
 
@@ -178,11 +163,8 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
         tab_defs.push((2, "Outline".to_string(), egui_phosphor::regular::LIST_BULLETS));
     } else {
         tab_defs.push((0, "Code".to_string(), egui_phosphor::regular::CODE));
-        let nodes_label = if !props.members.is_empty() {
-            format!("Nodes ({})", props.members.len())
-        } else {
-            "Nodes".to_string()
-        };
+        let nodes_label =
+            if !props.members.is_empty() { format!("Nodes ({})", props.members.len()) } else { "Nodes".to_string() };
         tab_defs.push((1, nodes_label, egui_phosphor::regular::CUBE));
         tab_defs.push((2, "Documentation".to_string(), egui_phosphor::regular::BOOK_OPEN));
     }
@@ -196,10 +178,8 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
     for (tab_idx, label, icon) in &tab_defs {
         let text_chars = label.len() + 3;
         let tab_w = (text_chars as f32 * 6.5 * z + 16.0 * z).clamp(48.0 * z, 140.0 * z);
-        let tab_rect = Rect::from_min_size(
-            Pos2::new(curr_tab_x, tab_bar_y + 3.0 * z),
-            Vec2::new(tab_w, tab_bar_h - 6.0 * z),
-        );
+        let tab_rect =
+            Rect::from_min_size(Pos2::new(curr_tab_x, tab_bar_y + 3.0 * z), Vec2::new(tab_w, tab_bar_h - 6.0 * z));
 
         let is_active = effective_tab == *tab_idx;
         let is_hov = props.hovered_pos.map(|p| tab_rect.contains(p)).unwrap_or(false);
@@ -209,7 +189,8 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
                 tab_rect,
                 CornerRadius::from(4.0 * z),
                 Color32::from_rgba_premultiplied(99, 102, 241, 55),
-                Stroke::new((1.0 * z).max(0.5), Color32::from_rgb(129, 140, 248)), egui::StrokeKind::Middle,
+                Stroke::new((1.0 * z).max(0.5), Color32::from_rgb(129, 140, 248)),
+                egui::StrokeKind::Middle,
             );
         } else if is_hov {
             card_painter.rect_filled(
@@ -242,19 +223,13 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
     // Divider under navigation tabs
     let tabs_bottom = tab_bar_y + tab_bar_h;
     card_painter.line_segment(
-        [
-            Pos2::new(props.rect.min.x, tabs_bottom),
-            Pos2::new(props.rect.max.x, tabs_bottom),
-        ],
+        [Pos2::new(props.rect.min.x, tabs_bottom), Pos2::new(props.rect.max.x, tabs_bottom)],
         Stroke::new((1.0 * z).max(0.5), PANEL_BORDER),
     );
 
     // 4. Content Area
     let body_top = tabs_bottom;
-    let body_rect = Rect::from_min_max(
-        Pos2::new(props.rect.min.x, body_top),
-        props.rect.max,
-    );
+    let body_rect = Rect::from_min_max(Pos2::new(props.rect.min.x, body_top), props.rect.max);
     let body_clip = painter.with_clip_rect(body_rect);
 
     let mut line_y_offsets = Vec::new();
@@ -540,7 +515,8 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
                     tag_rect,
                     CornerRadius::from(3.0 * z),
                     with_alpha(member.archetype_color, 45),
-                    Stroke::new((1.0 * z).max(0.5), with_alpha(member.archetype_color, 180)), egui::StrokeKind::Middle,
+                    Stroke::new((1.0 * z).max(0.5), with_alpha(member.archetype_color, 180)),
+                    egui::StrokeKind::Middle,
                 );
                 body_clip.text(
                     tag_rect.center(),
@@ -583,7 +559,8 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
                         code_btn_rect,
                         CornerRadius::from(3.0 * z),
                         Color32::from_rgba_premultiplied(99, 102, 241, 60),
-                        Stroke::new((1.0 * z).max(0.5), Color32::from_rgb(129, 140, 248)), egui::StrokeKind::Middle,
+                        Stroke::new((1.0 * z).max(0.5), Color32::from_rgb(129, 140, 248)),
+                        egui::StrokeKind::Middle,
                     );
                 } else if is_code_hov {
                     body_clip.rect_filled(
@@ -602,10 +579,7 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
                 member_code_clicks.push((code_btn_rect, member.id.to_string()));
 
                 // Line number label :line_number
-                let line_rect = Rect::from_min_max(
-                    Pos2::new(row_rect.max.x - 34.0 * z, row_rect.min.y),
-                    row_rect.max,
-                );
+                let line_rect = Rect::from_min_max(Pos2::new(row_rect.max.x - 34.0 * z, row_rect.min.y), row_rect.max);
                 body_clip.text(
                     Pos2::new(row_rect.max.x - 6.0 * z, row_rect.center().y),
                     egui::Align2::RIGHT_CENTER,
@@ -633,7 +607,8 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
                         drawer_rect,
                         CornerRadius::from(4.0 * z),
                         Color32::from_rgb(12, 14, 20),
-                        Stroke::new((1.0 * z).max(0.5), Color32::from_rgb(45, 50, 68)), egui::StrokeKind::Middle,
+                        Stroke::new((1.0 * z).max(0.5), Color32::from_rgb(45, 50, 68)),
+                        egui::StrokeKind::Middle,
                     );
 
                     let drawer_clip = body_clip.with_clip_rect(drawer_rect);
@@ -654,7 +629,11 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
                         let font_id = FontId::new((9.0 * z).max(4.5), FontFamily::Monospace);
                         let mut job = egui::text::LayoutJob::default();
                         for (color, token) in tokens {
-                            job.append(token, 0.0, egui::TextFormat { font_id: font_id.clone(), color, ..Default::default() });
+                            job.append(
+                                token,
+                                0.0,
+                                egui::TextFormat { font_id: font_id.clone(), color, ..Default::default() },
+                            );
                         }
                         let galley = drawer_clip.layout_job(job);
                         drawer_clip.galley(Pos2::new(drawer_rect.min.x + 28.0 * z, code_y), galley, Color32::WHITE);
@@ -703,9 +682,8 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
                 curr_y += font_size * 1.3;
             }
         } else {
-            let doc_lines: Vec<&str> = props.code.lines()
-                .filter(|l| l.trim().starts_with("///") || l.trim().starts_with("//!"))
-                .collect();
+            let doc_lines: Vec<&str> =
+                props.code.lines().filter(|l| l.trim().starts_with("///") || l.trim().starts_with("//!")).collect();
             if doc_lines.is_empty() {
                 body_clip.text(
                     Pos2::new(content_left, curr_y),
@@ -743,10 +721,7 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
 
         body_clip.rect_filled(gutter_rect, CornerRadius::ZERO, CODE_GUTTER_BG);
         body_clip.line_segment(
-            [
-                Pos2::new(gutter_rect.max.x, body_rect.min.y),
-                Pos2::new(gutter_rect.max.x, props.rect.max.y),
-            ],
+            [Pos2::new(gutter_rect.max.x, body_rect.min.y), Pos2::new(gutter_rect.max.x, props.rect.max.y)],
             Stroke::new((1.0 * z).max(0.5), PANEL_BORDER),
         );
 
@@ -801,9 +776,8 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
                     Stroke::new((1.0 * z).max(0.5), with_alpha(m.archetype_color, 80)),
                 );
 
-                let is_collapsed = props.collapsed_subnodes
-                    .map(|s| s.contains(m.id) || s.contains(m.name))
-                    .unwrap_or(false);
+                let is_collapsed =
+                    props.collapsed_subnodes.map(|s| s.contains(m.id) || s.contains(m.name)).unwrap_or(false);
 
                 // Fold Caret [▼] or [▶]
                 let caret_size = Vec2::splat(12.0 * z);
@@ -813,7 +787,11 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
                 );
                 let is_caret_hov = props.hovered_pos.map(|p| caret_rect.contains(p)).unwrap_or(false);
                 if is_caret_hov {
-                    body_clip.rect_filled(caret_rect, CornerRadius::from(2.0 * z), Color32::from_rgba_premultiplied(99, 102, 241, 40));
+                    body_clip.rect_filled(
+                        caret_rect,
+                        CornerRadius::from(2.0 * z),
+                        Color32::from_rgba_premultiplied(99, 102, 241, 40),
+                    );
                 }
                 body_clip.text(
                     caret_rect.center(),
@@ -834,9 +812,13 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
 
             // Input Port socket at this line: Dot on edge + connector line into code
             let in_port = if let Some(m) = member_match {
-                props.inputs.iter().find(|p| p.name.starts_with(m.name) || p.name == format!("{}:in", m.name) || props.inputs.len() == 1)
+                props.inputs.iter().find(|p| {
+                    p.name.starts_with(m.name) || p.name == format!("{}:in", m.name) || props.inputs.len() == 1
+                })
             } else if line_num == 1 {
-                props.inputs.iter().find(|p| p.name == "in" || (!p.name.contains(':') && props.members.is_empty()) || props.inputs.len() == 1)
+                props.inputs.iter().find(|p| {
+                    p.name == "in" || (!p.name.contains(':') && props.members.is_empty()) || props.inputs.len() == 1
+                })
             } else {
                 None
             };
@@ -867,9 +849,13 @@ pub fn paint_code_card(painter: &Painter, props: CodeCardProps<'_>) -> CodeCardL
 
             // Output Port socket at this line: Dot on edge + connector line into code
             let out_port = if let Some(m) = member_match {
-                props.outputs.iter().find(|p| p.name.starts_with(m.name) || p.name == format!("{}:out", m.name) || props.outputs.len() == 1)
+                props.outputs.iter().find(|p| {
+                    p.name.starts_with(m.name) || p.name == format!("{}:out", m.name) || props.outputs.len() == 1
+                })
             } else if line_num == 1 {
-                props.outputs.iter().find(|p| p.name == "out" || (!p.name.contains(':') && props.members.is_empty()) || props.outputs.len() == 1)
+                props.outputs.iter().find(|p| {
+                    p.name == "out" || (!p.name.contains(':') && props.members.is_empty()) || props.outputs.len() == 1
+                })
             } else {
                 None
             };
@@ -1069,4 +1055,3 @@ mod tests {
         output.textures_delta.clear();
     }
 }
-

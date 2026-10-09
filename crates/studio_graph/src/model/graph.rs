@@ -1,6 +1,6 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use super::cluster::GroupCluster;
 use super::edge::Edge;
@@ -147,23 +147,13 @@ impl Graph {
         let mut inputs = Vec::new();
         for (name, dt) in input_defs {
             let port_id = PortId(self.next_raw_id());
-            inputs.push(Port {
-                id: port_id,
-                name,
-                data_type: dt,
-                direction: PortDirection::Input,
-            });
+            inputs.push(Port { id: port_id, name, data_type: dt, direction: PortDirection::Input });
         }
 
         let mut outputs = Vec::new();
         for (name, dt) in output_defs {
             let port_id = PortId(self.next_raw_id());
-            outputs.push(Port {
-                id: port_id,
-                name,
-                data_type: dt,
-                direction: PortDirection::Output,
-            });
+            outputs.push(Port { id: port_id, name, data_type: dt, direction: PortDirection::Output });
         }
 
         let title_str = title.into();
@@ -305,7 +295,9 @@ impl Graph {
         // Disconnect any existing edge feeding this exact input port (O(1) lookup via port_edges)
         if let Some(existing_edge_ids) = self.port_edges.get(&(to_node, to_port)).cloned() {
             for eid in existing_edge_ids {
-                if let Some(pos) = self.edges.iter().position(|e| e.id == eid && e.to_node == to_node && e.to_port == to_port) {
+                if let Some(pos) =
+                    self.edges.iter().position(|e| e.id == eid && e.to_node == to_node && e.to_port == to_port)
+                {
                     let edge = self.edges.remove(pos);
                     self.unindex_edge(&edge);
                 }
@@ -313,16 +305,7 @@ impl Graph {
         }
 
         let edge_id = EdgeId(self.next_raw_id());
-        let edge = Edge {
-            id: edge_id,
-            from_node,
-            from_port,
-            to_node,
-            to_port,
-            label,
-            step_number,
-            source_line,
-        };
+        let edge = Edge { id: edge_id, from_node, from_port, to_node, to_port, label, step_number, source_line };
         self.index_edge(&edge);
         self.edges.push(edge);
         Some(edge_id)
@@ -342,8 +325,8 @@ impl Graph {
         let mut removed = Vec::new();
         let mut removed_edges = Vec::new();
         self.edges.retain(|e| {
-            let matches = (e.from_node == node_id && e.from_port == port_id)
-                || (e.to_node == node_id && e.to_port == port_id);
+            let matches =
+                (e.from_node == node_id && e.from_port == port_id) || (e.to_node == node_id && e.to_port == port_id);
             if matches {
                 removed.push(e.id);
                 removed_edges.push(e.clone());
@@ -364,17 +347,12 @@ impl Graph {
 
     #[inline]
     pub fn is_port_connected(&self, node_id: NodeId, port_id: PortId) -> bool {
-        self.port_edges
-            .get(&(node_id, port_id))
-            .is_some_and(|edges| !edges.is_empty())
+        self.port_edges.get(&(node_id, port_id)).is_some_and(|edges| !edges.is_empty())
     }
 
     #[inline]
     pub fn get_port_edges(&self, node_id: NodeId, port_id: PortId) -> Vec<EdgeId> {
-        self.port_edges
-            .get(&(node_id, port_id))
-            .cloned()
-            .unwrap_or_default()
+        self.port_edges.get(&(node_id, port_id)).cloned().unwrap_or_default()
     }
 
     #[inline]

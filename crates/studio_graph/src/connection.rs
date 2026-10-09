@@ -5,14 +5,8 @@ pub enum ConnectionError {
     SelfConnection,
     NodeNotFound,
     PortNotFound,
-    InvalidDirections {
-        from: PortDirection,
-        to: PortDirection,
-    },
-    IncompatibleTypes {
-        from: DataType,
-        to: DataType,
-    },
+    InvalidDirections { from: PortDirection, to: PortDirection },
+    IncompatibleTypes { from: DataType, to: DataType },
     AlreadyConnected,
 }
 
@@ -26,12 +20,7 @@ impl std::fmt::Display for ConnectionError {
                 write!(f, "Cannot connect {:?} to {:?}", from, to)
             }
             IncompatibleTypes { from, to } => {
-                write!(
-                    f,
-                    "Incompatible types: {} cannot connect to {}",
-                    from.display_name(),
-                    to.display_name()
-                )
+                write!(f, "Incompatible types: {} cannot connect to {}", from.display_name(), to.display_name())
             }
             AlreadyConnected => write!(f, "Connection already exists"),
         }
@@ -53,34 +42,19 @@ pub fn can_connect(
         return Err(SelfConnection);
     }
 
-    let p1 = graph
-        .find_port(source_node, source_port)
-        .ok_or(PortNotFound)?;
-    let p2 = graph
-        .find_port(target_node, target_port)
-        .ok_or(PortNotFound)?;
+    let p1 = graph.find_port(source_node, source_port).ok_or(PortNotFound)?;
+    let p2 = graph.find_port(target_node, target_port).ok_or(PortNotFound)?;
 
     // Determine which is output and which is input
-    let (out_node, out_port, in_node, in_port, out_type, in_type) =
-        match (p1.direction, p2.direction) {
-            (PortDirection::Output, PortDirection::Input) => (
-                source_node,
-                source_port,
-                target_node,
-                target_port,
-                p1.data_type.clone(),
-                p2.data_type.clone(),
-            ),
-            (PortDirection::Input, PortDirection::Output) => (
-                target_node,
-                target_port,
-                source_node,
-                source_port,
-                p2.data_type.clone(),
-                p1.data_type.clone(),
-            ),
-            (d1, d2) => return Err(InvalidDirections { from: d1, to: d2 }),
-        };
+    let (out_node, out_port, in_node, in_port, out_type, in_type) = match (p1.direction, p2.direction) {
+        (PortDirection::Output, PortDirection::Input) => {
+            (source_node, source_port, target_node, target_port, p1.data_type.clone(), p2.data_type.clone())
+        }
+        (PortDirection::Input, PortDirection::Output) => {
+            (target_node, target_port, source_node, source_port, p2.data_type.clone(), p1.data_type.clone())
+        }
+        (d1, d2) => return Err(InvalidDirections { from: d1, to: d2 }),
+    };
 
     // Check type compatibility (exact match or convertible)
     let compatible = match (&out_type, &in_type) {
@@ -97,19 +71,14 @@ pub fn can_connect(
     };
 
     if !compatible {
-        return Err(IncompatibleTypes {
-            from: out_type,
-            to: in_type,
-        });
+        return Err(IncompatibleTypes { from: out_type, to: in_type });
     }
 
     // Check if duplicate
-    let exists = graph.edges.iter().any(|e| {
-        e.from_node == out_node
-            && e.from_port == out_port
-            && e.to_node == in_node
-            && e.to_port == in_port
-    });
+    let exists = graph
+        .edges
+        .iter()
+        .any(|e| e.from_node == out_node && e.from_port == out_port && e.to_node == in_node && e.to_port == in_port);
 
     if exists {
         return Err(AlreadyConnected);
@@ -161,18 +130,12 @@ mod tests {
         assert!(can_connect(&graph, n1, p1_out, n2, p2_in).is_ok());
 
         // Self connection fails
-        assert_eq!(
-            can_connect(&graph, n1, p1_out, n1, p1_out),
-            Err(ConnectionError::SelfConnection)
-        );
+        assert_eq!(can_connect(&graph, n1, p1_out, n1, p1_out), Err(ConnectionError::SelfConnection));
 
         // Direction mismatch (output to output)
         assert_eq!(
             can_connect(&graph, n1, p1_out, n2, p2_out),
-            Err(ConnectionError::InvalidDirections {
-                from: PortDirection::Output,
-                to: PortDirection::Output,
-            })
+            Err(ConnectionError::InvalidDirections { from: PortDirection::Output, to: PortDirection::Output })
         );
     }
 
@@ -181,8 +144,24 @@ mod tests {
         let mut graph = Graph::new();
         assert_eq!(graph.isolated_nodes_count(), 0);
 
-        let n1 = graph.add_node("Node A", NodeArchetype::Function, "", None, vec![], vec![("out".to_string(), DataType::Flow)], [0.0, 0.0]);
-        let n2 = graph.add_node("Node B", NodeArchetype::Compute, "", None, vec![("in".to_string(), DataType::Flow)], vec![], [50.0, 50.0]);
+        let n1 = graph.add_node(
+            "Node A",
+            NodeArchetype::Function,
+            "",
+            None,
+            vec![],
+            vec![("out".to_string(), DataType::Flow)],
+            [0.0, 0.0],
+        );
+        let n2 = graph.add_node(
+            "Node B",
+            NodeArchetype::Compute,
+            "",
+            None,
+            vec![("in".to_string(), DataType::Flow)],
+            vec![],
+            [50.0, 50.0],
+        );
 
         assert_eq!(graph.isolated_nodes_count(), 2);
         assert_eq!(graph.archetype_count(NodeArchetype::Function), 1);
@@ -205,4 +184,3 @@ mod tests {
         assert_eq!(graph.isolated_nodes_count(), 2);
     }
 }
-

@@ -8,11 +8,7 @@ pub fn calculate_file_node_size(node: &Node) -> [f32; 2] {
     } else {
         let header_h = 38.0;
         let divider_h = 2.0;
-        let rows_h = if node.member_nodes.is_empty() {
-            24.0
-        } else {
-            node.member_nodes.len() as f32 * 26.0
-        };
+        let rows_h = if node.member_nodes.is_empty() { 24.0 } else { node.member_nodes.len() as f32 * 26.0 };
 
         let drawer_h = if let Some(ref mem_id) = node.expanded_member_id {
             if let Some(mem) = node.member_nodes.iter().find(|m| &m.id == mem_id) {
@@ -35,9 +31,12 @@ pub fn port_world_position(node: &Node, port_id: PortId) -> Option<Pos2> {
     let (idx, dir) = node.port_index(port_id)?;
     let y = if node.archetype == NodeArchetype::File && !node.is_code_expanded {
         if node.is_dropdown_expanded {
-            if let Some((m_idx, _)) = node.member_nodes.iter().enumerate().find(|(_, m)| {
-                m.in_port_id == Some(port_id) || m.out_port_id == Some(port_id)
-            }) {
+            if let Some((m_idx, _)) = node
+                .member_nodes
+                .iter()
+                .enumerate()
+                .find(|(_, m)| m.in_port_id == Some(port_id) || m.out_port_id == Some(port_id))
+            {
                 let header_h = 38.0;
                 let divider_h = 2.0;
                 let mut prev_h = 0.0;
@@ -63,7 +62,8 @@ pub fn port_world_position(node: &Node, port_id: PortId) -> Option<Pos2> {
         let content_top = node.position[1] + header_h + tab_bar_h;
         let line_h = 18.0;
 
-        let member_match = node.member_nodes.iter().find(|m| m.in_port_id == Some(port_id) || m.out_port_id == Some(port_id));
+        let member_match =
+            node.member_nodes.iter().find(|m| m.in_port_id == Some(port_id) || m.out_port_id == Some(port_id));
         let ideal_y = if let Some(m) = member_match {
             let start_line = node.line_number.unwrap_or(1);
             let line_offset = (m.line_number.saturating_sub(start_line)) as f32;

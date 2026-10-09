@@ -79,13 +79,8 @@ pub fn looks_like_enforce(content: &str) -> bool {
         if ENFORCE_ONLY.iter().any(|kw| line.contains(kw)) {
             return true;
         }
-        let rest = line
-            .strip_prefix("modded ")
-            .or_else(|| line.strip_prefix("sealed "))
-            .unwrap_or(line);
-        rest.strip_prefix("class ")
-            .and_then(|r| r.chars().next())
-            .is_some_and(|c| c.is_alphabetic() || c == '_')
+        let rest = line.strip_prefix("modded ").or_else(|| line.strip_prefix("sealed ")).unwrap_or(line);
+        rest.strip_prefix("class ").and_then(|r| r.chars().next()).is_some_and(|c| c.is_alphabetic() || c == '_')
     })
 }
 

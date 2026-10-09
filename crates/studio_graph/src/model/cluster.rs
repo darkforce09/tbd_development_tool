@@ -8,7 +8,7 @@ use super::types::NodeId;
 pub struct GroupCluster {
     pub id: String,
     pub label: String,
-    pub category: String, // "Crate", "Directory", "Module", "Service", "Infrastructure"
+    pub category: String,         // "Crate", "Directory", "Module", "Service", "Infrastructure"
     pub subtitle: Option<String>, // e.g. "Requests to the user service" or "5 files • 420 LOC"
     pub parent_id: Option<String>,
     pub child_cluster_ids: Vec<String>,
@@ -21,7 +21,12 @@ pub struct GroupCluster {
 }
 
 impl GroupCluster {
-    pub fn new(id: impl Into<String>, label: impl Into<String>, category: impl Into<String>, color_index: usize) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        category: impl Into<String>,
+        color_index: usize,
+    ) -> Self {
         Self {
             id: id.into(),
             label: label.into(),

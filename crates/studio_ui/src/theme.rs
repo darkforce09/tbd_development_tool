@@ -1,6 +1,4 @@
-use egui::{
-    epaint::Shadow, Color32, Context, FontFamily, FontId, CornerRadius, Stroke, TextStyle, Visuals,
-};
+use egui::{epaint::Shadow, Color32, Context, CornerRadius, FontFamily, FontId, Stroke, TextStyle, Visuals};
 
 use crate::colors::*;
 
@@ -16,12 +14,7 @@ pub fn apply_theme(ctx: &Context) {
     // Window / card framing
     visuals.window_corner_radius = CornerRadius::from(8.0);
     visuals.window_stroke = Stroke::new(1.0, CARD_BORDER_NORMAL);
-    visuals.window_shadow = Shadow {
-        offset: [0, 4],
-        blur: 8,
-        spread: 0,
-        color: CARD_SHADOW,
-    };
+    visuals.window_shadow = Shadow { offset: [0, 4], blur: 8, spread: 0, color: CARD_SHADOW };
 
     // Widget styling
     visuals.widgets.noninteractive.bg_fill = CARD_BG;
@@ -59,19 +52,10 @@ pub fn apply_theme(ctx: &Context) {
 
     // Font styles
     style.text_styles = [
-        (
-            TextStyle::Heading,
-            FontId::new(14.0, FontFamily::Proportional),
-        ),
+        (TextStyle::Heading, FontId::new(14.0, FontFamily::Proportional)),
         (TextStyle::Body, FontId::new(12.0, FontFamily::Proportional)),
-        (
-            TextStyle::Monospace,
-            FontId::new(11.0, FontFamily::Monospace),
-        ),
-        (
-            TextStyle::Button,
-            FontId::new(12.0, FontFamily::Proportional),
-        ),
+        (TextStyle::Monospace, FontId::new(11.0, FontFamily::Monospace)),
+        (TextStyle::Button, FontId::new(12.0, FontFamily::Proportional)),
         (TextStyle::Small, FontId::new(10.0, FontFamily::Proportional)),
     ]
     .into();

@@ -1,9 +1,8 @@
-use egui::{FontFamily, FontId, Painter, Pos2, Rect, CornerRadius, Stroke, Vec2};
+use egui::{CornerRadius, FontFamily, FontId, Painter, Pos2, Rect, Stroke, Vec2};
 use studio_graph::{Graph, NodeArchetype, NodeId};
 use studio_ui::{
-    color_tokens::*, paint_card_frame, paint_code_card, paint_file_card, paint_pin_socket,
-    truncate_with_ellipsis, with_alpha, CardFrameProps, CodeCardProps, FileCardMember,
-    FileCardProps, PortDisplayInfo, SocketVisualState,
+    color_tokens::*, paint_card_frame, paint_code_card, paint_file_card, paint_pin_socket, truncate_with_ellipsis,
+    with_alpha, CardFrameProps, CodeCardProps, FileCardMember, FileCardProps, PortDisplayInfo, SocketVisualState,
 };
 
 use crate::interaction::InteractionMode;
@@ -12,11 +11,17 @@ use super::layout::port_world_position;
 use super::types::{archetype_color, data_type_color, CanvasState, RenderEvents};
 
 fn build_members_ui<'a>(member_nodes: &'a [studio_graph::FileMemberNode]) -> Vec<FileCardMember<'a>> {
-    member_nodes.iter().map(|m| {
-        FileCardMember {
+    member_nodes
+        .iter()
+        .map(|m| FileCardMember {
             id: &m.id,
             name: &m.name,
-            archetype_tag: if m.visibility == "MOD" || m.visibility == "LNK" || m.visibility == "CLS" || m.visibility == "CODE" || m.visibility.starts_with('H') {
+            archetype_tag: if m.visibility == "MOD"
+                || m.visibility == "LNK"
+                || m.visibility == "CLS"
+                || m.visibility == "CODE"
+                || m.visibility.starts_with('H')
+            {
                 &m.visibility
             } else {
                 match m.archetype {
@@ -41,10 +46,9 @@ fn build_members_ui<'a>(member_nodes: &'a [studio_graph::FileMemberNode]) -> Vec
             signature: &m.signature,
             line_number: m.line_number,
             source_code: &m.source_code,
-        }
-    }).collect()
+        })
+        .collect()
 }
-
 
 #[allow(clippy::too_many_arguments)]
 pub fn render_nodes_and_sockets(
@@ -72,10 +76,7 @@ pub fn render_nodes_and_sockets(
         };
 
         let min_world = Pos2::new(node.position[0], node.position[1]);
-        let max_world = Pos2::new(
-            node.position[0] + node.size[0],
-            node.position[1] + node.size[1],
-        );
+        let max_world = Pos2::new(node.position[0] + node.size[0], node.position[1] + node.size[1]);
         let min_screen = state.transform.world_to_screen(min_world);
         let max_screen = state.transform.world_to_screen(max_world);
         let card_rect = Rect::from_min_max(min_screen, max_screen);
@@ -92,8 +93,7 @@ pub fn render_nodes_and_sockets(
             || node.description.to_lowercase().contains(&search_query)
             || node.crate_name.as_deref().map(|c| c.to_lowercase().contains(&search_query)).unwrap_or(false);
 
-        let matches_category = state.category_filter.is_empty()
-            || state.category_filter.contains(&node.archetype);
+        let matches_category = state.category_filter.is_empty() || state.category_filter.contains(&node.archetype);
 
         let is_dimmed = !matches_search || !matches_category;
         let arch_color = archetype_color(node.archetype);
@@ -123,11 +123,8 @@ pub fn render_nodes_and_sockets(
         } else if zoom < 0.35 {
             // LOD 1: Medium Zoom
             let fill = if is_hovered { CARD_BG_HOVER } else { CARD_BG };
-            let border = if is_selected {
-                Stroke::new(1.5, CARD_BORDER_SELECTED)
-            } else {
-                Stroke::new(1.0, CARD_BORDER_NORMAL)
-            };
+            let border =
+                if is_selected { Stroke::new(1.5, CARD_BORDER_SELECTED) } else { Stroke::new(1.0, CARD_BORDER_NORMAL) };
             painter.rect(card_rect, CornerRadius::from(4.0), fill, border, egui::StrokeKind::Middle);
 
             let header_h = (4.0 * zoom).max(1.5);
@@ -152,11 +149,7 @@ pub fn render_nodes_and_sockets(
             }
         } else {
             // LOD 0: Close-up Zoom
-            let node_painter = if is_dimmed {
-                painter.with_clip_rect(card_rect)
-            } else {
-                painter.clone()
-            };
+            let node_painter = if is_dimmed { painter.with_clip_rect(card_rect) } else { painter.clone() };
 
             if node.is_code_expanded {
                 let code_text = node.source_code.as_deref().unwrap_or(&node.description);
@@ -164,33 +157,42 @@ pub fn render_nodes_and_sockets(
 
                 let members_ui = build_members_ui(&node.member_nodes);
 
-                let input_infos: Vec<PortDisplayInfo> = node.inputs.iter().map(|p| {
-                    let connected_edge = graph.edges.iter().find(|e| e.to_node == node_id && e.to_port == p.id);
-                    let connected_node = connected_edge.and_then(|e| graph.nodes.get(&e.from_node));
-                    PortDisplayInfo {
-                        id: p.id.0,
-                        name: &p.name,
-                        type_name: p.data_type.display_name(),
-                        type_color: data_type_color(&p.data_type),
-                        connected_node_title: connected_node.map(|n| n.title.clone()),
-                        connected_node_id: connected_edge.map(|e| e.from_node.0),
-                    }
-                }).collect();
+                let input_infos: Vec<PortDisplayInfo> = node
+                    .inputs
+                    .iter()
+                    .map(|p| {
+                        let connected_edge = graph.edges.iter().find(|e| e.to_node == node_id && e.to_port == p.id);
+                        let connected_node = connected_edge.and_then(|e| graph.nodes.get(&e.from_node));
+                        PortDisplayInfo {
+                            id: p.id.0,
+                            name: &p.name,
+                            type_name: p.data_type.display_name(),
+                            type_color: data_type_color(&p.data_type),
+                            connected_node_title: connected_node.map(|n| n.title.clone()),
+                            connected_node_id: connected_edge.map(|e| e.from_node.0),
+                        }
+                    })
+                    .collect();
 
-                let output_infos: Vec<PortDisplayInfo> = node.outputs.iter().map(|p| {
-                    let connected_edge = graph.edges.iter().find(|e| e.from_node == node_id && e.from_port == p.id);
-                    let connected_node = connected_edge.and_then(|e| graph.nodes.get(&e.to_node));
-                    PortDisplayInfo {
-                        id: p.id.0,
-                        name: &p.name,
-                        type_name: p.data_type.display_name(),
-                        type_color: data_type_color(&p.data_type),
-                        connected_node_title: connected_node.map(|n| n.title.clone()),
-                        connected_node_id: connected_edge.map(|e| e.to_node.0),
-                    }
-                }).collect();
+                let output_infos: Vec<PortDisplayInfo> = node
+                    .outputs
+                    .iter()
+                    .map(|p| {
+                        let connected_edge = graph.edges.iter().find(|e| e.from_node == node_id && e.from_port == p.id);
+                        let connected_node = connected_edge.and_then(|e| graph.nodes.get(&e.to_node));
+                        PortDisplayInfo {
+                            id: p.id.0,
+                            name: &p.name,
+                            type_name: p.data_type.display_name(),
+                            type_color: data_type_color(&p.data_type),
+                            connected_node_title: connected_node.map(|n| n.title.clone()),
+                            connected_node_id: connected_edge.map(|e| e.to_node.0),
+                        }
+                    })
+                    .collect();
 
-                let collapsed_set: std::collections::BTreeSet<String> = state.collapsed_subnodes
+                let collapsed_set: std::collections::BTreeSet<String> = state
+                    .collapsed_subnodes
                     .iter()
                     .filter(|(nid, _)| *nid == node_id)
                     .map(|(_, mem_id)| mem_id.clone())
@@ -295,7 +297,9 @@ pub fn render_nodes_and_sockets(
                 }
             } else if node.archetype == NodeArchetype::File {
                 let ext = node.badge.as_deref().unwrap_or("rs");
-                let step_number = graph.edges.iter()
+                let step_number = graph
+                    .edges
+                    .iter()
                     .find(|e| e.from_node == node_id && e.step_number.is_some())
                     .and_then(|e| e.step_number);
 
@@ -435,22 +439,27 @@ pub fn render_nodes_and_sockets(
             }
             if let Some(node) = graph.nodes.get(&node_id) {
                 for port in node.inputs.iter().chain(node.outputs.iter()) {
-                    let is_member_port = node.member_nodes.iter().any(|m| m.in_port_id == Some(port.id) || m.out_port_id == Some(port.id));
-                    if is_member_port && (!node.is_dropdown_expanded || (!node.show_member_wires && !state.show_subnode_wires_globally)) {
+                    let is_member_port = node
+                        .member_nodes
+                        .iter()
+                        .any(|m| m.in_port_id == Some(port.id) || m.out_port_id == Some(port.id));
+                    if is_member_port
+                        && (!node.is_dropdown_expanded
+                            || (!node.show_member_wires && !state.show_subnode_wires_globally))
+                    {
                         continue;
                     }
                     if let Some(wpos) = port_world_position(node, port.id) {
                         let spos = state.transform.world_to_screen(wpos);
                         let is_hovered = state.hover.hovered_port == Some((node_id, port.id));
-                        let is_snapped = if let InteractionMode::Connecting {
-                            snapped_target: Some((sn_id, sp_id)),
-                            ..
-                        } = state.interaction
-                        {
-                            sn_id == node_id && sp_id == port.id
-                        } else {
-                            false
-                        };
+                        let is_snapped =
+                            if let InteractionMode::Connecting { snapped_target: Some((sn_id, sp_id)), .. } =
+                                state.interaction
+                            {
+                                sn_id == node_id && sp_id == port.id
+                            } else {
+                                false
+                            };
 
                         let is_connected = graph.is_port_connected(node_id, port.id);
                         let port_color = data_type_color(&port.data_type);
@@ -459,11 +468,7 @@ pub fn render_nodes_and_sockets(
                             painter,
                             spos,
                             port_color,
-                            SocketVisualState {
-                                is_hovered,
-                                is_connected,
-                                is_snapped,
-                            },
+                            SocketVisualState { is_hovered, is_connected, is_snapped },
                             zoom,
                         );
                     }

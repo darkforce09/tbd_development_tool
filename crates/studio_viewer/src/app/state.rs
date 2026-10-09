@@ -1,12 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use studio_canvas::CanvasState;
-use studio_graph::{
-    create_showcase_files_graph, create_showcase_graph, EdgeId, Graph, NodeArchetype,
-};
-use studio_parser::{
-    spawn_load_project_opt, ProjectStats, SymbolSearchIndex, ViewGranularity,
-};
+use studio_graph::{create_showcase_files_graph, create_showcase_graph, EdgeId, Graph, NodeArchetype};
+use studio_parser::{spawn_load_project_opt, ProjectStats, SymbolSearchIndex, ViewGranularity};
 use studio_ui::apply_theme;
 
 use super::settings::{granularity_from_key, PersistedSettings};
@@ -29,10 +25,8 @@ impl StudioApp {
         category_filters.insert(NodeArchetype::State, true);
         category_filters.insert(NodeArchetype::Egress, true);
 
-        let saved: PersistedSettings = cc
-            .storage
-            .and_then(|storage| eframe::get_value(storage, eframe::APP_KEY))
-            .unwrap_or_default();
+        let saved: PersistedSettings =
+            cc.storage.and_then(|storage| eframe::get_value(storage, eframe::APP_KEY)).unwrap_or_default();
 
         let mut canvas_state = CanvasState::default();
         let gpu_label = cc.wgpu_render_state.as_ref().map_or_else(
@@ -40,15 +34,8 @@ impl StudioApp {
             |rs| crate::telemetry::GpuDeviceInfo::from_adapter_info(&rs.adapter.get_info()).name,
         );
         if let Some(render_state) = &cc.wgpu_render_state {
-            let pipeline = studio_canvas::GpuWirePipeline::new(
-                &render_state.device,
-                render_state.target_format,
-            );
-            render_state
-                .renderer
-                .write()
-                .callback_resources
-                .insert(pipeline);
+            let pipeline = studio_canvas::GpuWirePipeline::new(&render_state.device, render_state.target_format);
+            render_state.renderer.write().callback_resources.insert(pipeline);
             canvas_state.use_gpu_wires = true;
         } else {
             canvas_state.use_gpu_wires = false;
@@ -142,38 +129,33 @@ impl StudioApp {
     pub(crate) fn build_showcase_flows(&mut self) {
         let edge_ids: Vec<EdgeId> = self.graph.edges.iter().map(|e| e.id).collect();
         let regular_edges = edge_ids.clone();
-        let cached_edges = if edge_ids.len() >= 3 {
-            vec![edge_ids[1], edge_ids[2]]
-        } else {
-            edge_ids.clone()
-        };
+        let cached_edges = if edge_ids.len() >= 3 { vec![edge_ids[1], edge_ids[2]] } else { edge_ids.clone() };
 
-        self.flows = vec![
-            FlowDefinition {
-                name: "Realtime Transcribe & Inpaint".to_string(),
-                entry_point: "AudioDemuxer::poll_next_packet()".to_string(),
-                description: "Full audio ingestion, Whisper speech inference, subtitle rasterization, and DRM composite.".to_string(),
-                originators: "Audio Demuxer, Video Ring Buffer".to_string(),
-                service_count: 5,
-                api_call_count: 4,
-                variants: vec![
-                    FlowVariant {
-                        name: "Regular Pipeline (Full Path)".to_string(),
-                        coverage_pct: 68,
-                        summary: "100% of pipeline nodes, 4 active stages".to_string(),
-                        description: "Standard end-to-end path executed on uncompressed video frames.".to_string(),
-                        edge_ids: regular_edges,
-                    },
-                    FlowVariant {
-                        name: "Cached Frame Overlay".to_string(),
-                        coverage_pct: 32,
-                        summary: "Cached VRAM hit, bypasses demuxer stage".to_string(),
-                        description: "Fast-path frame inpainting without audio re-transcription.".to_string(),
-                        edge_ids: cached_edges,
-                    },
-                ],
-            },
-        ];
+        self.flows = vec![FlowDefinition {
+            name: "Realtime Transcribe & Inpaint".to_string(),
+            entry_point: "AudioDemuxer::poll_next_packet()".to_string(),
+            description: "Full audio ingestion, Whisper speech inference, subtitle rasterization, and DRM composite."
+                .to_string(),
+            originators: "Audio Demuxer, Video Ring Buffer".to_string(),
+            service_count: 5,
+            api_call_count: 4,
+            variants: vec![
+                FlowVariant {
+                    name: "Regular Pipeline (Full Path)".to_string(),
+                    coverage_pct: 68,
+                    summary: "100% of pipeline nodes, 4 active stages".to_string(),
+                    description: "Standard end-to-end path executed on uncompressed video frames.".to_string(),
+                    edge_ids: regular_edges,
+                },
+                FlowVariant {
+                    name: "Cached Frame Overlay".to_string(),
+                    coverage_pct: 32,
+                    summary: "Cached VRAM hit, bypasses demuxer stage".to_string(),
+                    description: "Fast-path frame inpainting without audio re-transcription.".to_string(),
+                    edge_ids: cached_edges,
+                },
+            ],
+        }];
         self.active_flow_index = 0;
         self.active_variant_index = 0;
     }
@@ -228,32 +210,31 @@ impl StudioApp {
         let count = edge_ids.len();
         let half = count / 2;
 
-        self.flows = vec![
-            FlowDefinition {
-                name: format!("{} Ingestion & Parse Flow", stats.project_name),
-                entry_point: "studio_parser::load_rust_project".to_string(),
-                description: "Scans project directories, extracts syn AST items, and constructs visual architecture graph.".to_string(),
-                originators: "CLI / File Dialog".to_string(),
-                service_count: stats.crate_count,
-                api_call_count: stats.wire_count,
-                variants: vec![
-                    FlowVariant {
-                        name: "All Items Execution".to_string(),
-                        coverage_pct: 75,
-                        summary: format!("{} active connection wires", count),
-                        description: "Complete syntax and reference graph flow.".to_string(),
-                        edge_ids: edge_ids.clone(),
-                    },
-                    FlowVariant {
-                        name: "Primary Call Chain".to_string(),
-                        coverage_pct: 25,
-                        summary: format!("{} core wires", half),
-                        description: "High-priority direct execution and constructor path.".to_string(),
-                        edge_ids: edge_ids.into_iter().take(half).collect(),
-                    },
-                ],
-            },
-        ];
+        self.flows = vec![FlowDefinition {
+            name: format!("{} Ingestion & Parse Flow", stats.project_name),
+            entry_point: "studio_parser::load_rust_project".to_string(),
+            description: "Scans project directories, extracts syn AST items, and constructs visual architecture graph."
+                .to_string(),
+            originators: "CLI / File Dialog".to_string(),
+            service_count: stats.crate_count,
+            api_call_count: stats.wire_count,
+            variants: vec![
+                FlowVariant {
+                    name: "All Items Execution".to_string(),
+                    coverage_pct: 75,
+                    summary: format!("{} active connection wires", count),
+                    description: "Complete syntax and reference graph flow.".to_string(),
+                    edge_ids: edge_ids.clone(),
+                },
+                FlowVariant {
+                    name: "Primary Call Chain".to_string(),
+                    coverage_pct: 25,
+                    summary: format!("{} core wires", half),
+                    description: "High-priority direct execution and constructor path.".to_string(),
+                    edge_ids: edge_ids.into_iter().take(half).collect(),
+                },
+            ],
+        }];
         self.active_flow_index = 0;
         self.active_variant_index = 0;
     }
@@ -292,12 +273,8 @@ impl StudioApp {
     }
 
     pub(crate) fn sync_category_filters(&mut self) {
-        let active: BTreeSet<NodeArchetype> = self
-            .category_filters
-            .iter()
-            .filter(|(_, &enabled)| enabled)
-            .map(|(&arch, _)| arch)
-            .collect();
+        let active: BTreeSet<NodeArchetype> =
+            self.category_filters.iter().filter(|(_, &enabled)| enabled).map(|(&arch, _)| arch).collect();
         self.canvas_state.category_filter = active;
     }
 }

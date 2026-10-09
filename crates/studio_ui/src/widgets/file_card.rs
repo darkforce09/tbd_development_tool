@@ -1,8 +1,6 @@
-use egui::{
-    epaint::RectShape, Color32, FontFamily, FontId, Painter, Pos2, Rect, CornerRadius, Stroke, Vec2,
-};
 use crate::colors::*;
 use crate::syntax::SyntaxHighlighter;
+use egui::{epaint::RectShape, Color32, CornerRadius, FontFamily, FontId, Painter, Pos2, Rect, Stroke, Vec2};
 
 /// UI representation of a member item inside a File node (function, struct, enum, trait, method).
 #[derive(Clone, Copy)]
@@ -11,7 +9,7 @@ pub struct FileCardMember<'a> {
     pub name: &'a str,
     pub archetype_tag: &'a str, // "FN", "STR", "ENM", "TRT", "MOD"
     pub archetype_color: Color32,
-    pub visibility: &'a str,    // "pub" or ""
+    pub visibility: &'a str, // "pub" or ""
     pub signature: &'a str,
     pub line_number: usize,
     pub source_code: &'a str,
@@ -62,14 +60,16 @@ pub fn paint_file_card(painter: &Painter, props: FileCardProps<'_>) -> FileCardL
             props.rect.translate(shadow_offset),
             rounding,
             Color32::from_rgba_premultiplied(99, 102, 241, 60),
-            Stroke::NONE, egui::StrokeKind::Middle,
+            Stroke::NONE,
+            egui::StrokeKind::Middle,
         );
     } else {
         painter.rect(
             props.rect.translate(shadow_offset),
             rounding,
             CARD_SHADOW,
-            Stroke::NONE, egui::StrokeKind::Middle,
+            Stroke::NONE,
+            egui::StrokeKind::Middle,
         );
     }
 
@@ -82,11 +82,7 @@ pub fn paint_file_card(painter: &Painter, props: FileCardProps<'_>) -> FileCardL
         Stroke::new((1.0 * z).max(0.75), CARD_BORDER_NORMAL)
     };
 
-    let bg_color = if props.is_hovered {
-        CARD_BG_HOVER
-    } else {
-        CARD_BG
-    };
+    let bg_color = if props.is_hovered { CARD_BG_HOVER } else { CARD_BG };
 
     painter.add(RectShape::new(props.rect, rounding, bg_color, border_stroke, egui::StrokeKind::Middle));
 
@@ -109,7 +105,8 @@ pub fn paint_file_card(painter: &Painter, props: FileCardProps<'_>) -> FileCardL
         badge_rect,
         CornerRadius::from(4.0 * z),
         with_alpha(ext_color, 40),
-        Stroke::new((1.0 * z).max(0.5), with_alpha(ext_color, 180)), egui::StrokeKind::Middle,
+        Stroke::new((1.0 * z).max(0.5), with_alpha(ext_color, 180)),
+        egui::StrokeKind::Middle,
     );
 
     // Extension text uppercase (e.g., "RS", "JS")
@@ -124,10 +121,8 @@ pub fn paint_file_card(painter: &Painter, props: FileCardProps<'_>) -> FileCardL
 
     // Full Code Expand / Collapse button on the far right
     let btn_size = Vec2::splat(18.0 * z);
-    let code_expand_btn_rect = Rect::from_center_size(
-        Pos2::new(props.rect.max.x - 14.0 * z, header_rect.center().y),
-        btn_size,
-    );
+    let code_expand_btn_rect =
+        Rect::from_center_size(Pos2::new(props.rect.max.x - 14.0 * z, header_rect.center().y), btn_size);
 
     let expand_icon = if props.is_code_expanded {
         egui_phosphor::regular::ARROWS_IN_SIMPLE
@@ -159,10 +154,8 @@ pub fn paint_file_card(painter: &Painter, props: FileCardProps<'_>) -> FileCardL
     );
 
     // Dropdown Accordion toggle button (left of full expand button)
-    let dropdown_btn_rect = Rect::from_center_size(
-        Pos2::new(code_expand_btn_rect.min.x - 11.0 * z, header_rect.center().y),
-        btn_size,
-    );
+    let dropdown_btn_rect =
+        Rect::from_center_size(Pos2::new(code_expand_btn_rect.min.x - 11.0 * z, header_rect.center().y), btn_size);
     let is_dropdown_hovered = props.hovered_pos.map(|p| dropdown_btn_rect.contains(p)).unwrap_or(false);
     if is_dropdown_hovered || props.is_dropdown_expanded {
         let fill = if props.is_dropdown_expanded {
@@ -179,11 +172,8 @@ pub fn paint_file_card(painter: &Painter, props: FileCardProps<'_>) -> FileCardL
     } else {
         TEXT_SECONDARY
     };
-    let dropdown_icon = if props.is_dropdown_expanded {
-        egui_phosphor::regular::CARET_UP
-    } else {
-        egui_phosphor::regular::CARET_DOWN
-    };
+    let dropdown_icon =
+        if props.is_dropdown_expanded { egui_phosphor::regular::CARET_UP } else { egui_phosphor::regular::CARET_DOWN };
     header_painter.text(
         dropdown_btn_rect.center(),
         egui::Align2::CENTER_CENTER,
@@ -257,10 +247,7 @@ pub fn paint_file_card(painter: &Painter, props: FileCardProps<'_>) -> FileCardL
     if props.is_dropdown_expanded {
         let div_y = header_rect.max.y;
         header_painter.line_segment(
-            [
-                Pos2::new(props.rect.min.x + 8.0 * z, div_y),
-                Pos2::new(props.rect.max.x - 8.0 * z, div_y),
-            ],
+            [Pos2::new(props.rect.min.x + 8.0 * z, div_y), Pos2::new(props.rect.max.x - 8.0 * z, div_y)],
             Stroke::new((1.0 * z).max(0.5), Color32::from_rgb(38, 42, 58)),
         );
 
@@ -305,7 +292,8 @@ pub fn paint_file_card(painter: &Painter, props: FileCardProps<'_>) -> FileCardL
                     tag_rect,
                     CornerRadius::from(3.0 * z),
                     with_alpha(member.archetype_color, 45),
-                    Stroke::new((1.0 * z).max(0.5), with_alpha(member.archetype_color, 180)), egui::StrokeKind::Middle,
+                    Stroke::new((1.0 * z).max(0.5), with_alpha(member.archetype_color, 180)),
+                    egui::StrokeKind::Middle,
                 );
 
                 header_painter.text(
@@ -395,7 +383,8 @@ pub fn paint_file_card(painter: &Painter, props: FileCardProps<'_>) -> FileCardL
                         drawer_rect,
                         CornerRadius::from(4.0 * z),
                         Color32::from_rgb(12, 14, 20),
-                        Stroke::new((1.0 * z).max(0.5), Color32::from_rgb(45, 50, 68)), egui::StrokeKind::Middle,
+                        Stroke::new((1.0 * z).max(0.5), Color32::from_rgb(45, 50, 68)),
+                        egui::StrokeKind::Middle,
                     );
 
                     let drawer_clip = header_painter.with_clip_rect(drawer_rect);
@@ -423,11 +412,7 @@ pub fn paint_file_card(painter: &Painter, props: FileCardProps<'_>) -> FileCardL
                             job.append(
                                 token,
                                 0.0,
-                                egui::TextFormat {
-                                    font_id: font_id.clone(),
-                                    color,
-                                    ..Default::default()
-                                },
+                                egui::TextFormat { font_id: font_id.clone(), color, ..Default::default() },
                             );
                         }
 

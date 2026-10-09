@@ -146,9 +146,12 @@ impl CodeLang {
             CodeLang::Python | CodeLang::Ruby | CodeLang::Scala => "def",
             CodeLang::Go | CodeLang::Swift => "func",
             CodeLang::Kotlin => "fun",
-            CodeLang::JavaScript | CodeLang::TypeScript | CodeLang::Tsx | CodeLang::Php | CodeLang::Lua | CodeLang::Bash => {
-                "function"
-            }
+            CodeLang::JavaScript
+            | CodeLang::TypeScript
+            | CodeLang::Tsx
+            | CodeLang::Php
+            | CodeLang::Lua
+            | CodeLang::Bash => "function",
             CodeLang::Zig => "fn",
             CodeLang::C | CodeLang::Cpp | CodeLang::CSharp | CodeLang::Java | CodeLang::Dart => "",
         }

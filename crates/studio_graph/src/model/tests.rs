@@ -87,7 +87,15 @@ fn test_hierarchical_cluster_bounds_and_collapse() {
 #[test]
 fn test_file_node_member_nodes_and_dropdown() {
     let mut graph = Graph::new();
-    let nid = graph.add_node("test.rs", NodeArchetype::File, "Test file", Some("RS".to_string()), vec![], vec![], [10.0, 10.0]);
+    let nid = graph.add_node(
+        "test.rs",
+        NodeArchetype::File,
+        "Test file",
+        Some("RS".to_string()),
+        vec![],
+        vec![],
+        [10.0, 10.0],
+    );
 
     let p_in = PortId(100);
     let p_out = PortId(101);
@@ -130,7 +138,8 @@ fn test_file_node_member_nodes_and_dropdown() {
 #[test]
 fn test_node_expanded_tab_and_scroll_roundtrip() {
     let mut graph = Graph::new();
-    let nid = graph.add_node("readme.md", NodeArchetype::File, "Readme", Some("MD".to_string()), vec![], vec![], [0.0, 0.0]);
+    let nid =
+        graph.add_node("readme.md", NodeArchetype::File, "Readme", Some("MD".to_string()), vec![], vec![], [0.0, 0.0]);
 
     let node = &graph.nodes[&nid];
     assert_eq!(node.expanded_tab, 0);
@@ -149,4 +158,3 @@ fn test_node_expanded_tab_and_scroll_roundtrip() {
     assert_eq!(n.expanded_tab, 1);
     assert_eq!(n.scroll_offset_y, 45.5);
 }
-

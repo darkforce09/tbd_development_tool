@@ -1,17 +1,14 @@
+use crate::extractor::{ExtractedProject, FunctionItem};
 use std::collections::HashMap;
 use studio_graph::{DataType, Graph, GroupCluster, NodeArchetype, NodeId, PortId};
-use crate::extractor::{ExtractedProject, FunctionItem};
 
 use super::common::{clean_type_key, truncate_str, NodeLookup};
 use super::ProjectStats;
 
 pub fn build_items_graph(project: &ExtractedProject, public_only: bool) -> (Graph, ProjectStats) {
     let mut graph = Graph::new();
-    let mut stats = ProjectStats {
-        project_name: project.name.clone(),
-        crate_count: project.crates.len(),
-        ..Default::default()
-    };
+    let mut stats =
+        ProjectStats { project_name: project.name.clone(), crate_count: project.crates.len(), ..Default::default() };
 
     let mut name_to_node: HashMap<String, NodeLookup> = HashMap::new();
     let mut pending_calls: Vec<(NodeId, PortId, String)> = Vec::new();
@@ -194,12 +191,7 @@ pub fn build_items_graph(project: &ExtractedProject, public_only: bool) -> (Grap
                     format!("{} • {} methods", file_label, t.methods.len())
                 };
 
-                let output_defs = t
-                    .methods
-                    .iter()
-                    .take(5)
-                    .map(|m| (m.clone(), DataType::RustFlow))
-                    .collect();
+                let output_defs = t.methods.iter().take(5).map(|m| (m.clone(), DataType::RustFlow)).collect();
 
                 let node_id = graph.add_node(
                     format!("trait {}", t.name),
@@ -248,11 +240,8 @@ pub fn build_items_graph(project: &ExtractedProject, public_only: bool) -> (Grap
             }
 
             // 4. Free Functions & Impl Methods
-            let all_functions: Vec<&FunctionItem> = file
-                .functions
-                .iter()
-                .chain(file.impls.iter().flat_map(|i| i.methods.iter()))
-                .collect();
+            let all_functions: Vec<&FunctionItem> =
+                file.functions.iter().chain(file.impls.iter().flat_map(|i| i.methods.iter())).collect();
 
             for f in all_functions {
                 if public_only && !f.visibility.is_public() {
@@ -266,11 +255,7 @@ pub fn build_items_graph(project: &ExtractedProject, public_only: bool) -> (Grap
                     format!("{}FN", f.visibility.badge_prefix())
                 };
 
-                let desc = if !f.docs.is_empty() {
-                    f.docs.clone()
-                } else {
-                    format!("{}:{}", file_label, f.line)
-                };
+                let desc = if !f.docs.is_empty() { f.docs.clone() } else { format!("{}:{}", file_label, f.line) };
 
                 // Inputs: "exec" trigger + parameters
                 let mut input_defs = vec![("exec".to_string(), DataType::RustFlow)];
@@ -284,10 +269,7 @@ pub fn build_items_graph(project: &ExtractedProject, public_only: bool) -> (Grap
                 // Outputs: "call" trigger + return type
                 let mut output_defs = vec![("call".to_string(), DataType::RustFlow)];
                 if let Some(ret) = &f.output {
-                    output_defs.push((
-                        format!("-> {}", truncate_str(ret, 22)),
-                        DataType::RustType(ret.clone()),
-                    ));
+                    output_defs.push((format!("-> {}", truncate_str(ret, 22)), DataType::RustType(ret.clone())));
                 }
 
                 let node_id = graph.add_node(

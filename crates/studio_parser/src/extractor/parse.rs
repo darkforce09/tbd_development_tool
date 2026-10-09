@@ -1,16 +1,16 @@
-use std::path::Path;
+use crate::project::RustProject;
 use quote::ToTokens;
 use rayon::prelude::*;
+use std::path::Path;
 use syn::spanned::Spanned;
 use syn::visit::Visit;
-use crate::project::RustProject;
 
 use super::lang::SourceLang;
 
 use super::helpers::{clean_tokens, extract_derives, extract_docs, extract_source_lines, extract_vis, CallVisitor};
 use super::types::{
-    EnumItem, ExtractedCrate, ExtractedFile, ExtractedProject, FieldInfo, FunctionItem, ImplItem,
-    ParamInfo, StructItem, TraitItem, UseItem,
+    EnumItem, ExtractedCrate, ExtractedFile, ExtractedProject, FieldInfo, FunctionItem, ImplItem, ParamInfo,
+    StructItem, TraitItem, UseItem,
 };
 
 /// Extracts AST information from all source files in a scanned Rust project using parallel CPU cores.
@@ -23,46 +23,40 @@ pub fn extract_project(project: &RustProject) -> ExtractedProject {
                 .source_files
                 .par_iter()
                 .map(|file_path| {
-                    let rel_path = file_path
-                        .strip_prefix(&krate.root_path)
-                        .unwrap_or(file_path)
-                        .to_path_buf();
+                    let rel_path = file_path.strip_prefix(&krate.root_path).unwrap_or(file_path).to_path_buf();
                     extract_file(file_path, &rel_path)
                 })
                 .collect();
 
-            ExtractedCrate {
-                name: krate.name.clone(),
-                root_path: krate.root_path.clone(),
-                files: extracted_files,
-            }
+            ExtractedCrate { name: krate.name.clone(), root_path: krate.root_path.clone(), files: extracted_files }
         })
         .collect();
 
-    ExtractedProject {
-        name: project.name.clone(),
-        root_path: project.root_path.clone(),
-        crates: extracted_crates,
-    }
+    ExtractedProject { name: project.name.clone(), root_path: project.root_path.clone(), crates: extracted_crates }
 }
 
 pub fn extract_file(file_path: &Path, rel_path: &Path) -> ExtractedFile {
     let fallback_lang = super::lang::detect_language_by_path(file_path);
     match std::fs::read_to_string(file_path) {
         // One malformed file must not take down the whole background load.
-        Ok(content) => std::panic::catch_unwind(|| extract_source(file_path, rel_path, &content)).unwrap_or_else(|_| {
-            ExtractedFile::empty(file_path, rel_path, fallback_lang, Some("Extractor panicked on this file".to_string()))
-        }),
+        Ok(content) => {
+            std::panic::catch_unwind(|| extract_source(file_path, rel_path, &content)).unwrap_or_else(|_| {
+                ExtractedFile::empty(
+                    file_path,
+                    rel_path,
+                    fallback_lang,
+                    Some("Extractor panicked on this file".to_string()),
+                )
+            })
+        }
         Err(e) => ExtractedFile::empty(file_path, rel_path, fallback_lang, Some(format!("Failed to read file: {}", e))),
     }
 }
 
 /// Extracts items from in-memory file content. Shared by project loading and save/re-parse.
 pub fn extract_source(file_path: &Path, rel_path: &Path, content: &str) -> ExtractedFile {
-    let module_name = file_path
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "mod".to_string());
+    let module_name =
+        file_path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "mod".to_string());
 
     match super::lang::detect_language(file_path, content) {
         SourceLang::Markdown => return super::markdown::extract_markdown_file(file_path, rel_path, content),
@@ -74,7 +68,9 @@ pub fn extract_source(file_path: &Path, rel_path: &Path, content: &str) -> Extra
 
     let syn_file = match syn::parse_file(content) {
         Ok(sf) => sf,
-        Err(e) => return ExtractedFile::empty(file_path, rel_path, SourceLang::Rust, Some(format!("Syntax error: {}", e))),
+        Err(e) => {
+            return ExtractedFile::empty(file_path, rel_path, SourceLang::Rust, Some(format!("Syntax error: {}", e)))
+        }
     };
 
     let mut functions = Vec::new();
@@ -144,10 +140,7 @@ pub fn parse_fn(fn_item: &syn::ItemFn, is_method: bool, content_lines: &[&str]) 
             syn::FnArg::Typed(pat_type) => {
                 let pat_str = clean_tokens(&pat_type.pat.to_token_stream().to_string());
                 let ty_str = clean_tokens(&pat_type.ty.to_token_stream().to_string());
-                inputs.push(ParamInfo {
-                    name: pat_str,
-                    type_str: ty_str,
-                });
+                inputs.push(ParamInfo { name: pat_str, type_str: ty_str });
             }
         }
     }
@@ -194,11 +187,7 @@ pub fn parse_struct(s_item: &syn::ItemStruct, content_lines: &[&str]) -> StructI
                 let f_name = f.ident.as_ref().map(|i| i.to_string()).unwrap_or_default();
                 let f_ty = clean_tokens(&f.ty.to_token_stream().to_string());
                 let f_vis = extract_vis(&f.vis);
-                fields.push(FieldInfo {
-                    name: f_name,
-                    type_str: f_ty,
-                    visibility: f_vis,
-                });
+                fields.push(FieldInfo { name: f_name, type_str: f_ty, visibility: f_vis });
             }
         }
         syn::Fields::Unnamed(unnamed) => {
@@ -206,25 +195,13 @@ pub fn parse_struct(s_item: &syn::ItemStruct, content_lines: &[&str]) -> StructI
                 let f_name = format!("{}", idx);
                 let f_ty = clean_tokens(&f.ty.to_token_stream().to_string());
                 let f_vis = extract_vis(&f.vis);
-                fields.push(FieldInfo {
-                    name: f_name,
-                    type_str: f_ty,
-                    visibility: f_vis,
-                });
+                fields.push(FieldInfo { name: f_name, type_str: f_ty, visibility: f_vis });
             }
         }
         syn::Fields::Unit => {}
     }
 
-    StructItem {
-        name,
-        visibility,
-        fields,
-        derives,
-        docs,
-        line,
-        source_code,
-    }
+    StructItem { name, visibility, fields, derives, docs, line, source_code }
 }
 
 pub fn parse_enum(e_item: &syn::ItemEnum, content_lines: &[&str]) -> EnumItem {
@@ -235,20 +212,9 @@ pub fn parse_enum(e_item: &syn::ItemEnum, content_lines: &[&str]) -> EnumItem {
     let source_code = extract_source_lines(content_lines, line)
         .unwrap_or_else(|| clean_tokens(&e_item.to_token_stream().to_string()));
 
-    let variants = e_item
-        .variants
-        .iter()
-        .map(|v| v.ident.to_string())
-        .collect();
+    let variants = e_item.variants.iter().map(|v| v.ident.to_string()).collect();
 
-    EnumItem {
-        name,
-        visibility,
-        variants,
-        docs,
-        line,
-        source_code,
-    }
+    EnumItem { name, visibility, variants, docs, line, source_code }
 }
 
 pub fn parse_trait(t_item: &syn::ItemTrait, content_lines: &[&str]) -> TraitItem {
@@ -266,22 +232,12 @@ pub fn parse_trait(t_item: &syn::ItemTrait, content_lines: &[&str]) -> TraitItem
         }
     }
 
-    TraitItem {
-        name,
-        visibility,
-        methods,
-        docs,
-        line,
-        source_code,
-    }
+    TraitItem { name, visibility, methods, docs, line, source_code }
 }
 
 pub fn parse_impl(i_item: &syn::ItemImpl, content_lines: &[&str]) -> ImplItem {
     let target_type = clean_tokens(&i_item.self_ty.to_token_stream().to_string());
-    let trait_name = i_item
-        .trait_
-        .as_ref()
-        .map(|(_, path, _)| clean_tokens(&path.to_token_stream().to_string()));
+    let trait_name = i_item.trait_.as_ref().map(|(_, path, _)| clean_tokens(&path.to_token_stream().to_string()));
     let line = i_item.self_ty.span().start().line;
 
     let mut methods = Vec::new();
@@ -336,18 +292,10 @@ pub fn parse_impl(i_item: &syn::ItemImpl, content_lines: &[&str]) -> ImplItem {
         }
     }
 
-    ImplItem {
-        target_type,
-        trait_name,
-        methods,
-        line,
-    }
+    ImplItem { target_type, trait_name, methods, line }
 }
 
 pub fn parse_use(u_item: &syn::ItemUse) -> UseItem {
     let path = clean_tokens(&u_item.tree.to_token_stream().to_string());
-    UseItem {
-        path,
-        items: Vec::new(),
-    }
+    UseItem { path, items: Vec::new() }
 }

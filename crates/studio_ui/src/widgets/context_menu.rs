@@ -1,5 +1,5 @@
-use egui::{Color32, FontFamily, FontId, Painter, Pos2, Rect, CornerRadius, Stroke, Vec2};
 use crate::colors::*;
+use egui::{Color32, CornerRadius, FontFamily, FontId, Painter, Pos2, Rect, Stroke, Vec2};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContextMenuItem {
@@ -26,10 +26,7 @@ pub struct ContextMenuLayout {
 }
 
 /// Paints a sleek dark-themed context menu when right-clicking a node.
-pub fn paint_node_context_menu(
-    painter: &Painter,
-    props: NodeContextMenuProps<'_>,
-) -> ContextMenuLayout {
+pub fn paint_node_context_menu(painter: &Painter, props: NodeContextMenuProps<'_>) -> ContextMenuLayout {
     let width = 196.0;
     let row_h = 27.0;
     let header_h = 24.0;
@@ -46,30 +43,15 @@ pub fn paint_node_context_menu(
             },
             false,
         ),
-        (
-            ContextMenuItem::ViewDocs,
-            "View Documentation",
-            egui_phosphor::regular::NOTE,
-            false,
-        ),
-        (
-            ContextMenuItem::Center,
-            "Center in View",
-            egui_phosphor::regular::CROSSHAIR,
-            false,
-        ),
+        (ContextMenuItem::ViewDocs, "View Documentation", egui_phosphor::regular::NOTE, false),
+        (ContextMenuItem::Center, "Center in View", egui_phosphor::regular::CROSSHAIR, false),
         (
             ContextMenuItem::ToggleWires,
             if props.show_member_wires { "Hide Member Wires" } else { "Show Member Wires" },
             egui_phosphor::regular::PLUGS,
             false,
         ),
-        (
-            ContextMenuItem::CopyPath,
-            "Copy File Path",
-            egui_phosphor::regular::COPY,
-            false,
-        ),
+        (ContextMenuItem::CopyPath, "Copy File Path", egui_phosphor::regular::COPY, false),
         (
             ContextMenuItem::Delete,
             "Delete Node",
@@ -86,7 +68,8 @@ pub fn paint_node_context_menu(
         menu_rect.translate(Vec2::new(0.0, 5.0)),
         CornerRadius::from(7.0),
         Color32::from_black_alpha(130),
-        Stroke::NONE, egui::StrokeKind::Middle,
+        Stroke::NONE,
+        egui::StrokeKind::Middle,
     );
 
     // Menu panel container
@@ -94,21 +77,13 @@ pub fn paint_node_context_menu(
         menu_rect,
         CornerRadius::from(7.0),
         Color32::from_rgb(20, 24, 34),
-        Stroke::new(1.0, Color32::from_rgb(46, 54, 72)), egui::StrokeKind::Middle,
+        Stroke::new(1.0, Color32::from_rgb(46, 54, 72)),
+        egui::StrokeKind::Middle,
     );
 
     // Header bar with node title
     let header_rect = Rect::from_min_size(menu_rect.min, Vec2::new(width, header_h));
-    painter.rect_filled(
-        header_rect,
-        CornerRadius {
-            nw: 7,
-            ne: 7,
-            sw: 0,
-            se: 0,
-        },
-        Color32::from_rgb(15, 18, 26),
-    );
+    painter.rect_filled(header_rect, CornerRadius { nw: 7, ne: 7, sw: 0, se: 0 }, Color32::from_rgb(15, 18, 26));
     painter.text(
         header_rect.min + Vec2::new(10.0, header_h * 0.5),
         egui::Align2::LEFT_CENTER,
@@ -125,19 +100,13 @@ pub fn paint_node_context_menu(
             // Divider line before delete
             let div_y = curr_y + 2.0;
             painter.line_segment(
-                [
-                    Pos2::new(menu_rect.min.x + 8.0, div_y),
-                    Pos2::new(menu_rect.max.x - 8.0, div_y),
-                ],
+                [Pos2::new(menu_rect.min.x + 8.0, div_y), Pos2::new(menu_rect.max.x - 8.0, div_y)],
                 Stroke::new(1.0, Color32::from_rgb(38, 44, 60)),
             );
             curr_y += divider_h;
         }
 
-        let row_rect = Rect::from_min_size(
-            Pos2::new(menu_rect.min.x + 4.0, curr_y),
-            Vec2::new(width - 8.0, row_h),
-        );
+        let row_rect = Rect::from_min_size(Pos2::new(menu_rect.min.x + 4.0, curr_y), Vec2::new(width - 8.0, row_h));
 
         let is_hov = props.hovered_pos.map(|p| row_rect.contains(p)).unwrap_or(false);
 
@@ -151,7 +120,11 @@ pub fn paint_node_context_menu(
         }
 
         let text_color = if is_danger {
-            if is_hov { Color32::from_rgb(248, 113, 113) } else { Color32::from_rgb(220, 80, 80) }
+            if is_hov {
+                Color32::from_rgb(248, 113, 113)
+            } else {
+                Color32::from_rgb(220, 80, 80)
+            }
         } else if is_hov {
             TEXT_HIGHLIGHT
         } else {
@@ -180,8 +153,5 @@ pub fn paint_node_context_menu(
         curr_y += row_h;
     }
 
-    ContextMenuLayout {
-        rect: menu_rect,
-        item_clicks,
-    }
+    ContextMenuLayout { rect: menu_rect, item_clicks }
 }

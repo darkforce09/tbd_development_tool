@@ -1,5 +1,5 @@
-use std::collections::BTreeSet;
 use egui::{Color32, Pos2, Rect, Vec2};
+use std::collections::BTreeSet;
 use studio_graph::{DataType, EdgeId, Graph, NodeArchetype, NodeId};
 use studio_ui::color_tokens::*;
 
@@ -20,12 +20,17 @@ pub fn data_type_color(data_type: &DataType) -> Color32 {
         DataType::RustType(name) => {
             let s = name.trim_start_matches('&').trim_start_matches("mut ").trim();
             match s {
-                "bool" | "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "f32" | "f64" => {
+                "bool" | "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64" | "i128"
+                | "isize" | "f32" | "f64" => {
                     Color32::from_rgb(250, 204, 21) // Amber/Yellow
                 }
                 "String" | "str" => Color32::from_rgb(56, 189, 248), // Sky blue
                 s if s.starts_with("Option") || s.starts_with("Result") => Color32::from_rgb(52, 211, 153), // Emerald
-                s if s.starts_with("Vec") || s.starts_with("HashMap") || s.starts_with("BTreeMap") || s.starts_with("HashSet") => {
+                s if s.starts_with("Vec")
+                    || s.starts_with("HashMap")
+                    || s.starts_with("BTreeMap")
+                    || s.starts_with("HashSet") =>
+                {
                     Color32::from_rgb(167, 139, 250) // Purple
                 }
                 _ => {

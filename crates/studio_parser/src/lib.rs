@@ -1,27 +1,26 @@
-pub mod project;
-pub mod extractor;
 pub mod builder;
-pub mod sync;
-pub mod search_index;
 pub mod cache;
 pub mod edit;
+pub mod extractor;
+pub mod project;
+pub mod search_index;
+pub mod sync;
 
-pub use project::{CrateInfo, ProjectError, RustProject, scan_project};
-pub use extractor::{
-    extract_file, extract_project, EnumItem, ExtractedCrate, ExtractedFile, ExtractedProject,
-    FieldInfo, FunctionItem, ImplItem, ItemVisibility, ParamInfo, StructItem, TraitItem, UseItem,
-};
 pub use builder::{
-    build_files_graph, build_items_graph, build_modules_graph, build_project_graph,
-    build_skeleton_files_graph, ProjectStats, ViewGranularity,
+    build_files_graph, build_items_graph, build_modules_graph, build_project_graph, build_skeleton_files_graph,
+    ProjectStats, ViewGranularity,
 };
-pub use sync::{save_and_reparse, SaveReport};
-pub use edit::{apply_edit, atomic_write, content_hash, EditError, EditOrigin};
-pub use search_index::{SearchItem, SymbolSearchIndex};
 pub use cache::{
-    clear_project_cache, load_project_cache, save_project_cache, user_cache_dir_for_project,
-    CachedProjectData,
+    clear_project_cache, load_project_cache, save_project_cache, user_cache_dir_for_project, CachedProjectData,
 };
+pub use edit::{apply_edit, atomic_write, content_hash, EditError, EditOrigin};
+pub use extractor::{
+    extract_file, extract_project, EnumItem, ExtractedCrate, ExtractedFile, ExtractedProject, FieldInfo, FunctionItem,
+    ImplItem, ItemVisibility, ParamInfo, StructItem, TraitItem, UseItem,
+};
+pub use project::{scan_project, CrateInfo, ProjectError, RustProject};
+pub use search_index::{SearchItem, SymbolSearchIndex};
+pub use sync::{save_and_reparse, SaveReport};
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
@@ -29,23 +28,9 @@ use studio_graph::Graph;
 
 #[derive(Debug, Clone)]
 pub enum LoaderMessage {
-    Progress {
-        stage: String,
-        files_done: usize,
-        total_files: usize,
-        percentage: f32,
-    },
-    InitialLayoutReady {
-        graph: Graph,
-        stats: ProjectStats,
-        search_index: SymbolSearchIndex,
-    },
-    Complete {
-        graph: Graph,
-        stats: ProjectStats,
-        search_index: SymbolSearchIndex,
-        from_cache: bool,
-    },
+    Progress { stage: String, files_done: usize, total_files: usize, percentage: f32 },
+    InitialLayoutReady { graph: Graph, stats: ProjectStats, search_index: SymbolSearchIndex },
+    Complete { graph: Graph, stats: ProjectStats, search_index: SymbolSearchIndex, from_cache: bool },
     Error(String),
 }
 
@@ -99,12 +84,7 @@ pub fn spawn_load_project_opt(
 
                     let search_index = SymbolSearchIndex::build(&graph);
 
-                    let _ = tx.send(LoaderMessage::Complete {
-                        graph,
-                        stats,
-                        search_index,
-                        from_cache: true,
-                    });
+                    let _ = tx.send(LoaderMessage::Complete { graph, stats, search_index, from_cache: true });
                     return;
                 }
                 Ok(None) => {} // Cache miss or stale -> proceed to fresh parse
@@ -142,7 +122,11 @@ pub fn spawn_load_project_opt(
 
         let total_files = scanned.total_files();
         let _ = tx.send(LoaderMessage::Progress {
-            stage: format!("Parsing {} source files across {} crates in parallel...", total_files, scanned.crates.len()),
+            stage: format!(
+                "Parsing {} source files across {} crates in parallel...",
+                total_files,
+                scanned.crates.len()
+            ),
             files_done: 0,
             total_files,
             percentage: 0.20,
@@ -193,8 +177,8 @@ mod tests {
     #[test]
     fn test_parse_single_crate() {
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let (graph, stats) = load_rust_project(manifest_dir, ViewGranularity::AllItems)
-            .expect("Failed to load studio_parser crate");
+        let (graph, stats) =
+            load_rust_project(manifest_dir, ViewGranularity::AllItems).expect("Failed to load studio_parser crate");
 
         assert!(!graph.nodes.is_empty(), "Graph should contain nodes");
         assert_eq!(stats.crate_count, 1);
@@ -209,12 +193,10 @@ mod tests {
 
     #[test]
     fn test_parse_workspace_root() {
-        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(2)
-            .expect("Workspace root should exist");
-        let (graph, stats) = load_rust_project(workspace_root, ViewGranularity::AllItems)
-            .expect("Failed to load workspace");
+        let workspace_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2).expect("Workspace root should exist");
+        let (graph, stats) =
+            load_rust_project(workspace_root, ViewGranularity::AllItems).expect("Failed to load workspace");
 
         assert!(!graph.nodes.is_empty(), "Graph should contain nodes");
         assert!(stats.crate_count >= 4, "Should detect workspace crates");
@@ -270,10 +252,7 @@ mod tests {
         assert_eq!(result.unwrap().updated_nodes, 1, "Should update 1 node");
 
         let updated_node = graph.nodes.get(&node_id).unwrap();
-        assert!(
-            updated_node.source_code.as_ref().unwrap().contains("10"),
-            "Node source code should be hot-reloaded"
-        );
+        assert!(updated_node.source_code.as_ref().unwrap().contains("10"), "Node source code should be hot-reloaded");
 
         let disk_content = std::fs::read_to_string(&test_file).unwrap();
         assert_eq!(disk_content, updated_code, "Disk file must match saved content");
@@ -282,7 +261,11 @@ mod tests {
     #[test]
     fn test_item_node_save_keeps_other_items() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n").unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
         let lib = dir.path().join("src/lib.rs");
         let original = "pub fn alpha() -> i32 {\n    1\n}\n\npub fn beta() -> i32 {\n    2\n}\n";
@@ -315,7 +298,12 @@ mod tests {
             .map(|m| (m.id.clone(), m.visibility.clone(), m.signature.clone(), m.line_number))
             .collect();
         let port_owner = |port: studio_graph::PortId| {
-            graph.nodes.values().flat_map(|n| n.member_nodes.iter()).find(|m| m.in_port_id == Some(port) || m.out_port_id == Some(port)).map(|m| m.id.clone())
+            graph
+                .nodes
+                .values()
+                .flat_map(|n| n.member_nodes.iter())
+                .find(|m| m.in_port_id == Some(port) || m.out_port_id == Some(port))
+                .map(|m| m.id.clone())
         };
         let mut calls: Vec<(String, String)> = graph
             .edges
@@ -330,7 +318,11 @@ mod tests {
     #[test]
     fn test_save_matches_fresh_load() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n").unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
         std::fs::write(dir.path().join("src/b.rs"), "pub fn beta() {}\npub fn delta() {}\n").unwrap();
         let a = dir.path().join("src/a.rs");
@@ -347,7 +339,8 @@ mod tests {
         assert!(saved_shape.0.iter().any(|m| m.0 == "method:S::m"), "impl methods are kept: {saved_shape:?}");
 
         let card = graph.nodes.values().find(|n| n.title == "a.rs").unwrap();
-        let port_ids: std::collections::HashSet<_> = card.inputs.iter().chain(card.outputs.iter()).map(|p| p.id).collect();
+        let port_ids: std::collections::HashSet<_> =
+            card.inputs.iter().chain(card.outputs.iter()).map(|p| p.id).collect();
         for m in &card.member_nodes {
             assert!(port_ids.contains(&m.in_port_id.unwrap()) && port_ids.contains(&m.out_port_id.unwrap()));
         }
@@ -411,8 +404,8 @@ mod tests {
     #[test]
     fn test_parse_files_and_folders_view() {
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let (graph, stats) = load_rust_project(manifest_dir, ViewGranularity::FilesAndFolders)
-            .expect("Should load files and folders");
+        let (graph, stats) =
+            load_rust_project(manifest_dir, ViewGranularity::FilesAndFolders).expect("Should load files and folders");
 
         assert!(!graph.nodes.is_empty(), "Should contain file nodes");
         assert!(stats.file_count >= 5, "Should have scanned files");
@@ -474,8 +467,8 @@ Link back: [Hub](../README.md)
 "#;
         std::fs::write(&sat_path, sat_content).unwrap();
 
-        let (graph, stats) = load_rust_project(&temp_dir, ViewGranularity::FilesAndFolders)
-            .expect("Should load mixed project");
+        let (graph, stats) =
+            load_rust_project(&temp_dir, ViewGranularity::FilesAndFolders).expect("Should load mixed project");
 
         assert_eq!(stats.file_count, 3, "Should detect 3 files");
         assert_eq!(graph.nodes.len(), 3, "Should create 3 file cards");
@@ -512,8 +505,25 @@ Link back: [Hub](../README.md)
         std::fs::write(&md_file, initial_md).unwrap();
 
         let mut graph = Graph::new();
-        let nid = graph.add_node("spec.md", studio_graph::NodeArchetype::File, "spec", Some("MD".into()), vec![], vec![], [0.0, 0.0]);
-        graph.set_node_metadata(nid, Some(md_file.to_string_lossy().to_string()), Some(1), None, None, None, Some(initial_md.into()), None);
+        let nid = graph.add_node(
+            "spec.md",
+            studio_graph::NodeArchetype::File,
+            "spec",
+            Some("MD".into()),
+            vec![],
+            vec![],
+            [0.0, 0.0],
+        );
+        graph.set_node_metadata(
+            nid,
+            Some(md_file.to_string_lossy().to_string()),
+            Some(1),
+            None,
+            None,
+            None,
+            Some(initial_md.into()),
+            None,
+        );
 
         let updated_md = "# Updated Spec\n## New Heading\n";
         let res = save_and_reparse(&md_file, updated_md, &mut graph);
@@ -526,4 +536,3 @@ Link back: [Hub](../README.md)
         assert!(updated_node.member_nodes.iter().any(|m| m.name == "New Heading"));
     }
 }
-

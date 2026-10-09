@@ -12,11 +12,8 @@ impl Graph {
         }
 
         // 1. Compute cluster depths based on parent chain
-        let id_to_parent: HashMap<String, Option<String>> = self
-            .clusters
-            .iter()
-            .map(|c| (c.id.clone(), c.parent_id.clone()))
-            .collect();
+        let id_to_parent: HashMap<String, Option<String>> =
+            self.clusters.iter().map(|c| (c.id.clone(), c.parent_id.clone())).collect();
 
         for cluster in &mut self.clusters {
             let mut depth = 0;
@@ -33,12 +30,8 @@ impl Graph {
         indices.sort_by(|&a, &b| self.clusters[b].depth.cmp(&self.clusters[a].depth));
 
         // Map cluster ID to index for O(1) child lookups
-        let id_to_idx: HashMap<String, usize> = self
-            .clusters
-            .iter()
-            .enumerate()
-            .map(|(i, c)| (c.id.clone(), i))
-            .collect();
+        let id_to_idx: HashMap<String, usize> =
+            self.clusters.iter().enumerate().map(|(i, c)| (c.id.clone(), i)).collect();
 
         // 3. Process clusters bottom-up
         for &idx in &indices {
@@ -85,10 +78,8 @@ impl Graph {
                 let padding_bottom = 22.0;
 
                 self.clusters[idx].position = [min_x - padding_x, min_y - padding_top];
-                self.clusters[idx].size = [
-                    (max_x - min_x) + padding_x * 2.0,
-                    (max_y - min_y) + padding_top + padding_bottom,
-                ];
+                self.clusters[idx].size =
+                    [(max_x - min_x) + padding_x * 2.0, (max_y - min_y) + padding_top + padding_bottom];
             }
         }
     }
@@ -148,11 +139,7 @@ impl Graph {
     }
 
     pub fn is_cluster_collapsed(&self, cluster_id: &str) -> bool {
-        self.clusters
-            .iter()
-            .find(|c| c.id == cluster_id)
-            .map(|c| c.is_collapsed)
-            .unwrap_or(false)
+        self.clusters.iter().find(|c| c.id == cluster_id).map(|c| c.is_collapsed).unwrap_or(false)
     }
 
     /// O(1) check if a node is inside a collapsed cluster or any of its collapsed ancestors.

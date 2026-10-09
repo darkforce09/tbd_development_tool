@@ -1,6 +1,4 @@
-use egui::{
-    Color32, FontFamily, FontId, RichText, CornerRadius, Stroke, Ui, Vec2,
-};
+use egui::{Color32, CornerRadius, FontFamily, FontId, RichText, Stroke, Ui, Vec2};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use crate::colors::*;
@@ -14,10 +12,7 @@ pub struct MarkdownViewer<'a> {
 
 impl<'a> MarkdownViewer<'a> {
     pub fn new(markdown: &'a str) -> Self {
-        Self {
-            markdown,
-            base_font_size: 11.5,
-        }
+        Self { markdown, base_font_size: 11.5 }
     }
 
     pub fn font_size(mut self, size: f32) -> Self {
@@ -207,13 +202,12 @@ impl MarkdownRenderer {
                 self.table_headers = std::mem::take(&mut self.current_table_row);
                 self.in_table_head = false;
             }
-            TagEnd::TableRow
-                if !self.in_table_head => {
-                    let row = std::mem::take(&mut self.current_table_row);
-                    if !row.is_empty() {
-                        self.table_rows.push(row);
-                    }
+            TagEnd::TableRow if !self.in_table_head => {
+                let row = std::mem::take(&mut self.current_table_row);
+                if !row.is_empty() {
+                    self.table_rows.push(row);
                 }
+            }
             TagEnd::TableCell => {
                 let cell = std::mem::take(&mut self.current_cell_text);
                 self.current_table_row.push(cell.trim().to_string());
@@ -266,11 +260,7 @@ impl MarkdownRenderer {
     }
 
     fn handle_task_marker(&mut self, checked: bool) {
-        let icon = if checked {
-            egui_phosphor::regular::CHECK_SQUARE
-        } else {
-            egui_phosphor::regular::SQUARE
-        };
+        let icon = if checked { egui_phosphor::regular::CHECK_SQUARE } else { egui_phosphor::regular::SQUARE };
         self.paragraph_spans.push(MarkdownSpan {
             text: format!("{} ", icon),
             is_strong: false,
@@ -394,18 +384,11 @@ impl MarkdownRenderer {
             return;
         }
 
-        let lang_label = if self.code_block_lang.is_empty() {
-            "CODE".to_string()
-        } else {
-            self.code_block_lang.to_uppercase()
-        };
+        let lang_label =
+            if self.code_block_lang.is_empty() { "CODE".to_string() } else { self.code_block_lang.to_uppercase() };
 
         let hl = SyntaxHighlighter::global();
-        let lang = if self.code_block_lang.is_empty() {
-            "rs"
-        } else {
-            &self.code_block_lang
-        };
+        let lang = if self.code_block_lang.is_empty() { "rs" } else { &self.code_block_lang };
 
         let font_size = self.base_font_size * 0.95;
 
@@ -446,9 +429,7 @@ impl MarkdownRenderer {
                         ui.spacing_mut().item_spacing.x = 0.0;
                         for (color, token) in tokens {
                             ui.label(
-                                RichText::new(token)
-                                    .font(FontId::new(font_size, FontFamily::Monospace))
-                                    .color(color),
+                                RichText::new(token).font(FontId::new(font_size, FontFamily::Monospace)).color(color),
                             );
                         }
                     });
@@ -471,35 +452,32 @@ impl MarkdownRenderer {
             .corner_radius(CornerRadius::from(4.0))
             .inner_margin(egui::Margin::same(8))
             .show(ui, |ui| {
-                egui::Grid::new(ui.next_auto_id())
-                    .striped(true)
-                    .spacing(Vec2::new(12.0, 6.0))
-                    .show(ui, |ui| {
-                        // Header row
-                        if !headers.is_empty() {
-                            for header in &headers {
-                                ui.label(
-                                    RichText::new(header)
-                                        .font(FontId::new(font_size, FontFamily::Proportional))
-                                        .color(TEXT_HIGHLIGHT)
-                                        .strong(),
-                                );
-                            }
-                            ui.end_row();
+                egui::Grid::new(ui.next_auto_id()).striped(true).spacing(Vec2::new(12.0, 6.0)).show(ui, |ui| {
+                    // Header row
+                    if !headers.is_empty() {
+                        for header in &headers {
+                            ui.label(
+                                RichText::new(header)
+                                    .font(FontId::new(font_size, FontFamily::Proportional))
+                                    .color(TEXT_HIGHLIGHT)
+                                    .strong(),
+                            );
                         }
+                        ui.end_row();
+                    }
 
-                        // Data rows
-                        for row in &rows {
-                            for cell in row {
-                                ui.label(
-                                    RichText::new(cell)
-                                        .font(FontId::new(font_size, FontFamily::Proportional))
-                                        .color(TEXT_PRIMARY),
-                                );
-                            }
-                            ui.end_row();
+                    // Data rows
+                    for row in &rows {
+                        for cell in row {
+                            ui.label(
+                                RichText::new(cell)
+                                    .font(FontId::new(font_size, FontFamily::Proportional))
+                                    .color(TEXT_PRIMARY),
+                            );
                         }
-                    });
+                        ui.end_row();
+                    }
+                });
             });
     }
 }
@@ -531,11 +509,7 @@ fn render_spans_flow(ui: &mut Ui, spans: &[MarkdownSpan], base_font_size: f32, i
                     // Link navigation hook
                 }
             } else {
-                let mut text_color = if is_quote {
-                    TEXT_SECONDARY
-                } else {
-                    TEXT_PRIMARY
-                };
+                let mut text_color = if is_quote { TEXT_SECONDARY } else { TEXT_PRIMARY };
                 if span.is_strikethrough {
                     text_color = TEXT_DIM;
                 }

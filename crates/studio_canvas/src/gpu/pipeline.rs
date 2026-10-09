@@ -48,28 +48,24 @@ impl GpuWirePipeline {
             mapped_at_creation: false,
         });
 
-        let uniform_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("gpu_wire_uniform_layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-            });
+        let uniform_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("gpu_wire_uniform_layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
 
         let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("gpu_wire_uniform_bind_group"),
             layout: &uniform_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
-            }],
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer.as_entire_binding() }],
         });
 
         // 2. Initial Instance Buffer (capacity 4096 wires)
@@ -90,35 +86,15 @@ impl GpuWirePipeline {
 
         let vertex_attributes = [
             // @location(0) p0: vec2f
-            wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x2,
-                offset: 0,
-                shader_location: 0,
-            },
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 0, shader_location: 0 },
             // @location(1) p3: vec2f
-            wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x2,
-                offset: 8,
-                shader_location: 1,
-            },
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 8, shader_location: 1 },
             // @location(2) color: vec4f
-            wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x4,
-                offset: 16,
-                shader_location: 2,
-            },
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 16, shader_location: 2 },
             // @location(3) glow_color: vec4f
-            wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x4,
-                offset: 32,
-                shader_location: 3,
-            },
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 32, shader_location: 3 },
             // @location(4) params: vec4f [core_width, glow_width, anim_time, flags]
-            wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x4,
-                offset: 48,
-                shader_location: 4,
-            },
+            wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 48, shader_location: 4 },
         ];
 
         let vertex_buffer_layout = wgpu::VertexBufferLayout {
@@ -161,13 +137,7 @@ impl GpuWirePipeline {
             cache: None,
         });
 
-        Self {
-            pipeline,
-            uniform_buffer,
-            uniform_bind_group,
-            instance_buffer,
-            instance_capacity: initial_capacity,
-        }
+        Self { pipeline, uniform_buffer, uniform_bind_group, instance_buffer, instance_capacity: initial_capacity }
     }
 
     /// Resizes the instance buffer if the batch size exceeds current capacity.
@@ -190,12 +160,7 @@ impl GpuWirePipeline {
     }
 
     /// Uploads instance data to the GPU buffer.
-    pub fn upload_instances(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        instances: &[GpuWireInstance],
-    ) {
+    pub fn upload_instances(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, instances: &[GpuWireInstance]) {
         if instances.is_empty() {
             return;
         }

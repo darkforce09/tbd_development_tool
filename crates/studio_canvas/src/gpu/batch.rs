@@ -1,6 +1,6 @@
-use egui::{Color32, Pos2, Rect};
 use super::callback::GpuWireCallback;
 use super::pipeline::{CanvasUniforms, GpuWireInstance, FLAG_ANIMATED, FLAG_GLOW};
+use egui::{Color32, Pos2, Rect};
 
 /// Frame collector for GPU wire instances.
 #[derive(Debug, Clone)]
@@ -13,12 +13,7 @@ pub struct GpuWireBatch {
 
 impl GpuWireBatch {
     pub fn new(screen_size: [f32; 2], zoom: f32, anim_time: f32) -> Self {
-        Self {
-            instances: Vec::with_capacity(512),
-            screen_size,
-            zoom,
-            anim_time,
-        }
+        Self { instances: Vec::with_capacity(512), screen_size, zoom, anim_time }
     }
 
     /// Adds a connection wire to the GPU render batch.
@@ -37,12 +32,7 @@ impl GpuWireBatch {
         let mut flags = 0u32;
         let glow_rgba = if let Some(g) = glow_color {
             flags |= FLAG_GLOW;
-            [
-                g.r() as f32 / 255.0,
-                g.g() as f32 / 255.0,
-                g.b() as f32 / 255.0,
-                g.a() as f32 / 255.0,
-            ]
+            [g.r() as f32 / 255.0, g.g() as f32 / 255.0, g.b() as f32 / 255.0, g.a() as f32 / 255.0]
         } else {
             [0.0, 0.0, 0.0, 0.0]
         };
@@ -51,12 +41,8 @@ impl GpuWireBatch {
             flags |= FLAG_ANIMATED;
         }
 
-        let color_rgba = [
-            color.r() as f32 / 255.0,
-            color.g() as f32 / 255.0,
-            color.b() as f32 / 255.0,
-            color.a() as f32 / 255.0,
-        ];
+        let color_rgba =
+            [color.r() as f32 / 255.0, color.g() as f32 / 255.0, color.b() as f32 / 255.0, color.a() as f32 / 255.0];
 
         self.instances.push(GpuWireInstance {
             p0: [p0.x, p0.y],
@@ -77,15 +63,8 @@ impl GpuWireBatch {
 
     /// Constructs an `egui::PaintCallback` targeting `wgpu`.
     pub fn into_paint_callback(self, viewport_rect: Rect) -> egui::PaintCallback {
-        let uniforms = CanvasUniforms {
-            screen_size: self.screen_size,
-            zoom: self.zoom,
-            anim_time: self.anim_time,
-        };
-        let callback = GpuWireCallback {
-            uniforms,
-            instances: self.instances,
-        };
+        let uniforms = CanvasUniforms { screen_size: self.screen_size, zoom: self.zoom, anim_time: self.anim_time };
+        let callback = GpuWireCallback { uniforms, instances: self.instances };
         egui_wgpu::Callback::new_paint_callback(viewport_rect, callback)
     }
 }

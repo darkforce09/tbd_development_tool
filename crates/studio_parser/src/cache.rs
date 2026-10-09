@@ -1,11 +1,11 @@
+use crate::builder::{ProjectStats, ViewGranularity};
+use memmap2::Mmap;
 use std::collections::hash_map::DefaultHasher;
 use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use memmap2::Mmap;
 use studio_graph::Graph;
-use crate::builder::{ProjectStats, ViewGranularity};
 
 /// 16-byte magic identifier and format version header
 pub const CACHE_MAGIC: &[u8; 16] = b"TBD_RKYV_V4\0\0\0\0\0";
@@ -53,31 +53,21 @@ impl From<std::io::Error> for CacheError {
 /// On Windows: `%LOCALAPPDATA%\tbd_studio\cache\projects\<project_slug_hash>\`
 pub fn user_cache_dir_for_project(project_root: &Path) -> PathBuf {
     let canonical = project_root.canonicalize().unwrap_or_else(|_| project_root.to_path_buf());
-    
+
     let mut hasher = DefaultHasher::new();
     canonical.hash(&mut hasher);
     let path_hash = hasher.finish();
 
-    let folder_name = canonical
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("project");
-    
-    let safe_folder: String = folder_name
-        .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
-        .collect();
+    let folder_name = canonical.file_name().and_then(|n| n.to_str()).unwrap_or("project");
+
+    let safe_folder: String =
+        folder_name.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
 
     let project_dir_name = format!("{}_{:016x}", safe_folder, path_hash);
 
-    let base_cache = dirs::cache_dir().unwrap_or_else(|| {
-        std::env::temp_dir().join(".cache")
-    });
+    let base_cache = dirs::cache_dir().unwrap_or_else(|| std::env::temp_dir().join(".cache"));
 
-    base_cache
-        .join("tbd_studio")
-        .join("projects")
-        .join(project_dir_name)
+    base_cache.join("tbd_studio").join("projects").join(project_dir_name)
 }
 
 /// Path to the graph cache file inside the user cache directory for a given granularity.
@@ -112,10 +102,23 @@ pub fn compute_workspace_fingerprint(project_root: &Path, granularity: ViewGranu
 
     // 2. Hash key workspace manifests
     const MANIFESTS: &[&str] = &[
-        "Cargo.lock", "Cargo.toml", "package.json", "package-lock.json",
-        "pnpm-lock.yaml", "yarn.lock", "go.mod", "go.sum", "pyproject.toml",
-        "requirements.txt", "Pipfile.lock", "pom.xml", "build.gradle",
-        "CMakeLists.txt", "Makefile", "CLAUDE.md", "README.md",
+        "Cargo.lock",
+        "Cargo.toml",
+        "package.json",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "go.mod",
+        "go.sum",
+        "pyproject.toml",
+        "requirements.txt",
+        "Pipfile.lock",
+        "pom.xml",
+        "build.gradle",
+        "CMakeLists.txt",
+        "Makefile",
+        "CLAUDE.md",
+        "README.md",
     ];
 
     for manifest in MANIFESTS {
@@ -158,13 +161,10 @@ pub fn save_project_cache(
     let cache_file = cache_file_path(project_root, granularity);
 
     let fingerprint = compute_workspace_fingerprint(project_root, granularity);
-    let cached_data = CachedProjectData {
-        graph: graph.clone(),
-        stats: stats.clone(),
-    };
+    let cached_data = CachedProjectData { graph: graph.clone(), stats: stats.clone() };
 
-    let aligned_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&cached_data)
-        .map_err(|e| CacheError::Serialization(e.to_string()))?;
+    let aligned_bytes =
+        rkyv::to_bytes::<rkyv::rancor::Error>(&cached_data).map_err(|e| CacheError::Serialization(e.to_string()))?;
     let rkyv_payload = aligned_bytes.as_slice();
 
     let payload_len = rkyv_payload.len() as u64;

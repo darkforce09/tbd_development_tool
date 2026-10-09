@@ -1,5 +1,5 @@
-use syn::visit::Visit;
 use super::types::ItemVisibility;
+use syn::visit::Visit;
 
 pub struct CallVisitor {
     pub calls: Vec<String>,

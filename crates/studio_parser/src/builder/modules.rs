@@ -1,17 +1,14 @@
+use crate::extractor::ExtractedProject;
 use std::collections::HashMap;
 use studio_graph::{DataType, Graph, GroupCluster, NodeArchetype, NodeId, PortId};
-use crate::extractor::ExtractedProject;
 
 use super::common::truncate_str;
 use super::ProjectStats;
 
 pub fn build_modules_graph(project: &ExtractedProject) -> (Graph, ProjectStats) {
     let mut graph = Graph::new();
-    let mut stats = ProjectStats {
-        project_name: project.name.clone(),
-        crate_count: project.crates.len(),
-        ..Default::default()
-    };
+    let mut stats =
+        ProjectStats { project_name: project.name.clone(), crate_count: project.crates.len(), ..Default::default() };
 
     let mut module_to_node: HashMap<String, NodeId> = HashMap::new();
     let mut pending_uses: Vec<(NodeId, PortId, String)> = Vec::new();
@@ -30,10 +27,7 @@ pub fn build_modules_graph(project: &ExtractedProject) -> (Graph, ProjectStats) 
             stats.file_count += 1;
 
             let mod_name = file.module_name.clone();
-            let total_items = file.functions.len()
-                + file.structs.len()
-                + file.enums.len()
-                + file.traits.len();
+            let total_items = file.functions.len() + file.structs.len() + file.enums.len() + file.traits.len();
 
             let badge = format!("CRATE: {}", krate.name.to_uppercase());
             let desc = format!(
@@ -90,11 +84,8 @@ pub fn build_modules_graph(project: &ExtractedProject) -> (Graph, ProjectStats) 
             // Record uses
             for (idx, u) in file.uses.iter().take(4).enumerate() {
                 if let Some(port) = node_ref.inputs.get(idx) {
-                    let imported_mod = u.path
-                        .split([':', '/', '\\', '.']).rfind(|s| !s.is_empty())
-                        .unwrap_or("")
-                        .trim()
-                        .to_string();
+                    let imported_mod =
+                        u.path.split([':', '/', '\\', '.']).rfind(|s| !s.is_empty()).unwrap_or("").trim().to_string();
                     pending_uses.push((node_id, port.id, imported_mod));
                 }
             }
@@ -113,7 +104,8 @@ pub fn build_modules_graph(project: &ExtractedProject) -> (Graph, ProjectStats) 
         }
 
         if !crate_node_ids.is_empty() {
-            let mut c = GroupCluster::new(&krate.name, format!("crate: {}", krate.name), "Module Architecture", crate_idx);
+            let mut c =
+                GroupCluster::new(&krate.name, format!("crate: {}", krate.name), "Module Architecture", crate_idx);
             c.node_ids = crate_node_ids;
             graph.clusters.push(c);
         }

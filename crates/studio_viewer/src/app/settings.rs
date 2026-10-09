@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use studio_parser::ViewGranularity;
 
 /// Settings remembered between runs (eframe persistence).
@@ -37,7 +37,12 @@ mod tests {
 
     #[test]
     fn granularity_keys_round_trip() {
-        for g in [ViewGranularity::FilesAndFolders, ViewGranularity::AllItems, ViewGranularity::PublicApi, ViewGranularity::Modules] {
+        for g in [
+            ViewGranularity::FilesAndFolders,
+            ViewGranularity::AllItems,
+            ViewGranularity::PublicApi,
+            ViewGranularity::Modules,
+        ] {
             assert_eq!(granularity_from_key(granularity_key(g)), Some(g));
         }
         assert_eq!(granularity_from_key("bogus"), None);

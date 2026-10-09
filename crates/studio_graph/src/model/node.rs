@@ -38,10 +38,7 @@ pub struct Node {
 
 impl Node {
     pub fn find_port(&self, port_id: PortId) -> Option<&Port> {
-        self.inputs
-            .iter()
-            .chain(self.outputs.iter())
-            .find(|p| p.id == port_id)
+        self.inputs.iter().chain(self.outputs.iter()).find(|p| p.id == port_id)
     }
 
     pub fn port_index(&self, port_id: PortId) -> Option<(usize, PortDirection)> {
