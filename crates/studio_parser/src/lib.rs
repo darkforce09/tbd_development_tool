@@ -260,7 +260,7 @@ mod tests {
 
         let updated_code = "pub fn add_numbers(a: i32, b: i32) -> i32 { a + b + 10 }";
         let result = save_and_reparse(&test_file, updated_code, &mut graph);
-        assert!(result.is_ok(), "save_and_reparse should succeed");
+        assert!(result.is_ok(), "save_and_reparse should succeed: {:?}", result.as_ref().err());
         assert_eq!(result.unwrap().updated_nodes, 1, "Should update 1 node");
 
         let updated_node = graph.nodes.get(&node_id).unwrap();

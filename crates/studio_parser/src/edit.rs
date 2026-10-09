@@ -88,6 +88,9 @@ fn match_line_endings(text: &str, crlf: bool) -> String {
 
 /// Writes `content` to `path` atomically: a temp file in the same directory is written, flushed,
 /// given the original permissions and renamed over the target.
+///
+/// Windows refuses to rename over a file another process holds open (an IDE, a virus scanner).
+/// There the rename is retried briefly, then the file is written in place so the save still lands.
 pub fn atomic_write(path: &Path, content: &[u8]) -> std::io::Result<()> {
     let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
@@ -96,8 +99,20 @@ pub fn atomic_write(path: &Path, content: &[u8]) -> std::io::Result<()> {
     if let Ok(meta) = std::fs::metadata(path) {
         tmp.as_file().set_permissions(meta.permissions())?;
     }
-    tmp.persist(path).map_err(|e| e.error)?;
-    Ok(())
+    let mut pending = match tmp.persist(path) {
+        Ok(_) => return Ok(()),
+        Err(e) if cfg!(windows) && e.error.kind() == std::io::ErrorKind::PermissionDenied => e.file,
+        Err(e) => return Err(e.error),
+    };
+    for _ in 0..3 {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        match pending.persist(path) {
+            Ok(_) => return Ok(()),
+            Err(e) => pending = e.file,
+        }
+    }
+    drop(pending);
+    std::fs::write(path, content)
 }
 
 #[cfg(test)]
@@ -136,6 +151,20 @@ mod tests {
         let origin = EditOrigin::FullFile { disk_hash: content_hash(FILE) };
         assert_eq!(apply_edit(FILE, &origin, "new").unwrap(), "new");
         assert_eq!(apply_edit("changed", &origin, "new"), Err(EditError::ChangedOnDisk));
+    }
+
+    #[test]
+    fn atomic_write_succeeds_while_another_handle_is_open() {
+        use std::io::Read;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("open.txt");
+        std::fs::write(&path, "old").unwrap();
+        let held = std::fs::File::open(&path).unwrap();
+        atomic_write(&path, b"new").unwrap();
+        drop(held);
+        let mut now = String::new();
+        std::fs::File::open(&path).unwrap().read_to_string(&mut now).unwrap();
+        assert_eq!(now, "new");
     }
 
     #[test]
