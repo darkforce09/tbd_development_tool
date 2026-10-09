@@ -172,6 +172,21 @@ fn benchmark_real_project(tracker: &mut TimelineTracker, target_path: &std::path
         Some(stats.wire_count),
     );
 
+    // 4b. Dataflow layout of the whole folder tree, timed on its own
+    graph.flow_layout = true;
+    let t_layout = Instant::now();
+    graph.layout_folder_tree();
+    let layout_dur = t_layout.elapsed();
+    let (gates, boxes) = graph.flow.as_ref().map_or((0, 0), |f| (f.gates.len(), f.cycle_boxes.len()));
+    tracker.record_stage(
+        "Dataflow Layout",
+        format!("{:.1} ms: {} gates, {} cycle boxes", layout_dur.as_secs_f64() * 1000.0, gates, boxes),
+        None,
+        None,
+        Some(stats.node_count),
+        Some(stats.wire_count),
+    );
+
     // 5. Symbol Search Index (Trigram DDR5)
     let t4 = Instant::now();
     let search_index = SymbolSearchIndex::build(&graph);

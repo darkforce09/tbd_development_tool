@@ -100,7 +100,7 @@ Goal: remove everything that is mock, duplicated or in the way, so later work bu
 - [ ] Keyboard shortcut help, which went away with the bottom bar.
 - [x] Visual language standard: direction (providers left), ports, layout laws, gates, folder detail levels, colours. See [VISUAL_LANGUAGE.md](VISUAL_LANGUAGE.md).
 - [x] Wire kinds on every edge, Markdown links as documentation wires into a documentation port, provider-to-consumer direction, and keep every wire into an input (no fan-in loss).
-- [ ] Left-to-right layout engine: lifting wires through folder gates, cycle boxes, layering, crossing reduction, coordinates.
+- [x] Left-to-right layout engine: lifting wires through folder gates, cycle boxes, layering, crossing reduction, coordinates.
 - [ ] Wire routing: orthogonal routes that never pass through cards or folders.
 - [ ] Rendering of routes, gates, documentation ports and cycle boxes; folder detail levels.
 - [ ] Geometry-only relayout when a card expands, and layout performance targets.

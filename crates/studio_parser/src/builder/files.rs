@@ -119,6 +119,8 @@ fn insert_folder_tree(
     wiring: &mut Wiring,
 ) {
     graph.tree_layout = true;
+    // Temporary switch to compare the dataflow layout with the grid until it becomes the default.
+    graph.flow_layout = std::env::var_os("STUDIO_FLOW_LAYOUT").is_some();
     let mut cluster_ids: Vec<String> = Vec::with_capacity(tree.dirs.len());
     let mut colors: Vec<usize> = Vec::with_capacity(tree.dirs.len());
     let mut direct_files = vec![0usize; tree.dirs.len()];

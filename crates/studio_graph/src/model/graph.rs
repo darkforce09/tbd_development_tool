@@ -17,6 +17,12 @@ pub struct Graph {
     /// Clusters form a folder tree laid out by [`Graph::layout_folder_tree`] (Files view).
     #[serde(default)]
     pub tree_layout: bool,
+    /// Lay the folder tree out left to right by code flow instead of as a packed grid.
+    #[serde(default)]
+    pub flow_layout: bool,
+    /// Gates and cycle boxes from the last dataflow layout.
+    #[serde(default)]
+    pub flow: Option<crate::layout::FlowLayout>,
 
     // Fast O(1) indices (ignored by serialization, rebuilt on load)
     #[serde(skip)]
@@ -54,6 +60,8 @@ impl Graph {
             clusters: Vec::new(),
             next_id: 1,
             tree_layout: false,
+            flow_layout: false,
+            flow: None,
             port_edges: HashMap::new(),
             edge_indices: HashMap::new(),
             node_degrees: HashMap::new(),

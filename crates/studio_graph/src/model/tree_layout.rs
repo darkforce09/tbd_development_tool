@@ -36,6 +36,11 @@ impl Graph {
         if !self.tree_layout || self.clusters.is_empty() {
             return;
         }
+        if self.flow_layout {
+            self.layout_dataflow();
+            return;
+        }
+        self.flow = None;
         let index: HashMap<String, usize> = self.clusters.iter().enumerate().map(|(i, c)| (c.id.clone(), i)).collect();
         let children: Vec<Vec<usize>> = self
             .clusters
