@@ -48,6 +48,20 @@ const SWEEPS: usize = 4;
 pub struct FlowLayout {
     pub gates: Vec<Gate>,
     pub cycle_boxes: Vec<CycleBox>,
+    /// One route per (provider, consumer) card pair joined by code wires.
+    pub routes: Vec<WireRoute>,
+}
+
+/// The path of the code wires from one card to another: horizontal and vertical segments in
+/// world coordinates, from the provider's output port to the consumer's input port. It leaves
+/// and enters every folder through a gate and never crosses a card or folder in between. The
+/// first two and last two points share a y, so the ends can be moved to a member's row.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize)]
+#[rkyv(derive(Debug))]
+pub struct WireRoute {
+    pub provider: NodeId,
+    pub consumer: NodeId,
+    pub points: Vec<[f32; 2]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize)]
@@ -127,6 +141,8 @@ struct Placed {
     items: Vec<(Item, [f32; 2])>,
     in_gates: BTreeMap<NodeId, f32>,
     out_gates: BTreeMap<NodeId, f32>,
+    /// Route of every wire inside the container, relative to its top-left corner.
+    routes: BTreeMap<(From, To), Vec<[f32; 2]>>,
 }
 
 impl Graph {
@@ -137,7 +153,9 @@ impl Graph {
         tree.box_cycles(&pairs);
         let links = tree.lift(&pairs);
         let placed = tree.measure(self, &links);
-        self.flow = Some(tree.place(self, &placed));
+        let (mut flow, origins) = tree.place(self, &placed);
+        flow.routes = tree.compose_routes(&pairs, &placed, &origins);
+        self.flow = Some(flow);
         self.rebuild_collapsed_cache();
     }
 }
@@ -275,27 +293,63 @@ impl Tree {
         }
     }
 
+    /// The wire pieces a card pair is made of, in order from provider to consumer: out of each
+    /// container below the lowest common one, across that one, then into each container down to
+    /// the consumer.
+    fn pieces(&self, u: NodeId, v: NodeId) -> Vec<(usize, From, To)> {
+        let (ui, uc) = self.visible_end(u);
+        let (vi, vc) = self.visible_end(v);
+        let Some(lca) = lowest_common(&uc, &vc) else { return Vec::new() };
+        let (a, b) = (self.item_in(ui, &uc, lca), self.item_in(vi, &vc, lca));
+        if a == b {
+            return Vec::new();
+        }
+        let mut pieces = Vec::new();
+        for &c in uc.iter().take_while(|&&c| c != lca) {
+            pieces.push((c, From::Item(self.item_in(ui, &uc, c), u), To::Gate(u)));
+        }
+        pieces.push((lca, From::Item(a, u), To::Item(b, u)));
+        let inward: Vec<usize> = vc.iter().copied().take_while(|&c| c != lca).collect();
+        for &c in inward.iter().rev() {
+            pieces.push((c, From::Gate(u), To::Item(self.item_in(vi, &vc, c), u)));
+        }
+        pieces
+    }
+
     /// Lifts every card pair into the containers it passes through. Returns, per container, the
     /// wires that run inside it.
     fn lift(&self, pairs: &[(NodeId, NodeId)]) -> Vec<BTreeSet<(From, To)>> {
         let mut links: Vec<BTreeSet<(From, To)>> = vec![BTreeSet::new(); self.containers.len()];
         for &(u, v) in pairs {
-            let (ui, uc) = self.visible_end(u);
-            let (vi, vc) = self.visible_end(v);
-            let Some(lca) = lowest_common(&uc, &vc) else { continue };
-            let (a, b) = (self.item_in(ui, &uc, lca), self.item_in(vi, &vc, lca));
-            if a == b {
-                continue;
-            }
-            links[lca].insert((From::Item(a, u), To::Item(b, u)));
-            for &c in uc.iter().take_while(|&&c| c != lca) {
-                links[c].insert((From::Item(self.item_in(ui, &uc, c), u), To::Gate(u)));
-            }
-            for &c in vc.iter().take_while(|&&c| c != lca) {
-                links[c].insert((From::Gate(u), To::Item(self.item_in(vi, &vc, c), u)));
+            for (c, from, to) in self.pieces(u, v) {
+                links[c].insert((from, to));
             }
         }
         links
+    }
+
+    /// Joins each pair's pieces into one world-space route.
+    fn compose_routes(&self, pairs: &[(NodeId, NodeId)], placed: &[Placed], origins: &[[f32; 2]]) -> Vec<WireRoute> {
+        let mut routes = Vec::new();
+        'pairs: for &(u, v) in pairs {
+            let pieces = self.pieces(u, v);
+            if pieces.is_empty() {
+                continue;
+            }
+            let mut points: Vec<[f32; 2]> = Vec::new();
+            for (c, from, to) in pieces {
+                let Some(local) = placed[c].routes.get(&(from, to)) else { continue 'pairs };
+                let o = origins[c];
+                for p in local {
+                    let w = [o[0] + p[0], o[1] + p[1]];
+                    if points.last().is_none_or(|l| (l[0] - w[0]).abs() > 0.01 || (l[1] - w[1]).abs() > 0.01) {
+                        points.push(w);
+                    }
+                }
+            }
+            routes.push(WireRoute { provider: u, consumer: v, points: simplify(points) });
+        }
+        routes
     }
 
     fn depth(&self, mut c: usize) -> usize {
@@ -377,6 +431,11 @@ impl Tree {
         if has_columns {
             right = right.max(content_left + lay.content_width);
         }
+        // Wires that run backwards inside a cycle box loop below the cards, one row each.
+        let back_top = bottom + ITEM_GAP;
+        if lay.back_count > 0 {
+            bottom = back_top + lay.back_count as f32 * LANE;
+        }
 
         // Items with no code wires in this container: a shelf below the columns.
         let shelf: Vec<(Item, [f32; 2])> = lay.isolated.iter().map(|&it| (it, size_of(it))).collect();
@@ -398,22 +457,26 @@ impl Tree {
         }
 
         let min = if is_cycle { [2.0 * pad_x, pad_top + pad_bottom] } else { EMPTY_FOLDER_SIZE };
-        let width = right + lay.out_band.max(if p.out_gates.is_empty() { 0.0 } else { GATE_BAND }) + pad_x;
+        let width = right.max(content_left + lay.content_width + lay.out_band) + pad_x;
         p.size = [width.max(min[0]), (bottom + pad_bottom).max(min[1])];
+        p.routes = lay.routes([content_left, pad_top], p.size[0], back_top);
         p
     }
 
-    /// Assigns world positions top-down and records gates and cycle boxes.
-    fn place(&self, graph: &mut Graph, placed: &[Placed]) -> FlowLayout {
+    /// Assigns world positions top-down and records gates and cycle boxes. Also returns each
+    /// container's world origin.
+    fn place(&self, graph: &mut Graph, placed: &[Placed]) -> (FlowLayout, Vec<[f32; 2]>) {
         let mut flow = FlowLayout::default();
+        let mut origins = vec![[0.0; 2]; self.containers.len()];
         let mut x = ROOT_ORIGIN[0];
         for &root in &self.roots {
-            self.place_one(graph, placed, root, [x, ROOT_ORIGIN[1]], 0, &mut flow);
+            self.place_one(graph, placed, root, [x, ROOT_ORIGIN[1]], 0, &mut flow, &mut origins);
             x += placed[root].size[0] + ROOT_GAP;
         }
-        flow
+        (flow, origins)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn place_one(
         &self,
         graph: &mut Graph,
@@ -422,7 +485,9 @@ impl Tree {
         origin: [f32; 2],
         depth: usize,
         flow: &mut FlowLayout,
+        origins: &mut [[f32; 2]],
     ) {
+        origins[c] = origin;
         let p = &placed[c];
         let container = &self.containers[c];
         let id = match container.kind {
@@ -477,7 +542,7 @@ impl Tree {
                         node.position = pos;
                     }
                 }
-                Item::Sub(s) => self.place_one(graph, placed, s, pos, child_depth, flow),
+                Item::Sub(s) => self.place_one(graph, placed, s, pos, child_depth, flow, origins),
             }
         }
     }
@@ -536,6 +601,23 @@ struct ColNode {
     out_y: f32,
 }
 
+/// Which wires share a vertical track in a gap: wires from one source (tag 0), the outgoing (1)
+/// and incoming (2) ends of a backward wire.
+type TrackKey = (Option<Item>, NodeId, u8);
+
+/// The column nodes one wire passes, for turning into points once positions are known.
+#[derive(Debug, Clone)]
+struct LinkPath {
+    from: From,
+    to: To,
+    nodes: Vec<usize>,
+    /// Port offsets at the first node's output and the last node's input.
+    from_y: f32,
+    to_y: f32,
+    /// Runs right to left inside a cycle box.
+    back: bool,
+}
+
 /// A wire between two column nodes in adjacent columns, or between a gate and a column node.
 #[derive(Debug, Clone, Copy)]
 enum Seg {
@@ -557,6 +639,12 @@ struct ColumnLayout {
     content_width: f32,
     in_band: f32,
     out_band: f32,
+    col_w: Vec<f32>,
+    paths: Vec<LinkPath>,
+    back_count: usize,
+    /// x of each wire's vertical track, relative to the content's left edge. Index 0 is the input
+    /// gate band, `l + 1` the gap right of column `l`; the last is the output gate band.
+    tracks: Vec<BTreeMap<TrackKey, f32>>,
 }
 
 impl ColumnLayout {
@@ -640,6 +728,10 @@ impl ColumnLayout {
             content_width: 0.0,
             in_band: 0.0,
             out_band: 0.0,
+            col_w: Vec::new(),
+            paths: Vec::new(),
+            back_count: 0,
+            tracks: Vec::new(),
         };
         let mut node_of = vec![usize::MAX; n];
         for i in 0..n {
@@ -680,6 +772,7 @@ impl ColumnLayout {
         // A chain of segments from `start` (a node, or the left gate band when `None`) through
         // lanes up to the node before `end_layer`; returns the last node and its port y.
         let mut push_chain = |lay: &mut ColumnLayout,
+                              path: &mut Vec<usize>,
                               src: (Option<Item>, NodeId),
                               start: Option<(usize, f32)>,
                               from_layer: usize,
@@ -688,6 +781,7 @@ impl ColumnLayout {
             let mut prev = start;
             for l in from_layer..to_layer {
                 let ln = lane(lay, src, l);
+                path.push(ln);
                 match prev {
                     Some((p, py)) => lay.segs.push(Seg::Node { from: p, to: ln, from_y: py, to_y: LANE * 0.5 }),
                     None => lay.segs.push(Seg::In { gate: src.1, to: ln, to_y: LANE * 0.5 }),
@@ -709,12 +803,16 @@ impl ColumnLayout {
                     let (fy, ty) = (port_y(a, key, false), port_y(b, key, true));
                     let (lu, lv) = (lay.nodes[u].layer, lay.nodes[v].layer);
                     let src = (Some(a), key);
-                    if lv > lu {
-                        let last = push_chain(&mut lay, src, Some((u, fy)), lu + 1, lv).unwrap_or((u, fy));
+                    let mut path = vec![u];
+                    let back = lv <= lu;
+                    if !back {
+                        let last = push_chain(&mut lay, &mut path, src, Some((u, fy)), lu + 1, lv).unwrap_or((u, fy));
                         lay.segs.push(Seg::Node { from: last.0, to: v, from_y: last.1, to_y: ty });
                         lay.seg_source.push(src);
                     }
-                    // Backward wires inside a cycle box are routed around the cards later.
+                    path.push(v);
+                    lay.back_count += back as usize;
+                    lay.paths.push(LinkPath { from: *from, to: *to, nodes: path, from_y: fy, to_y: ty, back });
                 }
                 (From::Gate(key), To::Item(b, _)) => {
                     let Some(&j) = pos.get(&b) else { continue };
@@ -725,12 +823,16 @@ impl ColumnLayout {
                     let ty = port_y(b, key, true);
                     let src = (None, key);
                     let lv = lay.nodes[v].layer;
-                    match push_chain(&mut lay, src, None, 0, lv) {
+                    let mut path = Vec::new();
+                    match push_chain(&mut lay, &mut path, src, None, 0, lv) {
                         Some(last) => lay.segs.push(Seg::Node { from: last.0, to: v, from_y: last.1, to_y: ty }),
                         None => lay.segs.push(Seg::In { gate: key, to: v, to_y: ty }),
                     }
                     lay.seg_source.push(src);
                     lay.in_gate_y.insert(key, 0.0);
+                    path.push(v);
+                    let from_y = if path.len() > 1 { LANE * 0.5 } else { ty };
+                    lay.paths.push(LinkPath { from: *from, to: *to, nodes: path, from_y, to_y: ty, back: false });
                 }
                 (From::Item(a, key), To::Gate(_)) => {
                     let Some(&i) = pos.get(&a) else { continue };
@@ -741,10 +843,14 @@ impl ColumnLayout {
                     let fy = port_y(a, key, false);
                     let src = (Some(a), key);
                     let lu = lay.nodes[u].layer;
-                    let last = push_chain(&mut lay, src, Some((u, fy)), lu + 1, max_layer + 1).unwrap_or((u, fy));
+                    let mut path = vec![u];
+                    let last =
+                        push_chain(&mut lay, &mut path, src, Some((u, fy)), lu + 1, max_layer + 1).unwrap_or((u, fy));
                     lay.segs.push(Seg::Out { from: last.0, from_y: last.1, gate: key });
                     lay.seg_source.push(src);
                     lay.out_gate_y.insert(key, 0.0);
+                    let to_y = if path.len() > 1 { LANE * 0.5 } else { fy };
+                    lay.paths.push(LinkPath { from: *from, to: *to, nodes: path, from_y: fy, to_y, back: false });
                 }
                 (From::Gate(_), To::Gate(_)) => {}
             }
@@ -849,34 +955,36 @@ impl ColumnLayout {
             }
         }
 
-        // Wire tracks per gap: distinct sources crossing it. Gap g sits right of column g.
-        let mut gap_sources: Vec<BTreeSet<(Option<Item>, NodeId)>> = vec![BTreeSet::new(); layers];
-        let mut in_sources: BTreeSet<NodeId> = BTreeSet::new();
-        let mut out_sources: BTreeSet<(Option<Item>, NodeId)> = BTreeSet::new();
-        for (seg, &src) in self.segs.iter().zip(&self.seg_source) {
-            match *seg {
-                Seg::Node { from, .. } => {
-                    gap_sources[self.nodes[from].layer].insert(src);
-                }
-                Seg::In { gate, .. } => {
-                    in_sources.insert(gate);
-                }
-                Seg::Out { .. } => {
-                    out_sources.insert(src);
-                }
-            }
+        // Wire tracks per gap: index 0 is the input gate band, l + 1 the gap right of column l,
+        // and the last the output gate band.
+        let mut gap_keys: Vec<BTreeSet<TrackKey>> = vec![BTreeSet::new(); layers + 1];
+        for (seg, &(item, key)) in self.segs.iter().zip(&self.seg_source) {
+            let gap = match *seg {
+                Seg::Node { from, .. } => self.nodes[from].layer + 1,
+                Seg::In { .. } => 0,
+                Seg::Out { .. } => layers,
+            };
+            gap_keys[gap].insert((item, key, 0));
         }
-        let col_w: Vec<f32> =
-            self.layers.iter().map(|l| l.iter().map(|&n| self.nodes[n].w).fold(0.0, f32::max)).collect();
-        self.in_band = if in_sources.is_empty() { 0.0 } else { GATE_BAND + TRACK_PITCH * in_sources.len() as f32 };
-        self.out_band = if out_sources.is_empty() { 0.0 } else { GATE_BAND + TRACK_PITCH * out_sources.len() as f32 };
+        for path in self.paths.iter().filter(|p| p.back) {
+            let (From::Item(a, key), To::Item(b, _)) = (path.from, path.to) else { continue };
+            let (u, v) = (path.nodes[0], path.nodes[1]);
+            gap_keys[self.nodes[u].layer + 1].insert((Some(a), key, 1));
+            gap_keys[self.nodes[v].layer].insert((Some(b), key, 2));
+        }
+        self.col_w = self.layers.iter().map(|l| l.iter().map(|&n| self.nodes[n].w).fold(0.0, f32::max)).collect();
+        let band = |n: usize| if n == 0 { 0.0 } else { GATE_BAND + TRACK_PITCH * n as f32 };
+        self.in_band = band(gap_keys[0].len());
+        self.out_band = band(gap_keys[layers].len());
         let mut x = 0.0;
+        let mut gap_left = vec![-self.in_band; layers + 1];
         self.column_x = Vec::with_capacity(layers);
         for l in 0..layers {
             self.column_x.push(x);
-            x += col_w[l];
+            x += self.col_w[l];
+            gap_left[l + 1] = x;
             if l + 1 < layers {
-                x += GAP_BASE + TRACK_PITCH * gap_sources[l].len() as f32;
+                x += GAP_BASE + TRACK_PITCH * gap_keys[l + 1].len() as f32;
             }
         }
         self.content_width = x;
@@ -938,6 +1046,33 @@ impl ColumnLayout {
         self.in_gate_y = place_gates(&in_targets);
         self.out_gate_y = place_gates(&out_sources_y);
 
+        // Each gap's tracks, ordered by the height their wires start at so they cross less.
+        let mut key_y: BTreeMap<(usize, TrackKey), f32> = BTreeMap::new();
+        for (seg, &(item, key)) in self.segs.iter().zip(&self.seg_source) {
+            let (gap, y) = match *seg {
+                Seg::Node { from, from_y, .. } => (self.nodes[from].layer + 1, self.nodes[from].y + from_y),
+                Seg::In { gate, .. } => (0, self.in_gate_y.get(&gate).copied().unwrap_or(0.0)),
+                Seg::Out { from, from_y, .. } => (layers, self.nodes[from].y + from_y),
+            };
+            key_y.entry((gap, (item, key, 0))).or_insert(y);
+        }
+        for path in self.paths.iter().filter(|p| p.back) {
+            let (From::Item(a, key), To::Item(b, _)) = (path.from, path.to) else { continue };
+            let (u, v) = (path.nodes[0], path.nodes[1]);
+            key_y.insert((self.nodes[u].layer + 1, (Some(a), key, 1)), self.nodes[u].y + path.from_y);
+            key_y.insert((self.nodes[v].layer, (Some(b), key, 2)), self.nodes[v].y + path.to_y);
+        }
+        self.tracks = vec![BTreeMap::new(); layers + 1];
+        for (gap, keys) in gap_keys.iter().enumerate() {
+            let mut ordered: Vec<(f32, TrackKey)> =
+                keys.iter().map(|k| (key_y.get(&(gap, *k)).copied().unwrap_or(0.0), *k)).collect();
+            ordered.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+            let margin = if gap == 0 || gap == layers { GATE_BAND * 0.5 } else { GAP_BASE * 0.5 };
+            for (t, (_, k)) in ordered.into_iter().enumerate() {
+                self.tracks[gap].insert(k, gap_left[gap] + margin + t as f32 * TRACK_PITCH);
+            }
+        }
+
         // Shift everything so the topmost node or gate starts at 0.
         let top = self
             .nodes
@@ -955,6 +1090,92 @@ impl ColumnLayout {
             }
         }
     }
+}
+
+impl ColumnLayout {
+    /// Points of every wire in the container, relative to its top-left corner. `origin` is where
+    /// column 0 and y = 0 of the content sit; `back_top` is the top of the rows for backward wires.
+    fn routes(&self, origin: [f32; 2], width: f32, back_top: f32) -> BTreeMap<(From, To), Vec<[f32; 2]>> {
+        let [cl, ct] = origin;
+        let layers = self.layers.len();
+        let left = |n: usize| cl + self.column_x[self.nodes[n].layer];
+        let right = |n: usize| {
+            let node = &self.nodes[n];
+            left(n) + if node.item.is_some() { node.w } else { self.col_w[node.layer] }
+        };
+        let y_of = |n: usize, offset: f32| ct + self.nodes[n].y + offset;
+        let track = |gap: usize, key: TrackKey| cl + self.tracks[gap].get(&key).copied().unwrap_or(0.0);
+
+        let mut out = BTreeMap::new();
+        let mut back_row = 0;
+        for path in &self.paths {
+            let (src_item, key) = match path.from {
+                From::Item(a, k) => (Some(a), k),
+                From::Gate(k) => (None, k),
+            };
+            let points = if path.back {
+                let To::Item(b, _) = path.to else { continue };
+                let (u, v) = (path.nodes[0], path.nodes[1]);
+                let (yu, yv) = (y_of(u, path.from_y), y_of(v, path.to_y));
+                let row = back_top + (back_row as f32 + 0.5) * LANE;
+                back_row += 1;
+                let t1 = track(self.nodes[u].layer + 1, (src_item, key, 1));
+                let t2 = track(self.nodes[v].layer, (Some(b), key, 2));
+                vec![[right(u), yu], [t1, yu], [t1, row], [t2, row], [t2, yv], [left(v), yv]]
+            } else {
+                let from_gate = matches!(path.from, From::Gate(_));
+                let mut y = match path.from {
+                    From::Gate(g) => ct + self.in_gate_y.get(&g).copied().unwrap_or(0.0),
+                    From::Item(..) => y_of(path.nodes[0], path.from_y),
+                };
+                let mut points = vec![[if from_gate { 0.0 } else { right(path.nodes[0]) }, y]];
+                let last = path.nodes.len() - 1;
+                for (i, &n) in path.nodes.iter().enumerate() {
+                    if i == 0 && !from_gate {
+                        continue;
+                    }
+                    let is_lane = self.nodes[n].item.is_none();
+                    let ny =
+                        if is_lane { y_of(n, LANE * 0.5) } else { y_of(n, if i == last { path.to_y } else { 0.0 }) };
+                    // The gap left of column l has index l.
+                    let tx = track(self.nodes[n].layer, (src_item, key, 0));
+                    points.extend([[tx, y], [tx, ny], [left(n), ny]]);
+                    if is_lane {
+                        points.push([right(n), ny]);
+                    }
+                    y = ny;
+                }
+                if let To::Gate(g) = path.to {
+                    let tx = track(layers, (src_item, key, 0));
+                    let gy = ct + self.out_gate_y.get(&g).copied().unwrap_or(0.0);
+                    points.extend([[tx, y], [tx, gy], [width, gy]]);
+                }
+                points
+            };
+            out.insert((path.from, path.to), points);
+        }
+        out
+    }
+}
+
+/// Drops points that lie on a straight line between their neighbours (a wire passing straight
+/// through several columns) and zero-length steps.
+fn simplify(points: Vec<[f32; 2]>) -> Vec<[f32; 2]> {
+    let same = |a: f32, b: f32| (a - b).abs() < 0.01;
+    let mut out: Vec<[f32; 2]> = Vec::with_capacity(points.len());
+    for p in points {
+        if out.last().is_some_and(|l| same(l[0], p[0]) && same(l[1], p[1])) {
+            continue;
+        }
+        if out.len() >= 2 {
+            let (a, b) = (out[out.len() - 2], out[out.len() - 1]);
+            if (same(a[0], b[0]) && same(b[0], p[0])) || (same(a[1], b[1]) && same(b[1], p[1])) {
+                out.pop();
+            }
+        }
+        out.push(p);
+    }
+    out
 }
 
 fn gap_after(node: &ColNode) -> f32 {

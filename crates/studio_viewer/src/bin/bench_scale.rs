@@ -177,10 +177,19 @@ fn benchmark_real_project(tracker: &mut TimelineTracker, target_path: &std::path
     let t_layout = Instant::now();
     graph.layout_folder_tree();
     let layout_dur = t_layout.elapsed();
-    let (gates, boxes) = graph.flow.as_ref().map_or((0, 0), |f| (f.gates.len(), f.cycle_boxes.len()));
+    let (gates, boxes, routes, points) = graph.flow.as_ref().map_or((0, 0, 0, 0), |f| {
+        (f.gates.len(), f.cycle_boxes.len(), f.routes.len(), f.routes.iter().map(|r| r.points.len()).sum::<usize>())
+    });
     tracker.record_stage(
         "Dataflow Layout",
-        format!("{:.1} ms: {} gates, {} cycle boxes", layout_dur.as_secs_f64() * 1000.0, gates, boxes),
+        format!(
+            "{:.1} ms: {} gates, {} cycle boxes, {} routes ({} points)",
+            layout_dur.as_secs_f64() * 1000.0,
+            gates,
+            boxes,
+            routes,
+            points
+        ),
         None,
         None,
         Some(stats.node_count),

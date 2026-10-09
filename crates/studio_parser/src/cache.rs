@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use studio_graph::Graph;
 
 /// 16-byte magic identifier and format version header
-pub const CACHE_MAGIC: &[u8; 16] = b"TBD_RKYV_V8\0\0\0\0\0";
+pub const CACHE_MAGIC: &[u8; 16] = b"TBD_RKYV_V9\0\0\0\0\0";
 /// Bump whenever extraction or graph building changes output, so cached graphs are rebuilt.
 pub const EXTRACTOR_VERSION: u32 = 5;
 const HEADER_SIZE: usize = 32;

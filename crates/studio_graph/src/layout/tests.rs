@@ -332,3 +332,193 @@ fn assert_providers_left_visible(g: &Graph) {
         assert!(p[2] <= c[0] + 0.01);
     }
 }
+
+fn shrink(r: Rect, by: f32) -> Rect {
+    [r[0] + by, r[1] + by, r[2] - by, r[3] - by]
+}
+
+/// Whether an axis-aligned segment passes through the inside of a rectangle.
+fn segment_hits(a: [f32; 2], b: [f32; 2], r: Rect) -> bool {
+    let (x0, x1) = (a[0].min(b[0]), a[0].max(b[0]));
+    let (y0, y1) = (a[1].min(b[1]), a[1].max(b[1]));
+    x0 < r[2] && x1 > r[0] && y0 < r[3] && y1 > r[1]
+}
+
+/// Boxes a route may be inside of: folders and cycle boxes around exactly one or both ends.
+struct Region {
+    rect: Rect,
+    id: String,
+    around_provider: bool,
+    around_consumer: bool,
+}
+
+fn regions(g: &Graph, provider: NodeId, consumer: NodeId) -> Vec<Region> {
+    let pr = node_rect(g, provider);
+    let cr = node_rect(g, consumer);
+    let mut out: Vec<Region> = g
+        .clusters
+        .iter()
+        .filter(|c| !g.hidden_cluster_ids.contains(&c.id))
+        .map(|c| {
+            let rect = cluster_rect(c);
+            Region { rect, id: c.id.clone(), around_provider: inside(pr, rect), around_consumer: inside(cr, rect) }
+        })
+        .collect();
+    for b in &g.flow.as_ref().unwrap().cycle_boxes {
+        let rect = [b.position[0], b.position[1], b.position[0] + b.size[0], b.position[1] + b.size[1]];
+        out.push(Region {
+            rect,
+            id: b.id.clone(),
+            around_provider: inside(pr, rect),
+            around_consumer: inside(cr, rect),
+        });
+    }
+    out
+}
+
+/// L2 and L3 for every route: axis-aligned, from port to port, never through a card or a
+/// folder it does not belong to, and across folder edges only at a gate on the correct side.
+fn assert_routes_obey_the_laws(g: &Graph) {
+    let flow = g.flow.as_ref().unwrap();
+    let gate_at = |id: &str, side: GateSide, p: [f32; 2]| {
+        flow.gates.iter().any(|x| {
+            x.container == id
+                && x.side == side
+                && (x.position[0] - p[0]).abs() < 0.05
+                && (x.position[1] - p[1]).abs() < 0.05
+        })
+    };
+    let cards: Vec<(NodeId, Rect)> = g.nodes.keys().map(|&id| (id, node_rect(g, id))).collect();
+    for route in &flow.routes {
+        let (u, v) = (route.provider, route.consumer);
+        if g.is_node_in_collapsed_cluster(u) || g.is_node_in_collapsed_cluster(v) {
+            continue;
+        }
+        let pts = &route.points;
+        assert!(pts.len() >= 2, "route too short");
+        for w in pts.windows(2) {
+            assert!(
+                (w[0][0] - w[1][0]).abs() < 0.01 || (w[0][1] - w[1][1]).abs() < 0.01,
+                "diagonal segment {:?} → {:?}",
+                w[0],
+                w[1]
+            );
+        }
+        let (pr, cr) = (node_rect(g, u), node_rect(g, v));
+        assert!((pts[0][0] - pr[2]).abs() < 0.01, "route must start on the provider's right edge");
+        assert!((pts[pts.len() - 1][0] - cr[0]).abs() < 0.01, "route must end on the consumer's left edge");
+        assert!((pts[0][1] - pts[1][1]).abs() < 0.01 && (pts[pts.len() - 1][1] - pts[pts.len() - 2][1]).abs() < 0.01);
+
+        for w in pts.windows(2) {
+            for (id, r) in &cards {
+                if *id != u && *id != v {
+                    assert!(!segment_hits(w[0], w[1], shrink(*r, 0.05)), "wire crosses a card: {:?}", r);
+                }
+            }
+            for region in regions(g, u, v) {
+                let r = region.rect;
+                if !region.around_provider && !region.around_consumer {
+                    assert!(
+                        !segment_hits(w[0], w[1], shrink(r, 0.05)),
+                        "wire enters {} it has no business in",
+                        region.id
+                    );
+                    continue;
+                }
+                // Crossing a vertical edge of a folder around one end only happens at a gate.
+                let (a, b) = (w[0], w[1]);
+                let horizontal = (a[1] - b[1]).abs() < 0.01;
+                for (edge_x, side) in [(r[0], GateSide::Input), (r[2], GateSide::Output)] {
+                    let crosses = horizontal
+                        && a[0].min(b[0]) < edge_x - 0.05
+                        && a[0].max(b[0]) > edge_x + 0.05
+                        && a[1] > r[1]
+                        && a[1] < r[3];
+                    if crosses {
+                        let both = region.around_provider && region.around_consumer;
+                        assert!(!both, "wire leaves {} that holds both ends", region.id);
+                        assert!(gate_at(&region.id, side, [edge_x, a[1]]), "{} crossed away from a gate", region.id);
+                    }
+                }
+                // Pieces join exactly on folder edges, so every route point on an edge is a gate.
+                for (edge_x, side) in [(r[0], GateSide::Input), (r[2], GateSide::Output)] {
+                    if (a[0] - edge_x).abs() < 0.05 && a[1] > r[1] && a[1] < r[3] {
+                        assert!(
+                            gate_at(&region.id, side, [edge_x, a[1]]),
+                            "{} edge touched away from a gate",
+                            region.id
+                        );
+                    }
+                }
+                if !horizontal {
+                    for edge_y in [r[1], r[3]] {
+                        let crosses = a[1].min(b[1]) < edge_y - 0.05
+                            && a[1].max(b[1]) > edge_y + 0.05
+                            && a[0] > r[0]
+                            && a[0] < r[2];
+                        assert!(!crosses, "wire crosses the top or bottom of {}", region.id);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn routes_never_cross_cards_and_use_gates() {
+    let mut total = 0;
+    for seed in 0..40 {
+        let mut g = random_graph(seed, 1 + (seed as usize % 7), 6 + (seed as usize * 3) % 40, 10 + seed as usize * 2);
+        g.layout_folder_tree();
+        assert_routes_obey_the_laws(&g);
+        total += g.flow.as_ref().unwrap().routes.len();
+    }
+    assert!(total > 300, "only {total} routes generated");
+}
+
+#[test]
+fn every_code_pair_gets_a_route() {
+    let mut g = random_graph(5, 6, 30, 70);
+    g.layout_folder_tree();
+    let pairs: BTreeSet<(NodeId, NodeId)> =
+        g.edges.iter().filter(|e| e.kind.is_code_flow()).map(|e| (e.from_node, e.to_node)).collect();
+    let routed: BTreeSet<(NodeId, NodeId)> =
+        g.flow.as_ref().unwrap().routes.iter().map(|r| (r.provider, r.consumer)).collect();
+    assert_eq!(pairs, routed);
+}
+
+#[test]
+fn the_route_checks_catch_violations() {
+    let laid_out = || {
+        let mut g = random_graph(9, 4, 24, 60);
+        g.layout_folder_tree();
+        g
+    };
+    let fails =
+        |g: Graph| std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| assert_routes_obey_the_laws(&g))).is_err();
+    assert!(!fails(laid_out()), "a fresh layout passes");
+
+    // A card dropped onto the middle of a route.
+    let mut g = laid_out();
+    let route = g.flow.as_ref().unwrap().routes.iter().find(|r| r.points.len() >= 4).unwrap().clone();
+    let mid = [(route.points[1][0] + route.points[2][0]) * 0.5, (route.points[1][1] + route.points[2][1]) * 0.5];
+    let bystander = *g.nodes.keys().find(|&&id| id != route.provider && id != route.consumer).unwrap();
+    g.nodes.get_mut(&bystander).unwrap().position = [mid[0] - 10.0, mid[1] - 10.0];
+    assert!(fails(g), "a card on a wire is caught");
+
+    // A diagonal segment.
+    let mut g = laid_out();
+    let r = &mut g.flow.as_mut().unwrap().routes[0];
+    let n = r.points.len();
+    r.points[n / 2][0] += 37.0;
+    r.points[n / 2][1] += 23.0;
+    assert!(fails(g), "a diagonal is caught");
+
+    // A wire leaving a folder away from its gates.
+    let mut g = laid_out();
+    let gates = g.flow.as_ref().unwrap().gates.clone();
+    let flow = g.flow.as_mut().unwrap();
+    flow.gates.clear();
+    let crossing = !gates.is_empty();
+    assert!(crossing && fails(g), "a crossing without a gate is caught");
+}
