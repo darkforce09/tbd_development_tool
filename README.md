@@ -42,15 +42,19 @@ To use a specific graphics backend, set `WGPU_BACKEND` (`vulkan`, `metal`, `dx12
 | Pan | right-drag, or <kbd>Space</kbd> + left-drag |
 | Zoom | scroll over the canvas, <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + scroll anywhere, or pinch |
 | Scroll inside an open code card | scroll over the card's code |
-| Select | click a card or a member row |
+| Select and trace | click a card: everything upstream and downstream of it is highlighted, the rest dims |
 | Search symbols | <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd> or <kbd>/</kbd> |
 | Close / deselect | <kbd>Esc</kbd> |
-| Collapse / expand a folder | click its header, or the collapsed folder card |
+| Open a folder | double-click it: it opens in place and fills the view |
+| Go back up | click a folder or the project name in the breadcrumb in the title bar |
+| Change a folder's detail level | the three buttons in its header (minimised, node view, open) |
 | Open or close the sidebar | the arrow tab at the left edge, under the title bar |
-| Show or hide wires | **View** menu: **Wires** and **Member wires** |
+| Show or hide wires | **View** menu: all wires, member wires, and each kind (documentation is off by default; cards show "docs N" chips instead) |
 | Debug panel and project stats | <kbd>F3</kbd> |
 | Move / maximise the window | drag / double-click an empty part of the title bar |
 | Resize the window | drag a window edge or corner |
+
+A project opens at its top level: its main folders, closed, with one wire per pair of them. The number on a wire is how many file pairs it stands for, and heavier wires are thicker. A file or folder used by most of its neighbours shows "used by N" instead of its wires. See [docs/VISUAL_LANGUAGE.md](docs/VISUAL_LANGUAGE.md).
 
 Studio draws its own title bar. On macOS, resizing from the edges is not supported yet.
 

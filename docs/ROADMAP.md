@@ -105,6 +105,12 @@ Goal: remove everything that is mock, duplicated or in the way, so later work bu
 - [x] Route documentation wires: through documentation gates and each folder's documentation strip, never over cards or folders (L2, L3).
 - [x] Rendering of routes, gates, documentation ports and cycle boxes; folder detail levels (minimised, node view, open) switched from the folder header.
 - [x] Geometry-only relayout when a card expands or a folder changes level: columns and order are kept, only the folders around the change are measured again.
+- [x] One level at a time: a project opens at its top level (folders closed); a closed folder stands in for its files (one gate per visible source, one bundled wire with a count, thicker for more); double-click opens a folder in place and fits it; a breadcrumb in the title bar goes back up.
+- [x] Hubs (L6): an item feeding at least half its folder's connected items, and at least 8, shows "used by N" instead of its wires.
+- [x] Documentation as "docs N" chips; documentation wires off by default.
+- [x] Click to trace: selecting a card highlights everything upstream and downstream and dims the rest.
+- [x] Quieter wires, faint folder fills, and folder names drawn at a readable size when zoomed out.
+- [ ] Skip laying out documentation wires while they are hidden, so their strips take no space.
 
 Exit: every control on screen does something real, and nothing shows mock data for a real project.
 
@@ -176,9 +182,9 @@ Exit: pipelines are generated automatically on both real repos, and each one can
 
 Goal: wires that are readable at any zoom. Routing and the basic look are set in Phase 0 by the [visual language](VISUAL_LANGUAGE.md); this phase builds on it.
 
-- Focus and context: emphasize the wires of the selection and its neighbours.
-- Toggles per wire kind and tier.
+- Toggles per evidence tier (S2).
 - Line styles and colour-blind variants.
+- Tune the hub threshold and bundle thickness from real use.
 
 ### Phase 6: On-canvas editing and inspection
 
