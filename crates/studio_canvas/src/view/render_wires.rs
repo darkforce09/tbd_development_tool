@@ -1,6 +1,8 @@
 use egui::{Color32, Painter, Pos2, Rect};
 use studio_graph::Graph;
-use studio_ui::{color_tokens::*, paint_group_cluster, with_alpha, GroupClusterProps};
+use studio_ui::{
+    color_tokens::*, paint_group_cluster, paint_pin_socket, with_alpha, GroupClusterProps, SocketVisualState,
+};
 
 use crate::gpu::GpuWireBatch;
 use crate::grid::paint_infinite_grid;
@@ -66,6 +68,37 @@ pub fn render_background_and_wires(
 
         if pointer_clicked && cluster_layout.collapse_button_rect.contains(pointer_pos) {
             toggle_cluster_id = Some(cluster.id.clone());
+        }
+    }
+
+    // Layer A-3: Cycle boxes, around items that depend on each other in a loop.
+    let collapsed: std::collections::HashSet<&str> =
+        graph.clusters.iter().filter(|c| c.is_collapsed).map(|c| c.id.as_str()).collect();
+    let container_visible = |id: &str| container_visible(graph, &collapsed, id);
+    if let Some(flow) = &graph.flow {
+        for b in flow.cycle_boxes.iter().filter(|b| container_visible(&b.id)) {
+            let min = state.transform.world_to_screen(Pos2::new(b.position[0], b.position[1]));
+            let max = state.transform.world_to_screen(Pos2::new(b.position[0] + b.size[0], b.position[1] + b.size[1]));
+            let r = Rect::from_min_max(min, max);
+            if !r.intersects(rect) {
+                continue;
+            }
+            painter.rect(
+                r,
+                egui::CornerRadius::from(8.0 * zoom),
+                with_alpha(CYCLE_BOX, 14),
+                egui::Stroke::new((1.5 * zoom).clamp(1.0, 2.0), with_alpha(CYCLE_BOX, 170)),
+                egui::StrokeKind::Inside,
+            );
+            if zoom >= 0.3 {
+                painter.text(
+                    r.min + egui::vec2(10.0 * zoom, 8.0 * zoom),
+                    egui::Align2::LEFT_TOP,
+                    format!("{} loop", egui_phosphor::regular::ARROWS_CLOCKWISE),
+                    egui::FontId::proportional((11.0 * zoom).clamp(8.0, 16.0)),
+                    with_alpha(CYCLE_BOX, 220),
+                );
+            }
         }
     }
 
@@ -201,6 +234,18 @@ pub fn render_background_and_wires(
         }
     }
 
+    // Layer B-2: Gates, where wires cross folder and cycle box edges.
+    if let (Some(flow), true) = (&graph.flow, state.show_wires && zoom >= 0.2) {
+        let visible = rect.expand(10.0);
+        for gate in flow.gates.iter().filter(|g| container_visible(&g.container)) {
+            let p = state.transform.world_to_screen(Pos2::new(gate.position[0], gate.position[1]));
+            if visible.contains(p) {
+                let state = SocketVisualState { is_hovered: false, is_connected: true, is_snapped: false };
+                paint_pin_socket(painter, p, KIND_IMPORT, state, zoom * 0.8);
+            }
+        }
+    }
+
     // Layer C: Pending connection wire preview
     if let InteractionMode::Connecting {
         from_node,
@@ -318,4 +363,17 @@ fn draw_route(painter: &Painter, gpu: Option<&mut GpuWireBatch>, points: &[Pos2]
         }
     }
     true
+}
+
+/// Outline colour of cycle boxes.
+const CYCLE_BOX: Color32 = Color32::from_rgb(0xfb, 0xbf, 0x24);
+
+/// Whether a folder (cluster id) or a cycle box (`cycle:<folder>:<n>`) is on screen: not inside
+/// a collapsed folder, and for a cycle box, its folder is not collapsed either.
+fn container_visible(graph: &Graph, collapsed: &std::collections::HashSet<&str>, id: &str) -> bool {
+    let folder = match id.strip_prefix("cycle:").and_then(|rest| rest.rsplit_once(':')) {
+        Some((folder, _)) => folder,
+        None => return !graph.hidden_cluster_ids.contains(id),
+    };
+    !graph.hidden_cluster_ids.contains(folder) && !collapsed.contains(folder)
 }
