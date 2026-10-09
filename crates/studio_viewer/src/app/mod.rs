@@ -93,6 +93,9 @@ impl App for StudioApp {
                         }
                         LoaderMessage::InitialLayoutReady { graph, stats, search_index } => {
                             self.graph = graph;
+                            // A project opens at its top level, with nothing selected.
+                            self.canvas_state.focus = None;
+                            self.canvas_state.selected_nodes.clear();
                             self.project_stats = Some(stats.clone());
                             self.search_index = search_index;
                             self.canvas_state.mark_scene_dirty();

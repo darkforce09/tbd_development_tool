@@ -199,6 +199,23 @@ pub struct CanvasState {
     pub frame_stats: CanvasFrameStats,
     /// Frames drawn, for telling frames apart on the GPU.
     pub frame_counter: u64,
+    /// The folder last opened or picked in the breadcrumb (cluster id); `None` for the project.
+    pub focus: Option<String>,
+    /// Cards upstream and downstream of the selection; everything else is dimmed.
+    pub trace_nodes: Option<BTreeSet<NodeId>>,
+    /// The selection `trace_nodes` was worked out for.
+    trace_for: BTreeSet<NodeId>,
+    /// Where the camera goes once the canvas knows its size.
+    pub zoom_request: Option<ZoomTarget>,
+}
+
+/// A place to fit in view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ZoomTarget {
+    /// The whole project.
+    All,
+    /// A folder (cluster id).
+    Folder(String),
 }
 
 impl Default for CanvasState {
@@ -226,11 +243,91 @@ impl Default for CanvasState {
             use_gpu_wires: true,
             frame_stats: CanvasFrameStats::default(),
             frame_counter: 0,
+            focus: None,
+            trace_nodes: None,
+            trace_for: BTreeSet::new(),
+            zoom_request: None,
         }
     }
 }
 
 impl CanvasState {
+    /// Opens a folder in place (L5 level 3), makes it the focus and fits it in view. A folder
+    /// whose contents are not loaded yet is loaded first by the host.
+    pub fn open_folder(&mut self, graph: &mut Graph, cluster_id: &str) {
+        let Some(cluster) = graph.clusters.iter().find(|c| c.id == cluster_id) else { return };
+        if cluster.is_collapsed() && cluster.lazy.is_some() {
+            self.action_request = Some(CanvasAction::ExpandFolder(cluster_id.to_string(), FolderDetail::Open));
+        } else if cluster.is_collapsed() {
+            graph.set_folder_detail(cluster_id, FolderDetail::Open);
+            self.mark_scene_dirty();
+        }
+        self.focus = Some(cluster_id.to_string());
+        self.zoom_request = Some(ZoomTarget::Folder(cluster_id.to_string()));
+    }
+
+    /// Goes back up to a folder (or, with `None`, the whole project): every folder open inside it
+    /// closes to node view, and it becomes the focus and fills the view.
+    pub fn focus_folder(&mut self, graph: &mut Graph, cluster_id: Option<&str>) {
+        let root = graph.clusters.iter().find(|c| c.parent_id.is_none()).map(|c| c.id.clone());
+        let Some(top) = cluster_id.map(str::to_string).or(root) else { return };
+        let changes: Vec<(String, FolderDetail)> = graph
+            .descendant_clusters(&top)
+            .into_iter()
+            .filter(|id| graph.clusters.iter().any(|c| &c.id == id && c.detail == FolderDetail::Open))
+            .map(|id| (id, FolderDetail::NodeView))
+            .collect();
+        graph.set_folder_details(&changes);
+        self.mark_scene_dirty();
+        self.focus = cluster_id.map(str::to_string);
+        self.zoom_request = Some(match cluster_id {
+            Some(id) => ZoomTarget::Folder(id.to_string()),
+            None => ZoomTarget::All,
+        });
+    }
+
+    /// Works out the trace when the selection changed: the cards and code wires upstream and
+    /// downstream of the selected cards. The wires are drawn as the active flow; other cards dim.
+    pub fn refresh_trace(&mut self, graph: &Graph) {
+        if self.selected_nodes == self.trace_for {
+            return;
+        }
+        self.trace_for = self.selected_nodes.clone();
+        if self.selected_nodes.is_empty() {
+            self.active_flow_edges = None;
+            self.trace_nodes = None;
+        } else {
+            let (wires, cards) = graph.trace(&self.selected_nodes);
+            self.active_flow_edges = Some(wires);
+            self.trace_nodes = Some(cards);
+        }
+    }
+
+    /// Fits a world rectangle in the `screen` rectangle, with a margin.
+    pub fn zoom_to_rect(&mut self, world: Rect, screen: Rect) {
+        let padding = 60.0;
+        let scale_x = screen.width() / (world.width() + padding * 2.0).max(100.0);
+        let scale_y = screen.height() / (world.height() + padding * 2.0).max(100.0);
+        let zoom = scale_x.min(scale_y).clamp(self.transform.min_zoom, 2.0);
+        self.transform.zoom = zoom;
+        self.transform.pan =
+            Vec2::new(screen.center().x - world.center().x * zoom, screen.center().y - world.center().y * zoom);
+    }
+
+    /// Carries out a pending [`ZoomTarget`].
+    pub fn apply_zoom_request(&mut self, graph: &Graph, screen: Rect) {
+        match self.zoom_request.take() {
+            Some(ZoomTarget::All) => self.zoom_to_fit(graph, screen),
+            Some(ZoomTarget::Folder(id)) => {
+                if let Some(c) = graph.clusters.iter().find(|c| c.id == id) {
+                    let world = Rect::from_min_size(Pos2::from(c.position), Vec2::new(c.size[0], c.size[1]));
+                    self.zoom_to_rect(world, screen);
+                }
+            }
+            None => {}
+        }
+    }
+
     /// Marks the layout as changed: the spatial grid and the scene are rebuilt before the next
     /// frame draws.
     pub fn mark_scene_dirty(&mut self) {

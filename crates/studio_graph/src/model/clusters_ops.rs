@@ -147,6 +147,49 @@ impl Graph {
         true
     }
 
+    /// Sets several folders' detail levels and lays the graph out once.
+    pub fn set_folder_details(&mut self, changes: &[(String, FolderDetail)]) {
+        let mut changed = false;
+        for (id, detail) in changes {
+            if let Some(cluster) = self.clusters.iter_mut().find(|c| &c.id == id) {
+                changed |= cluster.detail != *detail;
+                cluster.detail = *detail;
+            }
+        }
+        if changed {
+            self.rebuild_collapsed_cache();
+            self.relayout();
+        }
+    }
+
+    /// The folders inside `cluster_id`, at any depth.
+    pub fn descendant_clusters(&self, cluster_id: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut stack = vec![cluster_id.to_string()];
+        while let Some(id) = stack.pop() {
+            if let Some(c) = self.clusters.iter().find(|c| c.id == id) {
+                for kid in &c.child_cluster_ids {
+                    out.push(kid.clone());
+                    stack.push(kid.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// The folders from the root down to `cluster_id`, that one included.
+    pub fn cluster_path(&self, cluster_id: &str) -> Vec<String> {
+        let mut path = Vec::new();
+        let mut at = Some(cluster_id.to_string());
+        while let Some(id) = at {
+            let Some(c) = self.clusters.iter().find(|c| c.id == id) else { break };
+            path.push(id);
+            at = c.parent_id.clone();
+        }
+        path.reverse();
+        path
+    }
+
     pub fn is_cluster_collapsed(&self, cluster_id: &str) -> bool {
         self.clusters.iter().find(|c| c.id == cluster_id).is_some_and(|c| c.is_collapsed())
     }

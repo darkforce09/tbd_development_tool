@@ -90,7 +90,7 @@ fn card_layer(state: &mut CanvasState, graph: &Graph) -> CardLayer {
         }
     }
     let query = state.search_filter.trim().to_lowercase();
-    let dimmed = |n: &studio_graph::Node| is_dimmed(n, &query, &state.category_filter);
+    let dimmed = |n: &studio_graph::Node| is_dimmed(n, &query, &state.category_filter, state.trace_nodes.as_ref());
     let boxes = build_card_layer(graph, dimmed, &state.selected_nodes);
     let layer = CardLayer { revision: scene::next_revision(), boxes: Arc::new(boxes) };
     state.card_layer = Some((key, layer.clone()));

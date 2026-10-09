@@ -54,7 +54,11 @@ pub fn is_dimmed(
     node: &studio_graph::Node,
     query: &str,
     categories: &std::collections::BTreeSet<NodeArchetype>,
+    trace: Option<&std::collections::BTreeSet<studio_graph::NodeId>>,
 ) -> bool {
+    if trace.is_some_and(|t| !t.contains(&node.id)) {
+        return true;
+    }
     let matches_search = query.is_empty()
         || node.title.to_lowercase().contains(query)
         || node.description.to_lowercase().contains(query)
@@ -106,7 +110,7 @@ pub fn render_nodes_and_sockets(
 
         let is_hovered = state.hover.hovered_node == Some(node_id);
 
-        let is_dimmed = is_dimmed(node, &search_query, &state.category_filter);
+        let is_dimmed = is_dimmed(node, &search_query, &state.category_filter, state.trace_nodes.as_ref());
         let arch_color = archetype_color(node.archetype);
 
         if zoom < 0.03 {

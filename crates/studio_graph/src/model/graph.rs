@@ -1,6 +1,6 @@
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use super::cluster::GroupCluster;
 use super::edge::{Edge, EdgeKind};
@@ -127,6 +127,38 @@ impl Graph {
             EdgeKind::Asset => false,
             _ => self.route_index.contains_key(&key),
         }
+    }
+
+    /// Everything upstream and downstream of `start` along code wires: the wires on those paths
+    /// and the cards on them, `start` included.
+    pub fn trace(&self, start: &BTreeSet<NodeId>) -> (BTreeSet<EdgeId>, BTreeSet<NodeId>) {
+        let mut out_of: HashMap<NodeId, Vec<usize>> = HashMap::new();
+        let mut into: HashMap<NodeId, Vec<usize>> = HashMap::new();
+        for (i, e) in self.edges.iter().enumerate() {
+            if e.kind.is_code_flow() && e.from_node != e.to_node {
+                out_of.entry(e.from_node).or_default().push(i);
+                into.entry(e.to_node).or_default().push(i);
+            }
+        }
+        let mut wires = BTreeSet::new();
+        let mut cards = start.clone();
+        for downstream in [true, false] {
+            let mut seen = start.clone();
+            let mut stack: Vec<NodeId> = start.iter().copied().collect();
+            while let Some(n) = stack.pop() {
+                let next = if downstream { out_of.get(&n) } else { into.get(&n) };
+                for &i in next.into_iter().flatten() {
+                    let e = &self.edges[i];
+                    wires.insert(e.id);
+                    let other = if downstream { e.to_node } else { e.from_node };
+                    if seen.insert(other) {
+                        stack.push(other);
+                    }
+                }
+            }
+            cards.extend(seen);
+        }
+        (wires, cards)
     }
 
     /// Whether a hub badge stands in for this code wire.

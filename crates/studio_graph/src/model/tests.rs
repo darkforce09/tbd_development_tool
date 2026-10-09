@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeSet;
 
 #[test]
 fn test_rkyv_graph_roundtrip() {
@@ -218,4 +219,23 @@ fn documentation_port_is_found_and_kinds_split_layout_from_overlay() {
 
     assert!(EdgeKind::Import.is_code_flow() && EdgeKind::Call.is_code_flow());
     assert!(!EdgeKind::Documentation.is_code_flow() && !EdgeKind::Asset.is_code_flow());
+}
+
+#[test]
+fn trace_follows_code_wires_both_ways_and_skips_documentation() {
+    let mut graph = Graph::new();
+    let [a, b, c, d, docs] = ["a", "b", "c", "d", "readme"].map(|n| file_node(&mut graph, n));
+    let wire = |g: &mut Graph, from: NodeId, to: NodeId, kind: EdgeKind| {
+        let (out, input) = (g.nodes[&from].outputs[0].id, g.nodes[&to].inputs[0].id);
+        g.connect_kind(from, out, to, input, kind).unwrap()
+    };
+    let ab = wire(&mut graph, a, b, EdgeKind::Import);
+    let bc = wire(&mut graph, b, c, EdgeKind::Call);
+    let _da = wire(&mut graph, d, d, EdgeKind::Import);
+    let _doc = wire(&mut graph, docs, b, EdgeKind::Documentation);
+    graph.rebuild_fast_indices();
+
+    let (wires, cards) = graph.trace(&BTreeSet::from([b]));
+    assert_eq!(wires, BTreeSet::from([ab, bc]), "upstream a→b and downstream b→c");
+    assert_eq!(cards, BTreeSet::from([a, b, c]), "documentation and unrelated cards are not on the trace");
 }

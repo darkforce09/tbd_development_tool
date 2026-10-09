@@ -202,6 +202,20 @@ pub fn handle_canvas_input(state: &mut CanvasState, graph: &mut Graph, ui: &mut 
                             snapped_target: None,
                         };
                     }
+                } else if state.hover.hovered_node.is_none()
+                    && !is_over_interactive
+                    && ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary))
+                {
+                    // Double-click a folder: a closed one opens in place; an open one fills the view.
+                    let world = state.transform.screen_to_world(pointer_pos);
+                    if let Some(id) = folder_at(graph, world) {
+                        if graph.is_cluster_collapsed(&id) {
+                            state.open_folder(graph, &id);
+                        } else {
+                            state.focus = Some(id.clone());
+                            state.zoom_request = Some(super::types::ZoomTarget::Folder(id));
+                        }
+                    }
                 } else if let Some(node_id) = state.hover.hovered_node {
                     // Double-click to toggle code expand on the hovered card
                     if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary))
@@ -420,4 +434,15 @@ pub fn handle_canvas_input(state: &mut CanvasState, graph: &mut Graph, ui: &mut 
         }
         state.selected_nodes.clear();
     }
+}
+
+/// The innermost visible folder under a world point.
+fn folder_at(graph: &Graph, world: Pos2) -> Option<String> {
+    graph
+        .clusters
+        .iter()
+        .filter(|c| !graph.hidden_cluster_ids.contains(&c.id) && c.size[0] > 1.0)
+        .filter(|c| Rect::from_min_size(Pos2::from(c.position), Vec2::new(c.size[0], c.size[1])).contains(world))
+        .max_by_key(|c| c.depth)
+        .map(|c| c.id.clone())
 }

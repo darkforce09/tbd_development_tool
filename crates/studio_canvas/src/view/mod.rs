@@ -40,6 +40,8 @@ impl<'a> CanvasView<'a> {
 
         // 1. Process Input
         handle_canvas_input(self.state, self.graph, ui, rect);
+        self.state.refresh_trace(self.graph);
+        self.state.apply_zoom_request(self.graph, rect);
 
         // 2. Render Canvas Layers
         let visible_world_rect = self.state.transform.screen_to_world_rect(rect);

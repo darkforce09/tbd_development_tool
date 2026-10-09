@@ -453,3 +453,102 @@ fn test_wires_toggle_hides_every_wire() {
     state.show_wires = false;
     assert_eq!(drawn(&state), 0, "hidden wires are not drawn");
 }
+
+/// root/{a/{a1/}, b/}, every folder but the root closed, one card in each leaf.
+fn folders_graph() -> studio_graph::Graph {
+    use studio_graph::{FolderDetail, GroupCluster};
+    let mut g = studio_graph::Graph::new();
+    g.tree_layout = true;
+    g.flow_layout = true;
+    let folder = |id: &str, parent: Option<&str>, kids: &[&str]| {
+        let mut c = GroupCluster::new(id, id.rsplit('/').next().unwrap(), "Folder", 0);
+        c.parent_id = parent.map(str::to_string);
+        c.child_cluster_ids = kids.iter().map(|k| k.to_string()).collect();
+        if parent.is_some() {
+            c.detail = FolderDetail::NodeView;
+        }
+        c
+    };
+    g.clusters = vec![
+        folder("root", None, &["root/a", "root/b"]),
+        folder("root/a", Some("root"), &["root/a/a1"]),
+        folder("root/a/a1", Some("root/a"), &[]),
+        folder("root/b", Some("root"), &[]),
+    ];
+    for (i, f) in [2usize, 3].into_iter().enumerate() {
+        let id = g.add_node(format!("f{i}.rs"), NodeArchetype::File, "", None, vec![], vec![], [0.0, 0.0]);
+        g.nodes.get_mut(&id).unwrap().size = [220.0, 42.0];
+        g.clusters[f].node_ids.push(id);
+    }
+    g.rebuild_fast_indices();
+    g.layout_folder_tree();
+    g
+}
+
+#[test]
+fn opening_a_folder_focuses_and_fits_it_and_the_breadcrumb_closes_back_up() {
+    use studio_graph::FolderDetail;
+    let mut g = folders_graph();
+    let mut state = CanvasState::default();
+    let detail = |g: &studio_graph::Graph, id: &str| g.clusters.iter().find(|c| c.id == id).unwrap().detail;
+
+    state.open_folder(&mut g, "root/a");
+    state.open_folder(&mut g, "root/a/a1");
+    assert_eq!(detail(&g, "root/a"), FolderDetail::Open);
+    assert_eq!(detail(&g, "root/a/a1"), FolderDetail::Open);
+    assert_eq!(state.focus.as_deref(), Some("root/a/a1"));
+    assert_eq!(g.cluster_path("root/a/a1"), ["root", "root/a", "root/a/a1"]);
+
+    let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(1600.0, 900.0));
+    state.apply_zoom_request(&g, screen);
+    let c = g.clusters.iter().find(|c| c.id == "root/a/a1").unwrap();
+    let centre =
+        state.transform.world_to_screen(Pos2::new(c.position[0] + c.size[0] * 0.5, c.position[1] + c.size[1] * 0.5));
+    assert!((centre - screen.center()).length() < 1.0, "the opened folder is centred");
+
+    // Back up to `a`: what was opened inside it closes, `a` stays open.
+    state.focus_folder(&mut g, Some("root/a"));
+    assert_eq!(detail(&g, "root/a"), FolderDetail::Open);
+    assert_eq!(detail(&g, "root/a/a1"), FolderDetail::NodeView);
+    assert_eq!(state.focus.as_deref(), Some("root/a"));
+
+    // The project crumb returns to the top level.
+    state.focus_folder(&mut g, None);
+    assert_eq!(detail(&g, "root/a"), FolderDetail::NodeView);
+    assert_eq!(detail(&g, "root"), FolderDetail::Open);
+    assert_eq!(state.focus, None);
+}
+
+#[test]
+fn selecting_a_card_traces_and_dims_the_rest() {
+    let mut g = studio_graph::Graph::new();
+    let mk = |g: &mut studio_graph::Graph, n: &str| {
+        g.add_node(
+            n,
+            NodeArchetype::File,
+            "",
+            None,
+            vec![("in".into(), DataType::RustFlow)],
+            vec![("out".into(), DataType::RustFlow)],
+            [0.0, 0.0],
+        )
+    };
+    let [a, b, c, other] = ["a", "b", "c", "other"].map(|n| mk(&mut g, n));
+    for (from, to) in [(a, b), (b, c)] {
+        let (o, i) = (g.nodes[&from].outputs[0].id, g.nodes[&to].inputs[0].id);
+        g.connect_kind(from, o, to, i, studio_graph::EdgeKind::Import);
+    }
+    g.rebuild_fast_indices();
+    let mut state = CanvasState::default();
+    state.selected_nodes.insert(b);
+    state.refresh_trace(&g);
+    assert_eq!(state.active_flow_edges.as_ref().map(|e| e.len()), Some(2));
+    let trace = state.trace_nodes.clone().unwrap();
+    assert!(trace.contains(&a) && trace.contains(&c) && !trace.contains(&other));
+    assert!(super::render_nodes::is_dimmed(&g.nodes[&other], "", &Default::default(), state.trace_nodes.as_ref()));
+    assert!(!super::render_nodes::is_dimmed(&g.nodes[&a], "", &Default::default(), state.trace_nodes.as_ref()));
+
+    state.selected_nodes.clear();
+    state.refresh_trace(&g);
+    assert!(state.active_flow_edges.is_none() && state.trace_nodes.is_none());
+}
