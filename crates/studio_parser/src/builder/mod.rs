@@ -7,7 +7,7 @@ pub mod modules;
 use crate::extractor::ExtractedProject;
 use studio_graph::Graph;
 
-pub use files::{build_files_graph, build_skeleton_files_graph};
+pub use files::{build_files_graph, build_skeleton_files_graph, folder_cluster_id, materialize_folder};
 pub use items::build_items_graph;
 pub use modules::build_modules_graph;
 

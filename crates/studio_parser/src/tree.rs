@@ -287,18 +287,26 @@ fn classify_file(path: &Path) -> (u64, FileKind) {
     }
 }
 
-/// (files, folders, bytes) under `path`, without following links.
+/// (files, folders, bytes) under `path`, without following links. Subfolders are counted in
+/// parallel, so one huge folder (node_modules, a vendored SDK) does not serialize the scan.
 fn count_subtree(path: &Path) -> (u64, u64, u64) {
-    let (mut files, mut dirs, mut bytes) = (0, 0, 0);
-    for entry in WalkDir::new(path).follow_links(false).into_iter().flatten().skip(1) {
-        if entry.file_type().is_dir() {
-            dirs += 1;
-        } else {
-            files += 1;
-            bytes += entry.metadata().map(|m| m.len()).unwrap_or(0);
+    let Ok(entries) = std::fs::read_dir(path) else { return (0, 0, 0) };
+    let (mut files, mut bytes) = (0u64, 0u64);
+    let mut subdirs = Vec::new();
+    for entry in entries.flatten() {
+        match entry.file_type() {
+            Ok(t) if t.is_dir() => subdirs.push(entry.path()),
+            _ => {
+                files += 1;
+                bytes += entry.metadata().map(|m| m.len()).unwrap_or(0);
+            }
         }
     }
-    (files, dirs, bytes)
+    let dirs = subdirs.len() as u64;
+    subdirs
+        .par_iter()
+        .map(|d| count_subtree(d))
+        .reduce(|| (files, dirs, bytes), |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2))
 }
 
 #[cfg(test)]

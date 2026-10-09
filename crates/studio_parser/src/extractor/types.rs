@@ -148,4 +148,6 @@ pub struct ExtractedProject {
     pub name: String,
     pub root_path: PathBuf,
     pub crates: Vec<ExtractedCrate>,
+    /// Every file and folder on disk, for the Files view.
+    pub tree: crate::tree::ProjectTree,
 }

@@ -9,7 +9,7 @@ pub mod tree;
 
 pub use builder::{
     build_files_graph, build_items_graph, build_modules_graph, build_project_graph, build_skeleton_files_graph,
-    ProjectStats, ViewGranularity,
+    folder_cluster_id, materialize_folder, ProjectStats, ViewGranularity,
 };
 pub use cache::{
     clear_project_cache, load_project_cache, save_project_cache, user_cache_dir_for_project, CachedProjectData,
@@ -33,6 +33,17 @@ pub enum LoaderMessage {
     InitialLayoutReady { graph: Graph, stats: ProjectStats, search_index: SymbolSearchIndex },
     Complete { graph: Graph, stats: ProjectStats, search_index: SymbolSearchIndex, from_cache: bool },
     Error(String),
+}
+
+/// Scans a collapsed folder and parses its text files, for [`materialize_folder`]. Runs off the UI
+/// thread; heavy folders nested inside stay collapsed, but git-ignore status is not re-applied
+/// (everything inside an ignored folder is ignored).
+pub fn load_folder_contents(folder: &Path) -> (tree::ProjectTree, Vec<extractor::ExtractedFile>) {
+    use rayon::prelude::*;
+    let tree = tree::scan_tree(folder, tree::ScanOptions { gitignored_heavy: false });
+    let text: Vec<PathBuf> = tree.text_files().collect();
+    let parsed = text.par_iter().map(|p| extract_file(p, p.strip_prefix(folder).unwrap_or(p))).collect();
+    (tree, parsed)
 }
 
 /// Convenience function to scan, extract, and build a Graph for a Rust project at given path.
@@ -349,6 +360,70 @@ mod tests {
     }
 
     #[test]
+    fn test_files_view_shows_every_file_and_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = dir.path();
+        let write = |rel: &str, content: &[u8]| {
+            let p = r.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, content).unwrap();
+        };
+        write("src/main.py", b"from lib.util import helper\n\ndef main():\n    helper()\n");
+        write("src/lib/util.py", b"def helper():\n    pass\n");
+        write("assets/logo.png", b"\x89PNG\r\n\x1a\n\0\0");
+        write("assets/blob.bin", b"abc\0def");
+        write("node_modules/pkg/index.js", b"export function dep() {}\n");
+        write("node_modules/pkg/package.json", b"{}");
+        std::fs::create_dir_all(r.join("empty")).unwrap();
+        std::fs::create_dir_all(r.join("nest/only/dirs")).unwrap();
+
+        let (mut graph, stats) = load_rust_project(r, ViewGranularity::FilesAndFolders).unwrap();
+        let scanned = tree::scan_tree(&r.canonicalize().unwrap(), tree::ScanOptions::default());
+        assert_eq!(stats.file_count, scanned.files.len());
+
+        // Every folder is a cluster under its real parent; every file is a card in its folder.
+        for d in &scanned.dirs {
+            let id = folder_cluster_id(&d.rel);
+            let cluster = graph.clusters.iter().find(|c| c.id == id).unwrap_or_else(|| panic!("no cluster {id}"));
+            let parent = d.parent.map(|p| folder_cluster_id(&scanned.dirs[p].rel));
+            assert_eq!(cluster.parent_id, parent, "{id}");
+            assert!(cluster.size[0] > 1.0 && cluster.size[1] > 1.0, "{id} must be visible");
+        }
+        for f in &scanned.files {
+            let node = graph
+                .nodes
+                .values()
+                .find(|n| n.file_path.as_deref().map(Path::new) == Some(&scanned.root.join(&f.rel)));
+            let node = node.unwrap_or_else(|| panic!("no card for {:?}", f.rel));
+            assert_eq!(node.group_id.as_deref(), Some(folder_cluster_id(f.rel.parent().unwrap()).as_str()));
+        }
+        let card_in = |g: &Graph, name: &str| g.nodes.values().find(|n| n.title == name).unwrap().clone();
+        let card = |name: &str| card_in(&graph, name);
+        assert_eq!(card("logo.png").content, studio_graph::FileContent::Image);
+        assert_eq!(card("blob.bin").content, studio_graph::FileContent::Binary);
+        assert!(!card("main.py").member_nodes.is_empty(), "text files are parsed");
+        assert!(!graph.edges.is_empty(), "imports are wired");
+
+        // node_modules is a collapsed placeholder with totals and no cards yet.
+        let nm = graph.clusters.iter().find(|c| c.id == "dir:node_modules").unwrap().clone();
+        assert!(nm.is_collapsed);
+        assert_eq!(nm.lazy.as_ref().map(|l| l.file_count), Some(2));
+        assert!(nm.node_ids.is_empty() && nm.child_cluster_ids.is_empty());
+        assert!(graph.clusters.iter().find(|c| c.id == "dir:empty").unwrap().subtitle.as_deref() == Some("empty"));
+
+        // Expanding it loads its files, parsed, under the right folders.
+        let (subtree, parsed) = load_folder_contents(Path::new(&nm.lazy.unwrap().abs_path));
+        let added = materialize_folder(&mut graph, "dir:node_modules", &subtree, &parsed).unwrap();
+        assert_eq!(added, 2);
+        let nm = graph.clusters.iter().find(|c| c.id == "dir:node_modules").unwrap();
+        assert!(!nm.is_collapsed && nm.lazy.is_none());
+        let pkg = graph.clusters.iter().find(|c| c.id == "dir:node_modules/pkg").expect("nested folder");
+        assert_eq!(pkg.parent_id.as_deref(), Some("dir:node_modules"));
+        assert_eq!(pkg.node_ids.len(), 2);
+        assert!(!card_in(&graph, "index.js").member_nodes.is_empty());
+    }
+
+    #[test]
     fn test_spawn_load_project() {
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf();
         let (tx, rx) = std::sync::mpsc::channel();
@@ -420,8 +495,11 @@ mod tests {
 
         // Must have created hierarchical directory clusters
         assert!(!graph.clusters.is_empty(), "Should have directory and crate clusters");
-        let dir_cluster = graph.clusters.iter().find(|c| c.category == "Directory");
-        assert!(dir_cluster.is_some(), "Must have at least one directory cluster");
+        assert!(graph.clusters.iter().all(|c| c.category == "Folder"));
+        let src = graph.clusters.iter().find(|c| c.id == "dir:src").expect("src folder");
+        assert_eq!(src.parent_id.as_deref(), Some("dir:."), "folders nest under their real parent");
+        let builder = graph.clusters.iter().find(|c| c.id == "dir:src/builder").expect("nested folder");
+        assert_eq!(builder.parent_id.as_deref(), Some("dir:src"));
 
         // Verify member nodes are extracted
         let total_members: usize = graph.nodes.values().map(|n| n.member_nodes.len()).sum();

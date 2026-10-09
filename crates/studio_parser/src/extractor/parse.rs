@@ -32,7 +32,12 @@ pub fn extract_project(project: &RustProject) -> ExtractedProject {
         })
         .collect();
 
-    ExtractedProject { name: project.name.clone(), root_path: project.root_path.clone(), crates: extracted_crates }
+    ExtractedProject {
+        name: project.name.clone(),
+        root_path: project.root_path.clone(),
+        crates: extracted_crates,
+        tree: project.tree.clone(),
+    }
 }
 
 pub fn extract_file(file_path: &Path, rel_path: &Path) -> ExtractedFile {
