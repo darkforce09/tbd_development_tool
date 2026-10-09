@@ -156,6 +156,7 @@ impl Graph {
         let (mut flow, origins) = tree.place(self, &placed);
         flow.routes = tree.compose_routes(&pairs, &placed, &origins);
         self.flow = Some(flow);
+        self.rebuild_route_index();
         self.rebuild_collapsed_cache();
     }
 }

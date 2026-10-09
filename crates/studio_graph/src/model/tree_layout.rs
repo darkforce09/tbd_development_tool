@@ -41,6 +41,7 @@ impl Graph {
             return;
         }
         self.flow = None;
+        self.route_index.clear();
         let index: HashMap<String, usize> = self.clusters.iter().enumerate().map(|(i, c)| (c.id.clone(), i)).collect();
         let children: Vec<Vec<usize>> = self
             .clusters

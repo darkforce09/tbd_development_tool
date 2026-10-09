@@ -50,6 +50,10 @@ pub struct Graph {
     #[serde(skip)]
     #[rkyv(with = rkyv::with::Skip)]
     pub hidden_cluster_ids: HashSet<String>,
+    /// (provider, consumer) → index into `flow.routes`.
+    #[serde(skip)]
+    #[rkyv(with = rkyv::with::Skip)]
+    pub route_index: HashMap<(NodeId, NodeId), usize>,
 }
 
 impl Graph {
@@ -70,6 +74,23 @@ impl Graph {
             collapsed_clusters_count: 0,
             collapsed_node_ids: HashSet::new(),
             hidden_cluster_ids: HashSet::new(),
+            route_index: HashMap::new(),
+        }
+    }
+
+    /// The routed path of the code wires from `provider` to `consumer`, if the dataflow layout
+    /// produced one.
+    pub fn route_for(&self, provider: NodeId, consumer: NodeId) -> Option<&crate::layout::WireRoute> {
+        let idx = *self.route_index.get(&(provider, consumer))?;
+        self.flow.as_ref()?.routes.get(idx)
+    }
+
+    pub fn rebuild_route_index(&mut self) {
+        self.route_index.clear();
+        if let Some(flow) = &self.flow {
+            for (i, r) in flow.routes.iter().enumerate() {
+                self.route_index.insert((r.provider, r.consumer), i);
+            }
         }
     }
 
@@ -97,6 +118,7 @@ impl Graph {
         }
 
         self.isolated_nodes_count = self.node_degrees.values().filter(|&&deg| deg == 0).count();
+        self.rebuild_route_index();
     }
 
     fn index_edge(&mut self, edge: &Edge) {

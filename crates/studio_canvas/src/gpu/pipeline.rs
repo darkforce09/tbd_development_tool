@@ -1,8 +1,12 @@
 use bytemuck::{Pod, Zeroable};
 
 pub const VERTICES_PER_CURVE: u32 = 384;
+/// A straight segment is one quad.
+pub const VERTICES_PER_STRAIGHT: u32 = 6;
 pub const FLAG_GLOW: u32 = 1;
 pub const FLAG_ANIMATED: u32 = 2;
+/// Draw p0 → p3 as a straight segment instead of a curve.
+pub const FLAG_STRAIGHT: u32 = 4;
 
 /// A compact 64-byte descriptor for a single Bezier wire uploaded to the GPU.
 #[repr(C)]

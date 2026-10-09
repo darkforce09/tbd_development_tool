@@ -1,4 +1,4 @@
-use egui::{Painter, Pos2, Rect};
+use egui::{Color32, Painter, Pos2, Rect};
 use studio_graph::Graph;
 use studio_ui::{color_tokens::*, paint_group_cluster, with_alpha, GroupClusterProps};
 
@@ -7,7 +7,7 @@ use crate::grid::paint_infinite_grid;
 use crate::interaction::InteractionMode;
 use crate::wire::{paint_bezier_wire, paint_pending_wire, paint_wire_badge_and_label, WireRenderProps};
 
-use super::layout::port_world_position;
+use super::layout::{port_world_position, routed_wire_points};
 use super::types::{data_type_color, edge_kind_color, CanvasState};
 
 #[allow(clippy::too_many_arguments)]
@@ -85,9 +85,20 @@ pub fn render_background_and_wires(
         None
     };
 
+    // Card pairs already drawn as one route into or out of a collapsed folder.
+    let mut hidden_pairs: std::collections::HashSet<(studio_graph::NodeId, studio_graph::NodeId)> =
+        std::collections::HashSet::new();
+
     for edge_id in visible_edge_ids {
         let Some(edge) = graph.get_edge(edge_id) else { continue };
         if graph.is_node_in_collapsed_cluster(edge.from_node) || graph.is_node_in_collapsed_cluster(edge.to_node) {
+            // The route ends at the collapsed folder's gate; draw it once per card pair.
+            let Some(points) = routed_wire_points(graph, edge) else { continue };
+            if hidden_pairs.insert((edge.from_node, edge.to_node)) {
+                let screen: Vec<Pos2> = points.iter().map(|&p| state.transform.world_to_screen(p)).collect();
+                let style = WireStyle::new(edge_kind_color(edge.kind), false, false, zoom);
+                drawn_wires += draw_route(painter, gpu_batch.as_mut(), &screen, style) as usize;
+            }
             continue;
         }
         let Some(from_node) = graph.nodes.get(&edge.from_node) else { continue };
@@ -134,6 +145,13 @@ pub fn render_background_and_wires(
 
         let edge_color =
             if state.active_flow_edges.is_none() || is_flow_active { base_color } else { with_alpha(base_color, 45) };
+
+        if let Some(points) = routed_wire_points(graph, edge) {
+            let screen: Vec<Pos2> = points.iter().map(|&p| state.transform.world_to_screen(p)).collect();
+            let style = WireStyle::new(edge_color, is_hovered || is_selected, is_flow_active, zoom);
+            draw_route(painter, gpu_batch.as_mut(), &screen, style);
+            continue;
+        }
 
         if let Some(ref mut batch) = gpu_batch {
             let core_width = if is_hovered || is_selected {
@@ -237,4 +255,67 @@ pub fn render_background_and_wires(
     }
 
     (toggle_cluster_id, drawn_wires)
+}
+
+/// Colours and widths of one wire, from its state and the zoom.
+#[derive(Clone, Copy)]
+struct WireStyle {
+    color: Color32,
+    glow: Option<Color32>,
+    core_width: f32,
+    glow_width: f32,
+    animated: bool,
+}
+
+impl WireStyle {
+    fn new(color: Color32, highlighted: bool, active: bool, zoom: f32) -> Self {
+        let core_width = if highlighted {
+            (3.0 * zoom).clamp(2.0, 5.0)
+        } else if zoom < 0.35 {
+            (2.2 * zoom).clamp(1.4, 2.6)
+        } else {
+            (2.4 * zoom).clamp(1.8, 3.8)
+        };
+        let (glow_width, glow) = if highlighted || active {
+            let gw = (if highlighted { 6.0 } else { 4.5 } * zoom).clamp(2.5, 8.0);
+            (gw, Some(with_alpha(color, if highlighted { 90 } else { 40 })))
+        } else {
+            (0.0, None)
+        };
+        Self { color, glow, core_width, glow_width, animated: highlighted || active }
+    }
+}
+
+/// Draws a routed wire as straight segments (GPU when available). Returns false when the route
+/// is entirely off screen.
+fn draw_route(painter: &Painter, gpu: Option<&mut GpuWireBatch>, points: &[Pos2], style: WireStyle) -> bool {
+    let clip = painter.clip_rect().expand(20.0);
+    let bounds = Rect::from_points(points);
+    if !bounds.intersects(clip) {
+        return false;
+    }
+    match gpu {
+        Some(batch) => {
+            for w in points.windows(2) {
+                if Rect::from_two_pos(w[0], w[1]).intersects(clip) {
+                    batch.push_segment(
+                        w[0],
+                        w[1],
+                        style.color,
+                        style.glow,
+                        style.core_width,
+                        style.glow_width,
+                        style.animated,
+                    );
+                }
+            }
+        }
+        None => {
+            if let Some(glow) = style.glow {
+                painter.add(egui::Shape::line(points.to_vec(), egui::Stroke::new(style.glow_width, glow)));
+            }
+            painter.add(egui::Shape::line(points.to_vec(), egui::Stroke::new(style.core_width, style.color)));
+        }
+    }
+    true
 }

@@ -1,11 +1,14 @@
-use super::pipeline::{CanvasUniforms, GpuWireInstance, GpuWirePipeline, VERTICES_PER_CURVE};
+use super::pipeline::{CanvasUniforms, GpuWireInstance, GpuWirePipeline, VERTICES_PER_CURVE, VERTICES_PER_STRAIGHT};
 use egui::PaintCallbackInfo;
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 
 /// Custom paint callback implementing `egui_wgpu::CallbackTrait`.
 pub struct GpuWireCallback {
     pub uniforms: CanvasUniforms,
+    /// Curves first, then straight segments.
     pub instances: Vec<GpuWireInstance>,
+    /// How many of `instances` are curves.
+    pub curves: u32,
 }
 
 impl CallbackTrait for GpuWireCallback {
@@ -64,7 +67,13 @@ impl CallbackTrait for GpuWireCallback {
             render_pass.set_pipeline(&pipeline.pipeline);
             render_pass.set_bind_group(0, &pipeline.uniform_bind_group, &[]);
             render_pass.set_vertex_buffer(0, pipeline.instance_buffer.slice(..));
-            render_pass.draw(0..VERTICES_PER_CURVE, 0..self.instances.len() as u32);
+            let total = self.instances.len() as u32;
+            if self.curves > 0 {
+                render_pass.draw(0..VERTICES_PER_CURVE, 0..self.curves);
+            }
+            if total > self.curves {
+                render_pass.draw(0..VERTICES_PER_STRAIGHT, self.curves..total);
+            }
         }
     }
 }

@@ -5,7 +5,7 @@ use studio_graph::{can_connect, Graph, NodeId, PortDirection};
 use crate::interaction::{HoverState, InteractionMode};
 use crate::wire::{compute_bezier_control_points, distance_to_bezier};
 
-use super::layout::port_world_position;
+use super::layout::{port_world_position, routed_wire_points};
 use super::types::{CanvasAction, CanvasState, NodeContextMenu};
 
 pub fn handle_canvas_input(state: &mut CanvasState, graph: &mut Graph, ui: &mut Ui, rect: Rect) {
@@ -164,8 +164,28 @@ pub fn handle_canvas_input(state: &mut CanvasState, graph: &mut Graph, ui: &mut 
         }
     }
 
-    // Test edges touching candidate nodes
+    // Routed wires near the pointer, wherever their cards are.
     if state.show_wires && new_hover.hovered_port.is_none() && new_hover.hovered_node.is_none() {
+        let reach = 7.0 / state.transform.zoom.max(1e-4);
+        let world = state.transform.screen_to_world(pointer_pos);
+        let near = Rect::from_center_size(world, Vec2::splat(reach * 2.0));
+        for edge_id in state.spatial_grid.query_edges_rect(near) {
+            let Some(edge) = graph.get_edge(edge_id) else { continue };
+            let Some(points) = routed_wire_points(graph, edge) else { continue };
+            let hit = points.windows(2).any(|w| distance_to_segment(world, w[0], w[1]) <= reach);
+            if hit {
+                new_hover.hovered_edge = Some(edge.id);
+                break;
+            }
+        }
+    }
+
+    // Test curved edges touching candidate nodes
+    if state.show_wires
+        && new_hover.hovered_port.is_none()
+        && new_hover.hovered_node.is_none()
+        && new_hover.hovered_edge.is_none()
+    {
         let mut checked_edges = HashSet::new();
         for &node_id in &candidate_nodes {
             if let Some(cand_node) = graph.nodes.get(&node_id) {
@@ -480,4 +500,12 @@ pub fn handle_canvas_input(state: &mut CanvasState, graph: &mut Graph, ui: &mut 
         }
         state.selected_nodes.clear();
     }
+}
+
+/// Distance from `p` to the segment `a`–`b`.
+fn distance_to_segment(p: Pos2, a: Pos2, b: Pos2) -> f32 {
+    let ab = b - a;
+    let len_sq = ab.length_sq();
+    let t = if len_sq > 0.0 { ((p - a).dot(ab) / len_sq).clamp(0.0, 1.0) } else { 0.0 };
+    (a + ab * t - p).length()
 }

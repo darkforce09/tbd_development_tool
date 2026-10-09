@@ -1,5 +1,5 @@
 use egui::Pos2;
-use studio_graph::{Node, NodeArchetype, PortDirection, PortId};
+use studio_graph::{Edge, Graph, Node, NodeArchetype, PortDirection, PortId};
 
 /// Calculates the size of a File node based on whether its member dropdown or code drawer is expanded.
 pub fn calculate_file_node_size(node: &Node) -> [f32; 2] {
@@ -95,4 +95,42 @@ pub fn port_world_position(node: &Node, port_id: PortId) -> Option<Pos2> {
     };
 
     Some(Pos2::new(x, y))
+}
+
+/// World points of a routed wire, with its ends moved to the edge's actual ports (a member row
+/// rather than the card's file-level port). `None` when the wire has no route.
+pub fn routed_wire_points(graph: &Graph, edge: &Edge) -> Option<Vec<Pos2>> {
+    if !edge.kind.is_code_flow() {
+        return None;
+    }
+    let route = graph.route_for(edge.from_node, edge.to_node)?;
+    let mut points: Vec<Pos2> = route.points.iter().map(|p| Pos2::new(p[0], p[1])).collect();
+    if points.len() < 2 {
+        return None;
+    }
+    // A card hidden in a collapsed folder is represented by that folder's gate, where the route
+    // already ends.
+    let port = |node, port| {
+        (!graph.is_node_in_collapsed_cluster(node))
+            .then(|| graph.nodes.get(&node).and_then(|n| port_world_position(n, port)))
+            .flatten()
+    };
+    let start = port(edge.from_node, edge.from_port);
+    let end = port(edge.to_node, edge.to_port);
+    if points.len() == 2 {
+        // A straight route: give the ends room to step to their rows halfway along.
+        let mid = (points[0].x + points[1].x) * 0.5;
+        points.insert(1, Pos2::new(mid, points[0].y));
+        points.insert(2, Pos2::new(mid, points[2].y));
+    }
+    let n = points.len();
+    if let Some(p) = start {
+        points[0] = p;
+        points[1].y = p.y;
+    }
+    if let Some(p) = end {
+        points[n - 1] = p;
+        points[n - 2].y = p.y;
+    }
+    Some(points)
 }

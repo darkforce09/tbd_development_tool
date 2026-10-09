@@ -42,7 +42,11 @@ fn vs_main(
     // Determine whether this vertex is on the left (+1.0) or right (-1.0) normal side
     let side = select(-1.0, 1.0, (quad_v == 0u || quad_v == 2u || quad_v == 5u));
 
-    let t = select(f32(seg_idx) / NUM_SEGMENTS_F, f32(seg_idx + 1u) / NUM_SEGMENTS_F, is_t1);
+    let straight = (u32(params.w) & 4u) != 0u; // FLAG_STRAIGHT: one quad from p0 to p3
+    var t = select(f32(seg_idx) / NUM_SEGMENTS_F, f32(seg_idx + 1u) / NUM_SEGMENTS_F, is_t1);
+    if (straight) {
+        t = select(0.0, 1.0, is_t1);
+    }
 
     // Compute world-space span to ensure 100% scale-invariant curve geometry across all zoom levels
     let inv_zoom = 1.0 / max(uniforms.zoom, 1e-4);
@@ -57,8 +61,12 @@ fn vs_main(
 
     // Screen-space tangent scales strictly linearly with zoom: T_screen = T_w * zoom
     let tangent_len = tangent_w * uniforms.zoom;
-    let c1 = p0 + vec2f(tangent_len, 0.0);
-    let c2 = p3 - vec2f(tangent_len, 0.0);
+    var c1 = p0 + vec2f(tangent_len, 0.0);
+    var c2 = p3 - vec2f(tangent_len, 0.0);
+    if (straight) {
+        c1 = mix(p0, p3, 1.0 / 3.0);
+        c2 = mix(p0, p3, 2.0 / 3.0);
+    }
 
     // Evaluate cubic Bezier position P(t)
     let inv_t = 1.0 - t;

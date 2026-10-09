@@ -85,7 +85,12 @@ impl SpatialHashGrid {
         }
 
         for edge in &graph.edges {
-            if let (Some(from_n), Some(to_n)) = (graph.nodes.get(&edge.from_node), graph.nodes.get(&edge.to_node)) {
+            if let Some(points) = crate::view::routed_wire_points(graph, edge) {
+                let points: Vec<[f32; 2]> = points.iter().map(|p| [p.x, p.y]).collect();
+                self.insert_edge_polyline(edge.id, &points);
+            } else if let (Some(from_n), Some(to_n)) =
+                (graph.nodes.get(&edge.from_node), graph.nodes.get(&edge.to_node))
+            {
                 let p0 = [from_n.position[0] + from_n.size[0], from_n.position[1] + from_n.size[1] * 0.5];
                 let p3 = [to_n.position[0], to_n.position[1] + to_n.size[1] * 0.5];
                 self.insert_edge_segmented(edge.id, p0, p3);
@@ -142,6 +147,44 @@ impl SpatialHashGrid {
             for iy in min_iy..=max_iy {
                 self.edge_cells.entry((ix, iy)).or_default().push(edge_id);
             }
+        }
+    }
+
+    /// Inserts a routed edge into the cells its straight segments pass through.
+    pub fn insert_edge_polyline(&mut self, edge_id: EdgeId, points: &[[f32; 2]]) {
+        if points.is_empty() {
+            return;
+        }
+        let pad = 10.0;
+        let mut bounds = [f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
+        for p in points {
+            bounds = [bounds[0].min(p[0]), bounds[1].min(p[1]), bounds[2].max(p[0]), bounds[3].max(p[1])];
+        }
+        let bounds = [bounds[0] - pad, bounds[1] - pad, bounds[2] + pad, bounds[3] + pad];
+        self.edge_bounds.insert(edge_id, bounds);
+        self.all_edges.push(edge_id);
+        match &mut self.world_bounds {
+            Some(wb) => {
+                wb[0] = wb[0].min(bounds[0]);
+                wb[1] = wb[1].min(bounds[1]);
+                wb[2] = wb[2].max(bounds[2]);
+                wb[3] = wb[3].max(bounds[3]);
+            }
+            None => self.world_bounds = Some(bounds),
+        }
+        let mut cells: Vec<(i32, i32)> = Vec::new();
+        for w in points.windows(2) {
+            let (a, b) = (self.to_cell_coords(w[0][0], w[0][1]), self.to_cell_coords(w[1][0], w[1][1]));
+            for cx in a.0.min(b.0)..=a.0.max(b.0) {
+                for cy in a.1.min(b.1)..=a.1.max(b.1) {
+                    cells.push((cx, cy));
+                }
+            }
+        }
+        cells.sort_unstable();
+        cells.dedup();
+        for cell in cells {
+            self.edge_cells.entry(cell).or_default().push(edge_id);
         }
     }
 
