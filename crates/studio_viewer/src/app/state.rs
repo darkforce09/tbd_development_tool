@@ -12,6 +12,7 @@ use super::StudioApp;
 impl StudioApp {
     pub fn new(cc: &eframe::CreationContext<'_>, initial_path: Option<PathBuf>) -> Self {
         apply_theme(&cc.egui_ctx);
+        egui_extras::install_image_loaders(&cc.egui_ctx);
 
         let mut category_filters = BTreeMap::new();
         category_filters.insert(NodeArchetype::File, true);

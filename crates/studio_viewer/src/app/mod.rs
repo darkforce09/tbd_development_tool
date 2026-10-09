@@ -1,4 +1,5 @@
 pub mod editor;
+pub mod file_info;
 pub mod folders;
 pub mod left_sidebar;
 pub mod modals;

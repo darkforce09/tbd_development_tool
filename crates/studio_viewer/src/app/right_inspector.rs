@@ -93,7 +93,9 @@ impl StudioApp {
                             ui.separator();
                             ui.add_space(6.0);
 
-                            if is_markdown {
+                            if !node.content.is_editable_text() {
+                                self.render_file_info(ui, &node);
+                            } else if is_markdown {
                                 // Dedicated Full-Height Markdown Document Workspace
                                 ui.horizontal(|ui| {
                                     let tab0 = format!("{} Document Preview", egui_phosphor::regular::EYE);

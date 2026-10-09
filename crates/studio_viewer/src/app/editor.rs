@@ -19,6 +19,17 @@ impl StudioApp {
     /// only ever replaces the region that was actually loaded.
     pub(crate) fn open_node_in_editor(&mut self, node_id: NodeId) {
         let Some(node) = self.graph.nodes.get(&node_id) else { return };
+        if !node.content.is_editable_text() {
+            // Binary, image, oversized, link or unreadable: nothing to load into the editor.
+            self.code_editor_node_id = Some(node_id);
+            self.code_editor_member_id = None;
+            self.code_editor_path = None;
+            self.code_editor_origin = None;
+            self.code_editor_buffer = String::new();
+            self.code_editor_dirty = false;
+            self.code_editor_status = None;
+            return;
+        }
         let path = node.file_path.as_ref().map(PathBuf::from).filter(|p| p.is_file());
         let preloaded = node.source_code.clone().filter(|s| !s.is_empty());
 

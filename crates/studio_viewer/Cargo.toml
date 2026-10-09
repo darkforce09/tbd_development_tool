@@ -18,6 +18,12 @@ wgpu = { workspace = true }
 sysinfo = { workspace = true }
 pollster = { workspace = true }
 serde = { workspace = true }
+egui_extras = { workspace = true }
+image = { workspace = true }
+open = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
