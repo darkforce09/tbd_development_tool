@@ -180,6 +180,18 @@ fn benchmark_real_project(tracker: &mut TimelineTracker, target_path: &std::path
     let (gates, boxes, routes, points) = graph.flow.as_ref().map_or((0, 0, 0, 0), |f| {
         (f.gates.len(), f.cycle_boxes.len(), f.routes.len(), f.routes.iter().map(|r| r.points.len()).sum::<usize>())
     });
+    // Segments shared by several routes (one provider fanning out) are drawn once.
+    let unique_segments: std::collections::HashSet<[i32; 4]> = graph
+        .flow
+        .iter()
+        .flat_map(|f| f.routes.iter())
+        .flat_map(|r| r.points.windows(2))
+        .map(|w| {
+            let q = |v: f32| (v * 10.0).round() as i32;
+            [q(w[0][0]), q(w[0][1]), q(w[1][0]), q(w[1][1])]
+        })
+        .collect();
+    println!("    route segments: {} total, {} distinct", points.saturating_sub(routes), unique_segments.len());
     tracker.record_stage(
         "Dataflow Layout",
         format!(

@@ -67,12 +67,13 @@ impl CallbackTrait for GpuWireCallback {
             render_pass.set_pipeline(&pipeline.pipeline);
             render_pass.set_bind_group(0, &pipeline.uniform_bind_group, &[]);
             render_pass.set_vertex_buffer(0, pipeline.instance_buffer.slice(..));
-            let total = self.instances.len() as u32;
-            if self.curves > 0 {
-                render_pass.draw(0..VERTICES_PER_CURVE, 0..self.curves);
+            let total = pipeline.uploaded;
+            let curves = self.curves.min(total);
+            if curves > 0 {
+                render_pass.draw(0..VERTICES_PER_CURVE, 0..curves);
             }
-            if total > self.curves {
-                render_pass.draw(0..VERTICES_PER_STRAIGHT, self.curves..total);
+            if total > curves {
+                render_pass.draw(0..VERTICES_PER_STRAIGHT, curves..total);
             }
         }
     }

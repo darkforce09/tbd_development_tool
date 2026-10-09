@@ -54,6 +54,11 @@ pub struct Graph {
     #[serde(skip)]
     #[rkyv(with = rkyv::with::Skip)]
     pub route_index: HashMap<(NodeId, NodeId), usize>,
+    /// Per route and segment: true when an earlier route has the identical segment (a provider
+    /// fanning out), so drawing it again would only overdraw.
+    #[serde(skip)]
+    #[rkyv(with = rkyv::with::Skip)]
+    pub route_shared: Vec<Vec<bool>>,
 }
 
 impl Graph {
@@ -75,6 +80,7 @@ impl Graph {
             collapsed_node_ids: HashSet::new(),
             hidden_cluster_ids: HashSet::new(),
             route_index: HashMap::new(),
+            route_shared: Vec::new(),
         }
     }
 
@@ -85,12 +91,23 @@ impl Graph {
         self.flow.as_ref()?.routes.get(idx)
     }
 
+    /// Which segments of the route from `provider` to `consumer` another route already covers.
+    pub fn route_shared_segments(&self, provider: NodeId, consumer: NodeId) -> Option<&[bool]> {
+        let idx = *self.route_index.get(&(provider, consumer))?;
+        self.route_shared.get(idx).map(Vec::as_slice)
+    }
+
     pub fn rebuild_route_index(&mut self) {
         self.route_index.clear();
-        if let Some(flow) = &self.flow {
-            for (i, r) in flow.routes.iter().enumerate() {
-                self.route_index.insert((r.provider, r.consumer), i);
-            }
+        self.route_shared.clear();
+        let Some(flow) = &self.flow else { return };
+        let mut seen: HashSet<[i32; 4]> = HashSet::new();
+        let q = |v: f32| (v * 10.0).round() as i32;
+        for (i, r) in flow.routes.iter().enumerate() {
+            self.route_index.insert((r.provider, r.consumer), i);
+            let shared =
+                r.points.windows(2).map(|w| !seen.insert([q(w[0][0]), q(w[0][1]), q(w[1][0]), q(w[1][1])])).collect();
+            self.route_shared.push(shared);
         }
     }
 

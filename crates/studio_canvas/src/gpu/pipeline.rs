@@ -35,6 +35,8 @@ pub struct GpuWirePipeline {
     pub uniform_bind_group: wgpu::BindGroup,
     pub instance_buffer: wgpu::Buffer,
     pub instance_capacity: usize,
+    /// Instances uploaded for the current frame (never more than the device allows).
+    pub uploaded: u32,
 }
 
 impl GpuWirePipeline {
@@ -141,13 +143,27 @@ impl GpuWirePipeline {
             cache: None,
         });
 
-        Self { pipeline, uniform_buffer, uniform_bind_group, instance_buffer, instance_capacity: initial_capacity }
+        Self {
+            pipeline,
+            uniform_buffer,
+            uniform_bind_group,
+            instance_buffer,
+            instance_capacity: initial_capacity,
+            uploaded: 0,
+        }
     }
 
     /// Resizes the instance buffer if the batch size exceeds current capacity.
+    /// Most instances one buffer can hold on this device.
+    pub fn max_instances(device: &wgpu::Device) -> usize {
+        (device.limits().max_buffer_size / std::mem::size_of::<GpuWireInstance>() as u64) as usize
+    }
+
     pub fn ensure_instance_capacity(&mut self, device: &wgpu::Device, required: usize) {
+        let max = Self::max_instances(device);
+        let required = required.min(max);
         if required > self.instance_capacity {
-            let new_capacity = (required * 2).max(self.instance_capacity * 2);
+            let new_capacity = (required * 2).max(self.instance_capacity * 2).min(max);
             self.instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("gpu_wire_instances_resized"),
                 size: (new_capacity * std::mem::size_of::<GpuWireInstance>()) as u64,
@@ -164,11 +180,16 @@ impl GpuWirePipeline {
     }
 
     /// Uploads instance data to the GPU buffer.
+    /// Instances beyond what one buffer can hold on this device are dropped for the frame
+    /// rather than failing.
     pub fn upload_instances(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, instances: &[GpuWireInstance]) {
+        self.uploaded = 0;
         if instances.is_empty() {
             return;
         }
         self.ensure_instance_capacity(device, instances.len());
-        queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(instances));
+        let count = instances.len().min(self.instance_capacity);
+        queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&instances[..count]));
+        self.uploaded = count as u32;
     }
 }

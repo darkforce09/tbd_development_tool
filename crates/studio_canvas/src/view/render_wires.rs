@@ -118,6 +118,12 @@ pub fn render_background_and_wires(
         None
     };
 
+    // Card pairs (and kind) already drawn along their route.
+    let mut drawn_pairs: std::collections::HashSet<(
+        studio_graph::NodeId,
+        studio_graph::NodeId,
+        studio_graph::EdgeKind,
+    )> = std::collections::HashSet::new();
     // Card pairs already drawn as one route into or out of a collapsed folder.
     let mut hidden_pairs: std::collections::HashSet<(studio_graph::NodeId, studio_graph::NodeId)> =
         std::collections::HashSet::new();
@@ -130,7 +136,7 @@ pub fn render_background_and_wires(
             if hidden_pairs.insert((edge.from_node, edge.to_node)) {
                 let screen: Vec<Pos2> = points.iter().map(|&p| state.transform.world_to_screen(p)).collect();
                 let style = WireStyle::new(edge_kind_color(edge.kind), false, false, zoom);
-                drawn_wires += draw_route(painter, gpu_batch.as_mut(), &screen, style) as usize;
+                drawn_wires += draw_route(painter, gpu_batch.as_mut(), &screen, style, |_| false) as usize;
             }
             continue;
         }
@@ -179,10 +185,29 @@ pub fn render_background_and_wires(
         let edge_color =
             if state.active_flow_edges.is_none() || is_flow_active { base_color } else { with_alpha(base_color, 45) };
 
-        if let Some(points) = routed_wire_points(graph, edge) {
+        let routed = edge.kind.is_code_flow() && graph.route_index.contains_key(&(edge.from_node, edge.to_node));
+        let highlighted = is_hovered || is_selected || is_flow_active;
+        if routed {
+            // Between two closed cards every wire of the pair has the same path: draw it once,
+            // unless this one is highlighted.
+            let opened = |n: &studio_graph::Node| n.is_dropdown_expanded || n.is_code_expanded;
+            if !opened(from_node)
+                && !opened(to_node)
+                && !highlighted
+                && !drawn_pairs.insert((edge.from_node, edge.to_node, edge.kind))
+            {
+                continue;
+            }
+        }
+        if let Some(points) = routed.then(|| routed_wire_points(graph, edge)).flatten() {
             let screen: Vec<Pos2> = points.iter().map(|&p| state.transform.world_to_screen(p)).collect();
             let style = WireStyle::new(edge_color, is_hovered || is_selected, is_flow_active, zoom);
-            draw_route(painter, gpu_batch.as_mut(), &screen, style);
+            // Middle segments another route already draws are skipped; the two segments at each
+            // end follow this edge's own ports and are always drawn.
+            let shared =
+                graph.route_shared_segments(edge.from_node, edge.to_node).filter(|s| s.len() + 1 == points.len());
+            let skip = |i: usize| !highlighted && i >= 2 && i + 2 < screen.len() - 1 && shared.is_some_and(|s| s[i]);
+            draw_route(painter, gpu_batch.as_mut(), &screen, style, skip);
             continue;
         }
 
@@ -333,7 +358,13 @@ impl WireStyle {
 
 /// Draws a routed wire as straight segments (GPU when available). Returns false when the route
 /// is entirely off screen.
-fn draw_route(painter: &Painter, gpu: Option<&mut GpuWireBatch>, points: &[Pos2], style: WireStyle) -> bool {
+fn draw_route(
+    painter: &Painter,
+    gpu: Option<&mut GpuWireBatch>,
+    points: &[Pos2],
+    style: WireStyle,
+    skip_segment: impl Fn(usize) -> bool,
+) -> bool {
     let clip = painter.clip_rect().expand(20.0);
     let bounds = Rect::from_points(points);
     if !bounds.intersects(clip) {
@@ -341,8 +372,8 @@ fn draw_route(painter: &Painter, gpu: Option<&mut GpuWireBatch>, points: &[Pos2]
     }
     match gpu {
         Some(batch) => {
-            for w in points.windows(2) {
-                if Rect::from_two_pos(w[0], w[1]).intersects(clip) {
+            for (i, w) in points.windows(2).enumerate() {
+                if !skip_segment(i) && Rect::from_two_pos(w[0], w[1]).intersects(clip) {
                     batch.push_segment(
                         w[0],
                         w[1],
