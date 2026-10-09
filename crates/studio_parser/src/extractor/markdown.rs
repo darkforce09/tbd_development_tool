@@ -99,6 +99,7 @@ pub fn extract_markdown_file(file_path: &Path, rel_path: &Path, content: &str) -
         impls: Vec::new(),
         uses,
         parse_error: None,
+        language: super::lang::SourceLang::Markdown,
     }
 }
 

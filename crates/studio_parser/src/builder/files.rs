@@ -3,7 +3,8 @@ use std::path::Path;
 use studio_graph::{DataType, Graph, GroupCluster, NodeArchetype, NodeId, PortId};
 use crate::extractor::ExtractedProject;
 
-use super::members::{attach_member_ports, build_member_nodes, file_ext, is_enforce_file, MemberPortIndex};
+use super::members::{attach_member_ports, build_member_nodes, file_ext, MemberPortIndex};
+use crate::extractor::{detect_language_by_path, SourceLang};
 use super::ProjectStats;
 
 /// Builds a compact, hierarchical File/Folder architecture graph.
@@ -119,8 +120,8 @@ pub fn build_files_graph(project: &ExtractedProject) -> (Graph, ProjectStats) {
 
                 let ext = file_ext(file);
                 let file_name = file.relative_path.file_name().and_then(|f| f.to_str()).unwrap_or("file");
-                let is_markdown = ext == "md" || ext == "markdown";
-                let is_enforce = is_enforce_file(file, &ext);
+                let is_markdown = file.language == SourceLang::Markdown;
+                let is_enforce = file.language == SourceLang::Enforce;
 
                 let badge = if is_markdown {
                     "MD".to_string()
@@ -472,7 +473,7 @@ pub fn build_skeleton_files_graph(project: &crate::project::RustProject) -> (Gra
                 let file_name = file_path.file_name().and_then(|f| f.to_str()).unwrap_or("file");
                 let badge = match ext.as_str() {
                     "md" | "markdown" => "MD".to_string(),
-                    "ens" | "es" | "c" => "ENS".to_string(),
+                    _ if detect_language_by_path(file_path) == SourceLang::Enforce => "ENS".to_string(),
                     "rs" => "RS".to_string(),
                     "json" => "JSON".to_string(),
                     "toml" => "TOML".to_string(),

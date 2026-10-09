@@ -3,7 +3,7 @@ use std::path::Path;
 use studio_graph::{
     DataType, FileMemberNode, Graph, NodeArchetype, NodeId, Port, PortDirection, PortId,
 };
-use crate::extractor::ExtractedFile;
+use crate::extractor::{ExtractedFile, SourceLang};
 
 /// Lowercased file extension used for per-language labels.
 pub fn file_ext(file: &ExtractedFile) -> String {
@@ -15,21 +15,11 @@ pub fn file_ext(file: &ExtractedFile) -> String {
         .to_lowercase()
 }
 
-pub fn is_enforce_file(file: &ExtractedFile, ext: &str) -> bool {
-    ext == "ens"
-        || ext == "es"
-        || (ext == "c"
-            && file
-                .structs
-                .iter()
-                .any(|s| s.derives.contains(&"modded".to_string()) || s.source_code.contains("class ")))
-}
-
 /// Builds the inline member list (functions, types, methods, headings, links) shown inside a file card,
 /// sorted by line. Ports are not assigned; see [`attach_member_ports`].
 pub fn build_member_nodes(file: &ExtractedFile) -> Vec<FileMemberNode> {
     let ext = file_ext(file);
-    let is_enforce = is_enforce_file(file, &ext);
+    let is_enforce = file.language == SourceLang::Enforce;
     let mut member_nodes = Vec::new();
 
     for s in &file.structs {

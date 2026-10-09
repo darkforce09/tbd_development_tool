@@ -106,6 +106,26 @@ pub struct ExtractedFile {
     pub impls: Vec<ImplItem>,
     pub uses: Vec<UseItem>,
     pub parse_error: Option<String>,
+    pub language: super::lang::SourceLang,
+}
+
+impl ExtractedFile {
+    /// A file with no extracted items, e.g. unreadable or skipped.
+    pub fn empty(file_path: &std::path::Path, rel_path: &std::path::Path, language: super::lang::SourceLang, parse_error: Option<String>) -> Self {
+        Self {
+            file_path: file_path.to_path_buf(),
+            relative_path: rel_path.to_path_buf(),
+            module_name: file_path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "mod".to_string()),
+            functions: Vec::new(),
+            structs: Vec::new(),
+            enums: Vec::new(),
+            traits: Vec::new(),
+            impls: Vec::new(),
+            uses: Vec::new(),
+            parse_error,
+            language,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -4,446 +4,552 @@ use super::types::{
     StructItem, UseItem,
 };
 
-/// Checks if file content or path strongly suggests Bohemia Interactive's Enforce Script.
-pub fn is_enforce_script(path: &Path, content: &str) -> bool {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    if ext == "ens" || ext == "es" || ext == "enforce" {
-        return true;
-    }
-
-    if ext == "c" {
-        // Enforce script typically contains `modded class`, `proto native`, `proto `,
-        // or class declarations with `: BaseClass`, or standard DayZ / Arma calls.
-        if content.contains("modded class")
-            || content.contains("proto native")
-            || content.contains("autoptr ")
-            || content.contains("GetGame()")
-            || content.contains("override void ")
-            || content.contains("override bool ")
-            || content.contains("override int ")
-            || content.contains("override float ")
-            || content.contains("ref array<")
-            || content.contains("ref map<")
-        {
-            return true;
-        }
-
-        let path_str = path.to_string_lossy();
-        if path_str.contains("Scripts/") || path_str.contains("scripts/")
-            || path_str.contains("1_Core") || path_str.contains("2_GameLib")
-            || path_str.contains("3_Game") || path_str.contains("4_World")
-            || path_str.contains("5_Mission") || path_str.contains("DayZ")
-            || path_str.contains("ArmaReforger") || path_str.contains("Enforce")
-        {
-            return true;
-        }
-    }
-
-    false
-}
-
-/// Extracts classes, modded classes, methods, enums, and dependencies from an Enforce Script file.
+/// Extracts classes, modded classes, methods, fields, enums, and dependencies from an Enforce Script file.
+///
+/// Comments, strings and preprocessor lines are blanked out first (byte offsets preserved), so brace
+/// matching and declaration scanning only ever see code. Item sources are verbatim slices of the file.
 pub fn extract_enforce_script_file(file_path: &Path, rel_path: &Path, content: &str) -> ExtractedFile {
     let module_name = file_path
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "script".to_string());
 
-    let mut structs = Vec::new();
-    let mut enums = Vec::new();
-    let mut impls = Vec::new();
-    let mut functions = Vec::new();
-    let mut uses = Vec::new();
-
-    let mut current_class: Option<(String, usize, Vec<String>)> = None; // (name, start_line, derives)
-    let mut current_class_methods = Vec::new();
-    let mut current_class_fields = Vec::new();
-    let mut brace_depth: i32 = 0;
-    let mut class_brace_depth: i32 = 0;
-
-    let lines: Vec<&str> = content.lines().collect();
-
-    for (line_idx, raw_line) in lines.iter().enumerate() {
-        let line_num = line_idx + 1;
-        let line = raw_line.trim();
-
-        // 1. Check for includes: #include "..."
-        if line.starts_with("#include") {
-            if let Some(start) = line.find('"') {
-                if let Some(end) = line[start + 1..].find('"') {
-                    let inc_path = &line[start + 1..start + 1 + end];
-                    uses.push(UseItem {
-                        path: inc_path.to_string(),
-                        items: vec!["#include".to_string()],
-                    });
-                }
-            }
-            continue;
-        }
-
-        // Count braces for scope tracking
-        let open_count = line.chars().filter(|&c| c == '{').count() as i32;
-        let close_count = line.chars().filter(|&c| c == '}').count() as i32;
-
-        // 2. Class Declaration: `modded class Name : Base` or `class Name : Base` or `class Name`
-        if (line.starts_with("modded class ") || line.starts_with("class ") || line.starts_with("sealed class "))
-            && !line.contains(';')
-        {
-            let is_modded = line.starts_with("modded class ");
-            let line_clean = line.trim_start_matches("modded ")
-                .trim_start_matches("sealed ")
-                .trim_start_matches("class ")
-                .trim();
-
-            let (class_name, base_class) = if let Some((name_part, base_part)) = line_clean.split_once(':') {
-                let name = name_part.trim().split_whitespace().next().unwrap_or(name_part.trim()).to_string();
-                let base = base_part.trim().split_whitespace().next()
-                    .unwrap_or(base_part.trim())
-                    .trim_matches('{')
-                    .trim()
-                    .to_string();
-                (name, Some(base))
-            } else if let Some((name_part, base_part)) = line_clean.split_once("extends") {
-                let name = name_part.trim().split_whitespace().next().unwrap_or(name_part.trim()).to_string();
-                let base = base_part.trim().split_whitespace().next()
-                    .unwrap_or(base_part.trim())
-                    .trim_matches('{')
-                    .trim()
-                    .to_string();
-                (name, Some(base))
-            } else {
-                let name = line_clean.split_whitespace().next()
-                    .unwrap_or(line_clean)
-                    .trim_matches('{')
-                    .trim()
-                    .to_string();
-                (name, None)
-            };
-
-            let mut derives = Vec::new();
-            if is_modded {
-                derives.push("modded".to_string());
-            }
-            if let Some(base) = base_class {
-                derives.push(base.clone());
-                uses.push(UseItem {
-                    path: base,
-                    items: vec!["inherit".to_string()],
-                });
-            }
-
-            // Flush previous class if any
-            if let Some((prev_name, prev_line, prev_derives)) = current_class.take() {
-                structs.push(StructItem {
-                    name: prev_name.clone(),
-                    visibility: if prev_derives.contains(&"modded".to_string()) {
-                        ItemVisibility::Public
-                    } else {
-                        ItemVisibility::Public
-                    },
-                    fields: std::mem::take(&mut current_class_fields),
-                    derives: prev_derives,
-                    docs: String::new(),
-                    line: prev_line,
-                    source_code: format!("class {}", prev_name),
-                });
-                if !current_class_methods.is_empty() {
-                    impls.push(ImplItem {
-                        target_type: prev_name,
-                        trait_name: None,
-                        methods: std::mem::take(&mut current_class_methods),
-                        line: prev_line,
-                    });
-                }
-            }
-
-            current_class = Some((class_name, line_num, derives));
-            class_brace_depth = brace_depth + open_count - close_count;
-            brace_depth += open_count - close_count;
-            continue;
-        }
-
-        // 3. Enum Declaration: `enum EMyEnum`
-        if line.starts_with("enum ") {
-            let enum_name = line.trim_start_matches("enum ")
-                .trim()
-                .split_whitespace()
-                .next()
-                .unwrap_or("")
-                .trim_matches('{')
-                .to_string();
-
-            if !enum_name.is_empty() {
-                // Collect variants if on same line or within braces
-                enums.push(EnumItem {
-                    name: enum_name,
-                    visibility: ItemVisibility::Public,
-                    variants: Vec::new(),
-                    docs: String::new(),
-                    line: line_num,
-                    source_code: raw_line.to_string(),
-                });
-            }
-        }
-
-        // 4. Method / Function Declaration
-        // Examples: `override void MethodName(...)`, `proto native void Func(...)`, `void Func(...)`, `string GetName(...)`
-        if is_enforce_method_declaration(line) {
-            let method_item = parse_enforce_method(raw_line, line_num, &lines[line_idx..]);
-            let calls = extract_enforce_calls(&method_item.source_code);
-            let mut final_method = method_item;
-            final_method.calls = calls;
-
-            if current_class.is_some() {
-                current_class_methods.push(final_method);
-            } else {
-                functions.push(final_method);
-            }
-        } else if current_class.is_some() && is_enforce_field_declaration(line) {
-            // Field declaration inside class: `protected int m_Count;` or `ref array<string> m_Items;`
-            let (field_name, field_type) = parse_enforce_field(line);
-            if !field_name.is_empty() {
-                current_class_fields.push(FieldInfo {
-                    name: field_name,
-                    type_str: field_type,
-                    visibility: if line.starts_with("protected") {
-                        ItemVisibility::Crate
-                    } else if line.starts_with("private") {
-                        ItemVisibility::Private
-                    } else {
-                        ItemVisibility::Public
-                    },
-                });
-            }
-        }
-
-        brace_depth += open_count - close_count;
-
-        // Check if class closed
-        if current_class.is_some() {
-            if brace_depth < class_brace_depth {
-                if let Some((prev_name, prev_line, prev_derives)) = current_class.take() {
-                    structs.push(StructItem {
-                        name: prev_name.clone(),
-                        visibility: ItemVisibility::Public,
-                        fields: std::mem::take(&mut current_class_fields),
-                        derives: prev_derives,
-                        docs: String::new(),
-                        line: prev_line,
-                        source_code: format!("class {}", prev_name),
-                    });
-                    if !current_class_methods.is_empty() {
-                        impls.push(ImplItem {
-                            target_type: prev_name,
-                            trait_name: None,
-                            methods: std::mem::take(&mut current_class_methods),
-                            line: prev_line,
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    // Final flush if file ended before closing brace
-    if let Some((prev_name, prev_line, prev_derives)) = current_class.take() {
-        structs.push(StructItem {
-            name: prev_name.clone(),
-            visibility: ItemVisibility::Public,
-            fields: current_class_fields,
-            derives: prev_derives,
-            docs: String::new(),
-            line: prev_line,
-            source_code: format!("class {}", prev_name),
-        });
-        if !current_class_methods.is_empty() {
-            impls.push(ImplItem {
-                target_type: prev_name,
-                trait_name: None,
-                methods: current_class_methods,
-                line: prev_line,
-            });
-        }
-    }
+    let masked = mask_non_code(content);
+    let mut scanner = Scanner {
+        src: content,
+        code: &masked,
+        line_starts: line_starts(content),
+        out: Extracted::default(),
+    };
+    scanner.out.uses = collect_includes(content);
+    scanner.scan_scope(0, masked.len(), None);
+    let out = scanner.out;
 
     ExtractedFile {
         file_path: file_path.to_path_buf(),
         relative_path: rel_path.to_path_buf(),
         module_name,
-        functions,
-        structs,
-        enums,
+        functions: out.functions,
+        structs: out.structs,
+        enums: out.enums,
         traits: Vec::new(),
-        impls,
-        uses,
+        impls: out.impls,
+        uses: out.uses,
         parse_error: None,
+        language: super::lang::SourceLang::Enforce,
     }
 }
 
-fn is_enforce_method_declaration(line: &str) -> bool {
-    let trimmed = line.trim();
-    if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*') {
-        return false;
-    }
-    if !trimmed.contains('(') || !trimmed.contains(')') {
-        return false;
-    }
-    if trimmed.starts_with("if ") || trimmed.starts_with("for ") || trimmed.starts_with("while ") || trimmed.starts_with("switch ") {
-        return false;
-    }
-
-    trimmed.starts_with("override ")
-        || trimmed.starts_with("proto ")
-        || trimmed.starts_with("void ")
-        || trimmed.starts_with("bool ")
-        || trimmed.starts_with("int ")
-        || trimmed.starts_with("float ")
-        || trimmed.starts_with("string ")
-        || trimmed.starts_with("vector ")
-        || trimmed.starts_with("protected ")
-        || trimmed.starts_with("private ")
-        || trimmed.starts_with("static ")
+#[derive(Default)]
+struct Extracted {
+    functions: Vec<FunctionItem>,
+    structs: Vec<StructItem>,
+    enums: Vec<EnumItem>,
+    impls: Vec<ImplItem>,
+    uses: Vec<UseItem>,
 }
 
-fn parse_enforce_method(raw_line: &str, line_num: usize, remaining_lines: &[&str]) -> FunctionItem {
-    let line = raw_line.trim();
-    let is_override = line.starts_with("override ");
-    let is_static = line.contains("static ");
-    let paren_pos = line.find('(').unwrap_or(line.len());
-    let sig_before_paren = &line[..paren_pos].trim();
+struct ClassCtx {
+    fields: Vec<FieldInfo>,
+    methods: Vec<FunctionItem>,
+}
 
-    // The method name is the last token before '('
-    let name = sig_before_paren.split_whitespace().last().unwrap_or("method").to_string();
+const MODIFIERS: &[&str] = &[
+    "override", "proto", "native", "external", "static", "private", "protected", "event", "sealed",
+    "volatile", "notnull", "owned", "reference", "const", "ref", "autoptr", "local", "out", "inout",
+];
 
-    // Extract return type (the token before name)
-    let tokens: Vec<&str> = sig_before_paren.split_whitespace().collect();
-    let ret_type = if tokens.len() >= 2 {
-        Some(tokens[tokens.len() - 2].to_string())
-    } else {
-        None
-    };
+const NOT_CALLS: &[&str] = &[
+    "if", "for", "foreach", "while", "switch", "return", "new", "delete", "sizeof", "typename", "super",
+    "this", "case", "else", "thread", "Class", "array", "set", "map",
+];
 
-    // Extract parameters
-    let mut inputs = Vec::new();
-    if let Some(close_paren) = line[paren_pos..].find(')') {
-        let params_str = &line[paren_pos + 1..paren_pos + close_paren].trim();
-        if !params_str.is_empty() {
-            for param in params_str.split(',') {
-                let p_parts: Vec<&str> = param.trim().split_whitespace().collect();
-                if p_parts.len() >= 2 {
-                    inputs.push(ParamInfo {
-                        name: p_parts[p_parts.len() - 1].to_string(),
-                        type_str: p_parts[..p_parts.len() - 1].join(" "),
-                    });
-                } else if !p_parts.is_empty() {
-                    inputs.push(ParamInfo {
-                        name: p_parts[0].to_string(),
-                        type_str: "any".to_string(),
-                    });
+struct Scanner<'a> {
+    src: &'a str,
+    code: &'a str,
+    line_starts: Vec<usize>,
+    out: Extracted,
+}
+
+impl Scanner<'_> {
+    /// Walks declarations between `start..end`. `class` is set when scanning a class body.
+    fn scan_scope(&mut self, start: usize, end: usize, mut class: Option<&mut ClassCtx>) {
+        let bytes = self.code.as_bytes();
+        let mut header_start = start;
+        let mut i = start;
+        while i < end {
+            match bytes[i] {
+                b';' => {
+                    if let Some(ctx) = class.as_deref_mut() {
+                        self.class_statement(header_start, i, ctx);
+                    }
+                    i += 1;
+                    header_start = i;
+                }
+                b'{' => {
+                    let close = matching_brace(bytes, i, end);
+                    self.block_declaration(header_start, i, close, class.as_deref_mut());
+                    i = (close + 1).min(end);
+                    // `class X {...};` — swallow the trailing semicolon
+                    while i < end && bytes[i].is_ascii_whitespace() {
+                        i += 1;
+                    }
+                    if i < end && bytes[i] == b';' {
+                        i += 1;
+                    }
+                    header_start = i;
+                }
+                b'}' => {
+                    i += 1;
+                    header_start = i;
+                }
+                // Attribute groups may contain braces: `[Attr(modules: {"A", "B"})]`
+                b'[' => i = matching_bracket(bytes, i, end) + 1,
+                _ => i += 1,
+            }
+        }
+    }
+
+    /// A `{ ... }` block preceded by a header: class, enum, or function/method.
+    fn block_declaration(&mut self, header_start: usize, open: usize, close: usize, class: Option<&mut ClassCtx>) {
+        let (attr_end, raw_header) = strip_attributes(self.code, header_start, open);
+        let spanned: Vec<(usize, &str)> = token_spans(raw_header).map(|(off, t)| (attr_end + off, t)).collect();
+        if spanned.is_empty() {
+            return;
+        }
+        let body_end = (close + 1).min(self.src.len());
+
+        // `class`/`enum` declarations: only `modded`/`sealed` may precede the keyword. Anything
+        // earlier is stray text (e.g. a file starting inside a comment) and is ignored.
+        let keyword = spanned.iter().rposition(|(_, t)| *t == "class" || *t == "enum");
+        if let Some(pos) = keyword.filter(|&p| p + 1 < spanned.len() && class.is_none()) {
+            let mut first = pos;
+            while first > 0 && matches!(spanned[first - 1].1, "modded" | "sealed") {
+                first -= 1;
+            }
+            let decl_start = spanned[first].0;
+            let tokens: Vec<&str> = spanned[first..].iter().map(|(_, t)| *t).collect();
+            let kw = pos - first;
+            let line = self.line_of(decl_start);
+            if tokens[kw] == "class" {
+                self.class_declaration(&tokens, kw, decl_start, open, close, line, body_end);
+            } else {
+                self.enum_declaration(&tokens, kw, decl_start, open, close, line, body_end);
+            }
+            return;
+        }
+
+        let decl_start = spanned[0].0;
+        let header = self.code[decl_start..open].trim();
+        let line = self.line_of(decl_start);
+        if header.contains('(') {
+            if let Some(mut f) = self.function(header, decl_start, line, body_end) {
+                f.calls = calls_in(&self.code[open + 1..close], &f.name);
+                match class {
+                    Some(ctx) => ctx.methods.push(f),
+                    None => self.out.functions.push(f),
                 }
             }
         }
     }
 
-    // Collect method body snippet (up to 15 lines)
-    let mut body_lines = Vec::new();
-    let mut depth = 0;
-    let mut opened = false;
-    for l in remaining_lines.iter().take(15) {
-        body_lines.push(*l);
-        depth += l.chars().filter(|&c| c == '{').count() as i32;
-        depth -= l.chars().filter(|&c| c == '}').count() as i32;
-        if depth > 0 {
-            opened = true;
+    #[allow(clippy::too_many_arguments)]
+    fn enum_declaration(&mut self, tokens: &[&str], pos: usize, decl_start: usize, open: usize, close: usize, line: usize, body_end: usize) {
+        let name = tokens[pos + 1].split(':').next().unwrap_or_default().to_string();
+        let variants = enum_variants(&self.code[open + 1..close]);
+        self.out.enums.push(EnumItem {
+            name,
+            visibility: ItemVisibility::Public,
+            variants,
+            docs: self.docs_above(decl_start),
+            line,
+            source_code: self.slice(decl_start, body_end),
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn class_declaration(&mut self, tokens: &[&str], pos: usize, decl_start: usize, open: usize, close: usize, line: usize, body_end: usize) {
+        let Some(raw_name) = tokens.get(pos + 1) else { return };
+        let (name, inline_base) = match raw_name.split_once(':') {
+            Some((n, b)) => (n.to_string(), (!b.is_empty()).then(|| b.to_string())),
+            None => (raw_name.to_string(), None),
+        };
+        let base = inline_base.or_else(|| {
+            let rest = &tokens[pos + 2..];
+            match rest.first() {
+                Some(&":") | Some(&"extends") => rest.get(1).map(|b| b.to_string()),
+                Some(t) if t.starts_with(':') => Some(t.trim_start_matches(':').to_string()),
+                _ => None,
+            }
+        });
+
+        let mut derives = Vec::new();
+        if tokens[..pos].contains(&"modded") {
+            derives.push("modded".to_string());
         }
-        if opened && depth <= 0 {
+        if let Some(base) = base.filter(|b| !b.is_empty()) {
+            derives.push(base.clone());
+            self.out.uses.push(UseItem { path: base, items: vec!["inherit".to_string()] });
+        }
+
+        let mut ctx = ClassCtx { fields: Vec::new(), methods: Vec::new() };
+        self.scan_scope(open + 1, close, Some(&mut ctx));
+
+        self.out.structs.push(StructItem {
+            name: name.clone(),
+            visibility: ItemVisibility::Public,
+            fields: ctx.fields,
+            derives,
+            docs: self.docs_above(decl_start),
+            line,
+            source_code: self.slice(decl_start, body_end),
+        });
+        if !ctx.methods.is_empty() {
+            self.out.impls.push(ImplItem { target_type: name, trait_name: None, methods: ctx.methods, line });
+        }
+    }
+
+    /// A `;`-terminated statement in a class body: a field or a body-less (proto) method.
+    fn class_statement(&mut self, header_start: usize, semi: usize, ctx: &mut ClassCtx) {
+        let (decl_start, header) = strip_attributes(self.code, header_start, semi);
+        let header = header.trim();
+        if header.is_empty() || header.starts_with("typedef") {
+            return;
+        }
+        let line = self.line_of(decl_start);
+        let is_method = match (header.find('('), header.find('=')) {
+            (Some(paren), Some(eq)) => paren < eq,
+            (Some(_), None) => true,
+            _ => false,
+        };
+        if is_method {
+            if let Some(f) = self.function(header, decl_start, line, semi + 1) {
+                ctx.methods.push(f);
+            }
+            return;
+        }
+        let decl = header.split('=').next().unwrap_or(header);
+        let decl = decl.split(',').next().unwrap_or(decl);
+        let tokens: Vec<&str> = decl.split_whitespace().collect();
+        let Some((name, type_tokens)) = tokens.split_last() else { return };
+        let type_str = type_tokens.iter().filter(|t| !is_access_modifier(t)).copied().collect::<Vec<_>>().join(" ");
+        if type_str.is_empty() || !is_identifier(name.trim_end_matches(']').split('[').next().unwrap_or(name)) {
+            return;
+        }
+        ctx.fields.push(FieldInfo {
+            name: name.split('[').next().unwrap_or(name).to_string(),
+            type_str,
+            visibility: visibility(type_tokens),
+        });
+    }
+
+    /// Parses `[modifiers] ReturnType Name(params)` from a (possibly multi-line) header.
+    fn function(&self, header: &str, decl_start: usize, line: usize, source_end: usize) -> Option<FunctionItem> {
+        let paren = header.find('(')?;
+        let close = header.rfind(')').filter(|&c| c > paren)?;
+        let before: Vec<&str> = header[..paren].split_whitespace().collect();
+        let (name, prefix) = before.split_last()?;
+        // Constructors/destructors have no return type: `void Foo()`, `Foo()`, `~Foo()`
+        let name = name.trim_start_matches('~');
+        if !is_identifier(name) || NOT_CALLS.contains(&name) {
+            return None;
+        }
+        let ret: Vec<&str> = prefix.iter().filter(|t| !MODIFIERS.contains(t)).copied().collect();
+        let is_override = prefix.contains(&"override");
+
+        let inputs = split_params(&header[paren + 1..close])
+            .into_iter()
+            .filter_map(|p| {
+                let p = p.split('=').next().unwrap_or(&p).trim().to_string();
+                let parts: Vec<&str> = p.split_whitespace().collect();
+                let (pname, ptype) = parts.split_last()?;
+                Some(ParamInfo {
+                    name: pname.to_string(),
+                    type_str: if ptype.is_empty() { "any".to_string() } else { ptype.join(" ") },
+                })
+            })
+            .collect();
+
+        Some(FunctionItem {
+            name: name.to_string(),
+            visibility: visibility(prefix),
+            is_async: false,
+            is_method: true,
+            self_param: if prefix.contains(&"static") { None } else { Some("this".to_string()) },
+            inputs,
+            output: (!ret.is_empty() && ret != ["void"]).then(|| ret.join(" ")),
+            calls: Vec::new(),
+            docs: {
+                let docs = self.docs_above(decl_start);
+                if docs.is_empty() && is_override { "Override method".to_string() } else { docs }
+            },
+            line,
+            source_code: self.slice(decl_start, source_end),
+        })
+    }
+
+    fn slice(&self, start: usize, end: usize) -> String {
+        self.src[start..end.min(self.src.len())].replace("\r\n", "\n")
+    }
+
+    fn line_of(&self, offset: usize) -> usize {
+        self.line_starts.partition_point(|&s| s <= offset)
+    }
+
+    /// Contiguous `//` comment lines directly above the declaration.
+    fn docs_above(&self, decl_start: usize) -> String {
+        let line_idx = self.line_of(decl_start) - 1;
+        let mut docs = Vec::new();
+        for idx in (0..line_idx).rev() {
+            let start = self.line_starts[idx];
+            let end = self.line_starts.get(idx + 1).copied().unwrap_or(self.src.len());
+            let text = self.src[start..end].trim();
+            match text.strip_prefix("//") {
+                Some(rest) => docs.push(rest.trim_start_matches(['!', '/']).trim().to_string()),
+                None => break,
+            }
+        }
+        docs.reverse();
+        docs.join("\n")
+    }
+}
+
+fn is_access_modifier(t: &str) -> bool {
+    matches!(t, "private" | "protected" | "static" | "const")
+}
+
+fn visibility(tokens: &[&str]) -> ItemVisibility {
+    if tokens.contains(&"private") {
+        ItemVisibility::Private
+    } else if tokens.contains(&"protected") {
+        ItemVisibility::Crate
+    } else {
+        ItemVisibility::Public
+    }
+}
+
+fn is_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    chars.next().is_some_and(|c| c.is_alphabetic() || c == '_') && chars.all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// Strips leading `[Attribute(...)]` groups; returns the declaration start offset and header text.
+fn strip_attributes(code: &str, start: usize, end: usize) -> (usize, &str) {
+    let bytes = code.as_bytes();
+    let mut i = start;
+    loop {
+        while i < end && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i < end && bytes[i] == b'[' {
+            let mut depth = 0;
+            while i < end {
+                match bytes[i] {
+                    b'[' => depth += 1,
+                    b']' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            i += 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+        } else {
             break;
         }
     }
-    let source_code = body_lines.join("\n");
-
-    FunctionItem {
-        name,
-        visibility: if is_override {
-            ItemVisibility::Public
-        } else if line.starts_with("protected") {
-            ItemVisibility::Crate
-        } else if line.starts_with("private") {
-            ItemVisibility::Private
-        } else {
-            ItemVisibility::Public
-        },
-        is_async: false,
-        is_method: true,
-        self_param: if is_static { None } else { Some("this".to_string()) },
-        inputs,
-        output: ret_type,
-        calls: Vec::new(),
-        docs: if is_override { "Override method".to_string() } else { String::new() },
-        line: line_num,
-        source_code,
-    }
+    (i, &code[i..end])
 }
 
-fn is_enforce_field_declaration(line: &str) -> bool {
-    let trimmed = line.trim();
-    trimmed.ends_with(';') && !trimmed.contains('(') && (
-        trimmed.starts_with("protected ")
-        || trimmed.starts_with("private ")
-        || trimmed.starts_with("ref ")
-        || trimmed.starts_with("autoptr ")
-        || trimmed.starts_with("int ")
-        || trimmed.starts_with("float ")
-        || trimmed.starts_with("string ")
-        || trimmed.starts_with("bool ")
-    )
-}
-
-fn parse_enforce_field(line: &str) -> (String, String) {
-    let clean = line.trim().trim_end_matches(';').trim();
-    let tokens: Vec<&str> = clean.split_whitespace().collect();
-    if tokens.len() >= 2 {
-        let name = tokens.last().unwrap_or(&"").to_string();
-        let type_str = tokens[..tokens.len() - 1].join(" ");
-        (name, type_str)
-    } else {
-        (String::new(), String::new())
-    }
-}
-
-fn extract_enforce_calls(source_code: &str) -> Vec<String> {
-    let mut calls = Vec::new();
-    for line in source_code.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("//") {
-            continue;
-        }
-
-        // Detect super.MethodName
-        if let Some(super_idx) = trimmed.find("super.") {
-            let after = &trimmed[super_idx + 6..];
-            if let Some(paren) = after.find('(') {
-                let call_name = after[..paren].trim().to_string();
-                if !call_name.is_empty() && !calls.contains(&call_name) {
-                    calls.push(format!("super.{}", call_name));
-                    calls.push(call_name);
+fn matching_bracket(bytes: &[u8], open: usize, end: usize) -> usize {
+    let mut depth = 0;
+    for (i, &b) in bytes.iter().enumerate().take(end).skip(open) {
+        match b {
+            b'[' => depth += 1,
+            b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return i;
                 }
             }
+            _ => {}
         }
+    }
+    // Unbalanced: the group runs to the end of the scope.
+    end.max(open + 1)
+}
 
-        // Detect GetGame(), Print(), etc.
-        for common_call in &["GetGame", "Print", "GetPlayer", "GetWorld", "CreateObject", "SetPosition"] {
-            if trimmed.contains(common_call) && !calls.contains(&common_call.to_string()) {
-                calls.push(common_call.to_string());
+/// Whitespace-separated tokens with their byte offsets.
+fn token_spans(s: &str) -> impl Iterator<Item = (usize, &str)> {
+    s.split_whitespace().map(move |t| (t.as_ptr() as usize - s.as_ptr() as usize, t))
+}
+
+fn matching_brace(bytes: &[u8], open: usize, end: usize) -> usize {
+    let mut depth = 0;
+    for (i, &b) in bytes.iter().enumerate().take(end).skip(open) {
+        match b {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return i;
+                }
             }
+            _ => {}
+        }
+    }
+    // Unbalanced: the group runs to the end of the scope.
+    end.max(open + 1)
+}
+
+fn split_params(params: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth = 0;
+    let mut cur = String::new();
+    for c in params.chars() {
+        match c {
+            '<' | '(' => depth += 1,
+            '>' | ')' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(std::mem::take(&mut cur));
+                continue;
+            }
+            _ => {}
+        }
+        cur.push(c);
+    }
+    out.push(cur);
+    out.into_iter().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect()
+}
+
+fn enum_variants(body: &str) -> Vec<String> {
+    body.split(',')
+        .filter_map(|v| v.split('=').next())
+        .map(str::trim)
+        .filter(|v| is_identifier(v))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Identifiers followed by `(` in a function body, in first-seen order. `super.X(` also yields `super.X`.
+fn calls_in(body: &str, own_name: &str) -> Vec<String> {
+    let bytes = body.as_bytes();
+    let mut calls: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_alphabetic() || bytes[i] == b'_' {
+            let start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            let ident = &body[start..i];
+            let mut j = i;
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            let preceded_by_new = body[..start].trim_end().ends_with("new");
+            let is_super = body[..start].ends_with("super.");
+            if j < bytes.len() && bytes[j] == b'(' && !NOT_CALLS.contains(&ident) && !preceded_by_new && (is_super || ident != own_name) {
+                if is_super {
+                    let sup = format!("super.{}", ident);
+                    if !calls.contains(&sup) {
+                        calls.push(sup);
+                    }
+                }
+                if !calls.iter().any(|c| c == ident) {
+                    calls.push(ident.to_string());
+                }
+            }
+        } else {
+            i += 1;
         }
     }
     calls
 }
 
+fn collect_includes(content: &str) -> Vec<UseItem> {
+    content
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("#include"))
+        .filter_map(|rest| {
+            let start = rest.find('"')?;
+            let end = rest[start + 1..].find('"')?;
+            Some(UseItem { path: rest[start + 1..start + 1 + end].to_string(), items: vec!["#include".to_string()] })
+        })
+        .collect()
+}
+
+fn line_starts(content: &str) -> Vec<usize> {
+    std::iter::once(0).chain(content.match_indices('\n').map(|(i, _)| i + 1)).collect()
+}
+
+/// Copy of `src` with comments, string/char literals and preprocessor lines replaced by spaces.
+/// Newlines and byte offsets are preserved.
+fn mask_non_code(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let mut out = bytes.to_vec();
+    let blank = |out: &mut Vec<u8>, from: usize, to: usize| {
+        for b in &mut out[from..to] {
+            if *b != b'\n' {
+                *b = b' ';
+            }
+        }
+    };
+    let mut i = 0;
+    let mut line_start = true;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if line_start && b == b'#' {
+            let end = src[i..].find('\n').map_or(bytes.len(), |e| i + e);
+            blank(&mut out, i, end);
+            i = end;
+            continue;
+        }
+        if b == b'/' && bytes.get(i + 1) == Some(&b'/') {
+            let end = src[i..].find('\n').map_or(bytes.len(), |e| i + e);
+            blank(&mut out, i, end);
+            i = end;
+        } else if b == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            let end = src[i + 2..].find("*/").map_or(bytes.len(), |e| i + 2 + e + 2);
+            blank(&mut out, i, end);
+            i = end;
+        } else if b == b'"' || b == b'\'' {
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j] != b && bytes[j] != b'\n' {
+                if bytes[j] == b'\\' {
+                    j += 1;
+                }
+                j += 1;
+            }
+            // keep the quotes so `Print("x")` still reads as a call with an argument;
+            // an unterminated literal stops before the newline
+            let closed = j < bytes.len() && bytes[j] == b;
+            blank(&mut out, i + 1, j.min(bytes.len()));
+            i = if closed { j + 1 } else { j.min(bytes.len()) };
+        } else {
+            if b == b'\n' {
+                line_start = true;
+            } else if !b.is_ascii_whitespace() {
+                line_start = false;
+            }
+            i += 1;
+        }
+    }
+    // Only ASCII bytes were replaced with ASCII spaces inside comments/strings; multi-byte UTF-8
+    // sequences there are blanked byte-by-byte, which still yields valid UTF-8 (all spaces).
+    String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn extract(code: &str) -> ExtractedFile {
+        extract_enforce_script_file(Path::new("Test.c"), Path::new("Test.c"), code)
+    }
 
     #[test]
     fn test_extract_enforce_script_modded_class() {
@@ -467,15 +573,13 @@ class CustomEntity : Managed
     }
 }
 "#;
-        let file = extract_enforce_script_file(
-            Path::new("DayZPlayerImplement.c"),
-            Path::new("DayZPlayerImplement.c"),
-            code,
-        );
+        let file = extract(code);
 
         assert_eq!(file.structs.len(), 2, "Should parse 2 classes");
         assert_eq!(file.structs[0].name, "DayZPlayerImplement");
         assert!(file.structs[0].derives.contains(&"modded".to_string()));
+        assert_eq!(file.structs[0].fields.len(), 1);
+        assert_eq!(file.structs[0].fields[0].name, "m_CustomCounter");
 
         assert_eq!(file.structs[1].name, "CustomEntity");
         assert!(file.structs[1].derives.contains(&"Managed".to_string()));
@@ -484,6 +588,139 @@ class CustomEntity : Managed
         let methods = &file.impls[0].methods;
         assert_eq!(methods.len(), 1);
         assert_eq!(methods[0].name, "ShowDeadScreen");
-        assert!(methods[0].calls.contains(&"ShowDeadScreen".to_string()) || methods[0].calls.contains(&"Print".to_string()));
+        assert_eq!(methods[0].calls, vec!["super.ShowDeadScreen", "ShowDeadScreen", "Print"]);
+        assert_eq!(file.impls[1].methods[0].calls, vec!["GetGame", "GetWorld"]);
+    }
+
+    #[test]
+    fn braces_in_strings_and_comments_do_not_break_scopes() {
+        let code = r#"
+class A
+{
+    void One()
+    {
+        Print("{ not a brace");
+        // } also not a brace
+        /* { */
+    }
+
+    void Two() {}
+}
+
+class B {}
+"#;
+        let file = extract(code);
+        let names: Vec<_> = file.structs.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["A", "B"]);
+        let methods: Vec<_> = file.impls[0].methods.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(methods, ["One", "Two"]);
+    }
+
+    #[test]
+    fn multi_line_signatures_custom_return_types_and_modifiers() {
+        let code = r#"
+[EntityEditorProps(category: "Test")]
+sealed class SCR_Thing : ScriptComponent
+{
+    [Attribute("1", desc: "Speed")]
+    protected float m_fSpeed = 1.0;
+    ref array<string> m_aNames;
+
+    //! Finds the owner
+    IEntity FindOwner(
+        notnull IEntity root,
+        int depth = 3)
+    {
+        int count = CountChildren(root);
+        return root;
+    }
+
+    static proto native void NativeThing(int a);
+    protected array<ref SCR_Item> GetItems() { return null; }
+}
+"#;
+        let file = extract(code);
+        let class = &file.structs[0];
+        assert_eq!(class.name, "SCR_Thing");
+        assert_eq!(class.derives, vec!["ScriptComponent"]);
+        assert_eq!(class.line, 3, "line of the class keyword, after attributes");
+        assert!(class.source_code.starts_with("sealed class SCR_Thing"));
+        assert!(class.source_code.ends_with('}'));
+        let fields: Vec<_> = class.fields.iter().map(|f| (f.name.as_str(), f.type_str.as_str())).collect();
+        assert_eq!(fields, [("m_fSpeed", "float"), ("m_aNames", "ref array<string>")]);
+
+        let methods = &file.impls[0].methods;
+        let names: Vec<_> = methods.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, ["FindOwner", "NativeThing", "GetItems"], "body statements are not methods");
+        let find = &methods[0];
+        assert_eq!(find.output.as_deref(), Some("IEntity"));
+        assert_eq!(find.inputs.len(), 2);
+        assert_eq!(find.inputs[1].name, "depth");
+        assert_eq!(find.docs, "Finds the owner");
+        assert_eq!(find.calls, vec!["CountChildren"]);
+        assert!(find.source_code.contains("return root;"), "full multi-line body is kept");
+        assert!(methods[1].self_param.is_none(), "static");
+        assert_eq!(methods[2].output.as_deref(), Some("array<ref SCR_Item>"));
+        assert_eq!(methods[2].visibility, ItemVisibility::Crate);
+    }
+
+    #[test]
+    fn enums_includes_and_free_functions() {
+        let code = "#include \"scripts/Game/base.c\"\n#ifdef DEBUG\nenum EState\n{\n    IDLE,\n    RUNNING = 2,\n    DONE\n};\n#endif\nvoid Helper()\n{\n    Other();\n}\n";
+        let file = extract(code);
+        assert_eq!(file.uses[0].path, "scripts/Game/base.c");
+        assert_eq!(file.enums[0].name, "EState");
+        assert_eq!(file.enums[0].variants, ["IDLE", "RUNNING", "DONE"]);
+        assert_eq!(file.functions.len(), 1);
+        assert_eq!(file.functions[0].name, "Helper");
+        assert_eq!(file.functions[0].calls, ["Other"]);
+    }
+
+    #[test]
+    fn attributes_with_braces_modded_enum_and_stray_text() {
+        let code = r#"modify, this script is generated
+*/
+
+[WorkbenchPluginAttribute(name: "Oracle", wbModules: {"ResourceManager", "WorldEditor"})]
+class Plugin : WorkbenchPlugin
+{
+    [Attribute("", UIWidgets.EditBox, desc: "id {x}")]
+    protected string m_sId;
+
+    override void Run() { Go(); }
+}
+
+modded enum ChimeraMenuPreset
+{
+    TBD_Screen,
+}
+"#;
+        let file = extract(code);
+        assert_eq!(file.structs.len(), 1);
+        assert_eq!(file.structs[0].name, "Plugin");
+        assert!(file.structs[0].source_code.starts_with("class Plugin"), "stray text excluded");
+        assert_eq!(file.structs[0].fields[0].name, "m_sId");
+        assert_eq!(file.impls[0].methods[0].name, "Run");
+        assert_eq!(file.enums[0].name, "ChimeraMenuPreset");
+        assert_eq!(file.enums[0].variants, ["TBD_Screen"]);
+        assert!(file.enums[0].source_code.starts_with("modded enum"));
+    }
+
+    #[test]
+    fn unbalanced_input_does_not_panic() {
+        for code in ["class A\n{\n    void F() {", "enum E\n{", "class B : C { [Attr(", "}}}} class D {}", "class"] {
+            extract(code);
+        }
+        let file = extract("class A\n{\n    int x;\n");
+        assert_eq!(file.structs[0].name, "A");
+    }
+
+    #[test]
+    fn snippets_are_verbatim_file_text() {
+        let code = "class A\n{\n    void Run()\n    {\n        Go();\n    }\n}\n";
+        let file = extract(code);
+        assert!(code.contains(&file.structs[0].source_code));
+        assert!(code.contains(&file.impls[0].methods[0].source_code));
+        assert_eq!(file.impls[0].methods[0].line, 3);
     }
 }

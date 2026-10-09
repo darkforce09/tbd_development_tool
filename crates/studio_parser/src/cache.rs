@@ -10,7 +10,7 @@ use crate::builder::{ProjectStats, ViewGranularity};
 /// 16-byte magic identifier and format version header
 pub const CACHE_MAGIC: &[u8; 16] = b"TBD_RKYV_V4\0\0\0\0\0";
 /// Bump whenever extraction or graph building changes output, so cached graphs are rebuilt.
-pub const EXTRACTOR_VERSION: u32 = 1;
+pub const EXTRACTOR_VERSION: u32 = 2;
 const HEADER_SIZE: usize = 32;
 
 /// Serializable wrapper combining the architecture graph and project metrics

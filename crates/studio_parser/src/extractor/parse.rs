@@ -5,6 +5,8 @@ use syn::spanned::Spanned;
 use syn::visit::Visit;
 use crate::project::RustProject;
 
+use super::lang::SourceLang;
+
 use super::helpers::{clean_tokens, extract_derives, extract_docs, extract_source_lines, extract_vis, CallVisitor};
 use super::types::{
     EnumItem, ExtractedCrate, ExtractedFile, ExtractedProject, FieldInfo, FunctionItem, ImplItem,
@@ -45,27 +47,13 @@ pub fn extract_project(project: &RustProject) -> ExtractedProject {
 }
 
 pub fn extract_file(file_path: &Path, rel_path: &Path) -> ExtractedFile {
-    let module_name = file_path
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "mod".to_string());
-
+    let fallback_lang = super::lang::detect_language_by_path(file_path);
     match std::fs::read_to_string(file_path) {
-        Ok(content) => extract_source(file_path, rel_path, &content),
-        Err(e) => {
-            return ExtractedFile {
-                file_path: file_path.to_path_buf(),
-                relative_path: rel_path.to_path_buf(),
-                module_name,
-                functions: Vec::new(),
-                structs: Vec::new(),
-                enums: Vec::new(),
-                traits: Vec::new(),
-                impls: Vec::new(),
-                uses: Vec::new(),
-                parse_error: Some(format!("Failed to read file: {}", e)),
-            }
-        }
+        // One malformed file must not take down the whole background load.
+        Ok(content) => std::panic::catch_unwind(|| extract_source(file_path, rel_path, &content)).unwrap_or_else(|_| {
+            ExtractedFile::empty(file_path, rel_path, fallback_lang, Some("Extractor panicked on this file".to_string()))
+        }),
+        Err(e) => ExtractedFile::empty(file_path, rel_path, fallback_lang, Some(format!("Failed to read file: {}", e))),
     }
 }
 
@@ -76,17 +64,11 @@ pub fn extract_source(file_path: &Path, rel_path: &Path, content: &str) -> Extra
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "mod".to_string());
 
-    let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-    if ext == "md" || ext == "markdown" {
-        return super::markdown::extract_markdown_file(file_path, rel_path, content);
-    }
-
-    if super::enforce::is_enforce_script(file_path, content) {
-        return super::enforce::extract_enforce_script_file(file_path, rel_path, content);
-    }
-
-    if ext != "rs" {
-        return super::universal::extract_universal_file(file_path, rel_path, content);
+    match super::lang::detect_language(file_path, content) {
+        SourceLang::Markdown => return super::markdown::extract_markdown_file(file_path, rel_path, content),
+        SourceLang::Enforce => return super::enforce::extract_enforce_script_file(file_path, rel_path, content),
+        SourceLang::Other => return super::universal::extract_universal_file(file_path, rel_path, content),
+        SourceLang::Rust => {}
     }
 
     let syn_file = match syn::parse_file(content) {
@@ -94,6 +76,7 @@ pub fn extract_source(file_path: &Path, rel_path: &Path, content: &str) -> Extra
         Err(e) => {
             let mut fallback = super::universal::extract_universal_file(file_path, rel_path, content);
             fallback.parse_error = Some(format!("Syntax error: {}", e));
+            fallback.language = SourceLang::Rust;
             return fallback;
         }
     };
@@ -142,6 +125,7 @@ pub fn extract_source(file_path: &Path, rel_path: &Path, content: &str) -> Extra
         impls,
         uses,
         parse_error: None,
+        language: super::lang::SourceLang::Rust,
     }
 }
 

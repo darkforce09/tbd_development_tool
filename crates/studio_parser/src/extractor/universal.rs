@@ -38,6 +38,7 @@ pub fn extract_universal_file(file_path: &Path, rel_path: &Path, content: &str) 
                 impls: Vec::new(),
                 uses: Vec::new(),
                 parse_error: None,
+                language: super::lang::SourceLang::Other,
             };
         }
     }
@@ -100,6 +101,7 @@ pub fn extract_universal_file(file_path: &Path, rel_path: &Path, content: &str) 
         impls: Vec::new(),
         uses,
         parse_error: None,
+        language: super::lang::SourceLang::Other,
     }
 }
 
