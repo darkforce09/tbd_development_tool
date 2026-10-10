@@ -1,76 +1,16 @@
 use eframe::egui;
-use egui::{Color32, CornerRadius, FontFamily, FontId, Key, Pos2, ProgressBar, RichText, Stroke};
+use egui::{Color32, CornerRadius, FontFamily, FontId, Key, RichText, Stroke};
+use studio_canvas::CanvasAction;
 use studio_ui::color_tokens::*;
 
 use super::StudioApp;
 
 impl StudioApp {
-    pub(crate) fn render_loading_hud(&mut self, ctx: &egui::Context) {
-        if !self.is_loading {
-            return;
-        }
-
-        egui::Window::new("streaming_loader_modal")
-            .title_bar(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .fixed_size([480.0, 130.0])
-            .collapsible(false)
-            .resizable(false)
-            .frame(
-                egui::Frame::NONE
-                    .fill(Color32::from_rgb(18, 20, 29))
-                    .stroke(Stroke::new(1.5, Color32::from_rgb(99, 102, 241)))
-                    .corner_radius(CornerRadius::from(12.0))
-                    .inner_margin(egui::Margin::same(18)),
-            )
-            .show(ctx, |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.add_space(8.0);
-                        ui.label(
-                            RichText::new("STREAMING AST GRAPH")
-                                .font(FontId::new(13.0, FontFamily::Monospace))
-                                .color(Color32::from_rgb(99, 102, 241))
-                                .strong(),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(
-                                RichText::new(self.gpu.as_ref().map_or("CPU wire rendering", |g| g.name.as_str()))
-                                    .font(FontId::new(10.0, FontFamily::Monospace))
-                                    .color(Color32::from_rgb(52, 211, 153)),
-                            );
-                        });
-                    });
-
-                    ui.add_space(10.0);
-                    let progress_bar = ProgressBar::new(self.loading_progress).show_percentage().animate(true);
-                    ui.add(progress_bar);
-
-                    ui.add_space(8.0);
-                    let detail_text = if self.loading_total_files > 0 {
-                        format!(
-                            "{} ({}/{} files)",
-                            self.loading_stage, self.loading_files_done, self.loading_total_files
-                        )
-                    } else {
-                        self.loading_stage.clone()
-                    };
-                    ui.label(
-                        RichText::new(detail_text)
-                            .font(FontId::new(11.0, FontFamily::Proportional))
-                            .color(TEXT_SECONDARY),
-                    );
-                });
-            });
-    }
-
     pub(crate) fn render_spotlight_modal(&mut self, ctx: &egui::Context) {
         if !self.spotlight_open {
             return;
         }
 
-        let screen_rect = ctx.content_rect();
         let spot_title = format!("{} Search", egui_phosphor::regular::MAGNIFYING_GLASS);
         egui::Window::new(spot_title)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, -80.0])
@@ -112,7 +52,7 @@ impl StudioApp {
                 let results = self.search_index.search(&self.spotlight_search, 16);
                 egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
                     for item in results {
-                        if let Some(node) = self.graph.nodes.get(&item.node_id) {
+                        if self.graph.nodes.contains_key(&item.node_id) {
                             ui.horizontal(|ui| {
                                 let arch_color = studio_canvas::archetype_color(item.archetype);
                                 ui.label(
@@ -137,11 +77,8 @@ impl StudioApp {
                                 {
                                     self.canvas_state.selected_nodes.clear();
                                     self.canvas_state.selected_nodes.insert(item.node_id);
-                                    let center_world = Pos2::new(
-                                        node.position[0] + node.size[0] * 0.5,
-                                        node.position[1] + node.size[1] * 0.5,
-                                    );
-                                    self.canvas_state.transform.center_on_world_pos(center_world, screen_rect, None);
+                                    // The canvas centres it, in its own rectangle.
+                                    self.canvas_state.action_request = Some(CanvasAction::CenterNode(item.node_id));
                                     self.spotlight_open = false;
                                 }
 

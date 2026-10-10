@@ -20,7 +20,8 @@ impl<'a> MarkdownViewer<'a> {
         self
     }
 
-    pub fn show(self, ui: &mut Ui) {
+    /// Draws the document. Returns the target of a link clicked this frame, as written.
+    pub fn show(self, ui: &mut Ui) -> Option<String> {
         let mut options = Options::empty();
         options.insert(Options::ENABLE_TABLES);
         options.insert(Options::ENABLE_TASKLISTS);
@@ -48,9 +49,11 @@ impl<'a> MarkdownViewer<'a> {
             is_emphasis: false,
             is_strikethrough: false,
             paragraph_spans: Vec::new(),
+            clicked_link: None,
         };
 
         renderer.render(ui, parser);
+        renderer.clicked_link
     }
 }
 
@@ -83,6 +86,8 @@ struct MarkdownRenderer {
     is_emphasis: bool,
     is_strikethrough: bool,
     paragraph_spans: Vec<MarkdownSpan>,
+    /// The target of a link clicked this frame.
+    clicked_link: Option<String>,
 }
 
 impl MarkdownRenderer {
@@ -290,7 +295,7 @@ impl MarkdownRenderer {
         let spans = std::mem::take(&mut self.paragraph_spans);
         let font_size = self.base_font_size;
 
-        if self.in_blockquote {
+        let clicked = if self.in_blockquote {
             // Blockquote container styling
             ui.horizontal(|ui| {
                 let quote_accent = ARCHETYPE_FILE;
@@ -300,12 +305,14 @@ impl MarkdownRenderer {
                 ui.painter().rect_filled(rect, CornerRadius::from(1.5), quote_accent);
                 ui.add_space(6.0);
 
-                ui.vertical(|ui| {
-                    render_spans_flow(ui, &spans, font_size, true);
-                });
-            });
+                ui.vertical(|ui| render_spans_flow(ui, &spans, font_size, true)).inner
+            })
+            .inner
         } else {
-            render_spans_flow(ui, &spans, font_size, false);
+            render_spans_flow(ui, &spans, font_size, false)
+        };
+        if clicked.is_some() {
+            self.clicked_link = clicked;
         }
     }
 
@@ -364,7 +371,7 @@ impl MarkdownRenderer {
             "• ".to_string()
         };
 
-        ui.horizontal(|ui| {
+        let clicked = ui.horizontal(|ui| {
             ui.add_space(indent);
 
             ui.label(
@@ -374,8 +381,11 @@ impl MarkdownRenderer {
                     .strong(),
             );
 
-            render_spans_flow(ui, &spans, font_size, false);
+            render_spans_flow(ui, &spans, font_size, false)
         });
+        if clicked.inner.is_some() {
+            self.clicked_link = clicked.inner;
+        }
     }
 
     fn render_code_block(&mut self, ui: &mut Ui) {
@@ -482,7 +492,9 @@ impl MarkdownRenderer {
     }
 }
 
-fn render_spans_flow(ui: &mut Ui, spans: &[MarkdownSpan], base_font_size: f32, is_quote: bool) {
+/// Draws a run of text. Returns the target of a link clicked this frame.
+fn render_spans_flow(ui: &mut Ui, spans: &[MarkdownSpan], base_font_size: f32, is_quote: bool) -> Option<String> {
+    let mut clicked = None;
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
 
@@ -506,7 +518,7 @@ fn render_spans_flow(ui: &mut Ui, spans: &[MarkdownSpan], base_font_size: f32, i
                     .color(VSCODE_LINK)
                     .underline();
                 if ui.link(link_rt).on_hover_text(url).clicked() {
-                    // Link navigation hook
+                    clicked = Some(url.clone());
                 }
             } else {
                 let mut text_color = if is_quote { TEXT_SECONDARY } else { TEXT_PRIMARY };
@@ -532,6 +544,7 @@ fn render_spans_flow(ui: &mut Ui, spans: &[MarkdownSpan], base_font_size: f32, i
             }
         }
     });
+    clicked
 }
 
 /// Helper function to render a Markdown string directly into an egui Ui.

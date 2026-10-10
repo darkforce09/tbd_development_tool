@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use studio_graph::{
-    human_bytes, DataType, EdgeKind, FileContent, Graph, GroupCluster, LazyFolder, NodeArchetype, NodeId, PortId,
+    human_bytes, Basis, DataType, EdgeKind, FileContent, FolderTotals, Graph, GroupCluster, LazyFolder, NodeArchetype,
+    NodeId, PortId, Provenance,
 };
 
 use super::common::{node_rel_path, resolve_link, slash_path};
@@ -16,8 +17,11 @@ const CARD_SIZE: [f32; 2] = [220.0, 42.0];
 /// file, laid out as a folder tree. Heavy folders start collapsed and unloaded.
 pub fn build_files_graph(project: &ExtractedProject) -> (Graph, ProjectStats) {
     let mut graph = Graph::new();
-    let mut stats =
-        ProjectStats { project_name: project.name.clone(), crate_count: project.crates.len(), ..Default::default() };
+    let mut stats = ProjectStats {
+        project_name: project.name.clone(),
+        crate_count: project.crates.iter().filter(|c| c.is_package()).count(),
+        ..Default::default()
+    };
 
     let mut parsed: HashMap<PathBuf, ParsedFile> = HashMap::new();
     for krate in &project.crates {
@@ -31,6 +35,7 @@ pub fn build_files_graph(project: &ExtractedProject) -> (Graph, ProjectStats) {
     let mut wiring = Wiring::default();
     insert_folder_tree(&mut graph, &project.tree, Path::new(""), TreeRoot::New(&project.name), &parsed, &mut wiring);
     wiring.connect(&mut graph);
+    summarize_folders(&mut graph);
     stats.file_count = project.tree.files.len();
 
     graph.layout_folder_tree();
@@ -57,7 +62,7 @@ pub fn build_skeleton_files_graph(project: &crate::project::RustProject) -> (Gra
     graph.rebuild_fast_indices();
     let stats = ProjectStats {
         project_name: project.name.clone(),
-        crate_count: project.crates.len(),
+        crate_count: project.crates.iter().filter(|c| c.is_package()).count(),
         file_count: project.tree.files.len(),
         node_count: graph.nodes.len(),
         ..Default::default()
@@ -145,17 +150,10 @@ fn insert_folder_tree(
 
         let (subtitle, lazy) = match &dir.kind {
             DirKind::Heavy(info) => (
-                format!(
-                    "{} files · {} · {}",
-                    group_thousands(info.file_count),
-                    human_bytes(info.total_bytes),
-                    info.reason.label()
-                ),
+                heavy_subtitle(info.reason.label(), info.totals),
                 Some(LazyFolder {
                     abs_path: tree.root.join(&dir.rel).to_string_lossy().to_string(),
-                    file_count: info.file_count,
-                    dir_count: info.dir_count,
-                    total_bytes: info.total_bytes,
+                    totals: info.totals,
                     reason: info.reason.label().to_string(),
                 }),
             ),
@@ -293,6 +291,7 @@ fn add_file_card(
         n.size = CARD_SIZE;
         n.content = content;
         n.size_bytes = Some(size);
+        n.test_count = parsed.map_or(0, |p| p.file.tests as u32);
     }
 
     wiring.register_file_names(graph, node_id, rel_in_project, &file_name);
@@ -312,6 +311,127 @@ fn describe_parsed(file: &ExtractedFile) -> String {
         _ => {
             let total = file.functions.len() + file.structs.len() + file.enums.len() + file.traits.len();
             format!("{} items ({} fns, {} types)", total, file.functions.len(), file.structs.len() + file.enums.len())
+        }
+    }
+}
+
+/// Puts what each folder holds on its subtitle (files and tests inside it, at any depth) and
+/// the first sentence of its README as what it is for. Folders not loaded or unreadable keep
+/// theirs.
+pub fn summarize_folders(graph: &mut Graph) {
+    let index: HashMap<String, usize> = graph.clusters.iter().enumerate().map(|(i, c)| (c.id.clone(), i)).collect();
+    let count = graph.clusters.len();
+    let mut files = vec![0usize; count];
+    let mut tests = vec![0u64; count];
+    for (i, c) in graph.clusters.iter().enumerate() {
+        files[i] = c.node_ids.len();
+        tests[i] = c.node_ids.iter().filter_map(|id| graph.nodes.get(id)).map(|n| n.test_count as u64).sum();
+    }
+    // A folder comes after its parent, so walking backwards adds each folder to its parent once
+    // its own total is complete.
+    for i in (0..count).rev() {
+        if let Some(&p) = graph.clusters[i].parent_id.as_ref().and_then(|p| index.get(p)) {
+            files[p] += files[i];
+            tests[p] += tests[i];
+        }
+    }
+    for i in 0..count {
+        let readme = graph.clusters[i]
+            .node_ids
+            .iter()
+            .filter_map(|id| graph.nodes.get(id))
+            .find(|n| {
+                matches!(n.title.to_lowercase().as_str(), "readme.md" | "readme.markdown" | "readme" | "readme.txt")
+            })
+            .and_then(|n| n.file_path.clone());
+        let about = readme.and_then(|p| std::fs::read_to_string(p).ok()).and_then(|text| first_sentence(&text));
+        let c = &mut graph.clusters[i];
+        if c.lazy.is_some() || c.subtitle.as_deref().is_some_and(|s| s.starts_with("unreadable")) || files[i] == 0 {
+            continue;
+        }
+        let mut parts = vec![if files[i] == 1 {
+            "1 file".to_string()
+        } else {
+            format!("{} files", group_thousands(files[i] as u64))
+        }];
+        match tests[i] {
+            0 => {}
+            1 => parts.push("1 test".to_string()),
+            n => parts.push(format!("{} tests", group_thousands(n))),
+        }
+        let mut subtitle = parts.join(" · ");
+        if let Some(about) = &about {
+            subtitle = format!("{subtitle} — {about}");
+        }
+        c.subtitle = Some(subtitle);
+        c.about = about;
+    }
+}
+
+/// The first sentence of a document's first paragraph of text (badges, headings and HTML
+/// skipped), at most 200 characters.
+pub fn first_sentence(markdown: &str) -> Option<String> {
+    use pulldown_cmark::{Event, Parser, Tag, TagEnd};
+    let mut text = String::new();
+    let (mut in_paragraph, mut in_image) = (false, false);
+    for event in Parser::new(markdown) {
+        match event {
+            Event::Start(Tag::Paragraph) => {
+                in_paragraph = true;
+                text.clear();
+            }
+            Event::End(TagEnd::Paragraph) => {
+                in_paragraph = false;
+                if !text.trim().is_empty() {
+                    break;
+                }
+            }
+            Event::Start(Tag::Image { .. }) => in_image = true,
+            Event::End(TagEnd::Image) => in_image = false,
+            Event::Text(t) | Event::Code(t) if in_paragraph && !in_image => text.push_str(&t),
+            Event::SoftBreak | Event::HardBreak if in_paragraph => text.push(' '),
+            _ => {}
+        }
+    }
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() {
+        return None;
+    }
+    // Up to the first full stop, question or exclamation mark followed by a space.
+    let end = text
+        .char_indices()
+        .find(|&(i, c)| matches!(c, '.' | '!' | '?') && text[i + c.len_utf8()..].starts_with(' '))
+        .map_or(text.len(), |(i, c)| i + c.len_utf8());
+    let sentence = &text[..end];
+    Some(if sentence.chars().count() > 200 {
+        format!("{}…", sentence.chars().take(199).collect::<String>())
+    } else {
+        sentence.to_string()
+    })
+}
+
+/// Subtitle of a folder listed but not loaded: its totals once counted, and why it is collapsed.
+fn heavy_subtitle(reason: &str, totals: Option<FolderTotals>) -> String {
+    match totals {
+        Some(t) => format!("{} files · {} · {reason}", group_thousands(t.file_count), human_bytes(t.total_bytes)),
+        None => reason.to_string(),
+    }
+}
+
+/// What each heavy folder in `tree` holds, by cluster id, once [`crate::tree::measure_heavy_dirs`]
+/// has counted it.
+pub fn heavy_folder_totals(tree: &ProjectTree) -> Vec<(String, FolderTotals)> {
+    tree.heavy_dirs().filter_map(|(_, dir, info)| Some((folder_cluster_id(&dir.rel), info.totals?))).collect()
+}
+
+/// Puts counted totals on folders that are still collapsed placeholders.
+pub fn apply_folder_totals(graph: &mut Graph, totals: &[(String, FolderTotals)]) {
+    let by_id: HashMap<&str, FolderTotals> = totals.iter().map(|(id, t)| (id.as_str(), *t)).collect();
+    for cluster in &mut graph.clusters {
+        let Some(&t) = by_id.get(cluster.id.as_str()) else { continue };
+        if let Some(lazy) = &mut cluster.lazy {
+            lazy.totals = Some(t);
+            cluster.subtitle = Some(heavy_subtitle(&lazy.reason, Some(t)));
         }
     }
 }
@@ -532,11 +652,19 @@ impl Wiring {
                 continue;
             };
             let Some(doc_in) = target_ports.doc else { continue };
+            // The link names a file that exists: the wire is a fact.
+            let proven = Provenance::proven(Basis::DocLink);
             if file_pairs.insert((doc_file, target_node)) {
-                graph.connect_kind(doc_file, doc_ports.output, target_node, doc_in, EdgeKind::Documentation);
+                if let Some(id) =
+                    graph.connect_kind(doc_file, doc_ports.output, target_node, doc_in, EdgeKind::Documentation)
+                {
+                    graph.set_provenance(id, proven);
+                }
             }
             if let Some(out) = link_out {
-                graph.connect_kind(doc_file, out, target_node, doc_in, EdgeKind::Documentation);
+                if let Some(id) = graph.connect_kind(doc_file, out, target_node, doc_in, EdgeKind::Documentation) {
+                    graph.set_provenance(id, proven);
+                }
             }
         }
     }
