@@ -3,6 +3,7 @@ pub mod builder;
 pub mod cache;
 pub mod edit;
 pub mod extractor;
+pub mod fuzzy;
 pub mod git_head;
 pub mod project;
 pub mod search_index;
@@ -22,11 +23,15 @@ pub use extractor::{
     ImplItem, ItemVisibility, LinkItem, ParamInfo, StructItem, TraitItem, UseItem,
 };
 pub use project::{scan_project, CrateInfo, ProjectError, RustProject};
-pub use search_index::{SearchItem, SymbolSearchIndex};
+pub use search_index::{
+    file_segment, folder_symbol_segment, symbol_segment, Entry, EntryKind, FileListing, Group, Hit, Query, Scope,
+    SearchIndex, Segment,
+};
 pub use sync::{save_and_reparse, SaveReport};
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
+use std::sync::Arc;
 use studio_graph::Graph;
 
 #[derive(Debug, Clone)]
@@ -40,12 +45,14 @@ pub enum LoaderMessage {
     InitialLayoutReady {
         graph: Graph,
         stats: ProjectStats,
-        search_index: SymbolSearchIndex,
+        /// Files in slot 0; slot 1 (symbols) is empty until `Complete`.
+        search_index: SearchIndex,
     },
     Complete {
         graph: Graph,
         stats: ProjectStats,
-        search_index: SymbolSearchIndex,
+        /// Files in slot 0, symbols in slot 1, slot 2 free for the viewer.
+        search_index: SearchIndex,
         from_cache: bool,
     },
     /// What each collapsed heavy folder holds (cluster id, totals), counted after `Complete` so a
@@ -54,15 +61,37 @@ pub enum LoaderMessage {
     Error(String),
 }
 
-/// Scans a collapsed folder and parses its text files, for [`materialize_folder`]. Runs off the UI
-/// thread; heavy folders nested inside stay collapsed, but git-ignore status is not re-applied
-/// (everything inside an ignored folder is ignored).
-pub fn load_folder_contents(folder: &Path) -> (tree::ProjectTree, Vec<extractor::ExtractedFile>) {
+/// A collapsed folder's contents, loaded off the UI thread.
+pub struct FolderContents {
+    pub tree: tree::ProjectTree,
+    pub parsed: Vec<extractor::ExtractedFile>,
+    /// Its files and nested heavy folders, to push into the [`SearchIndex`].
+    pub files: Arc<Segment>,
+    /// Its symbols, to push into the [`SearchIndex`].
+    pub symbols: Arc<Segment>,
+}
+
+/// Scans a collapsed folder (`prefix` is its project-relative `/` path) and parses its text files,
+/// for [`materialize_folder`], and builds its search segments. Runs off the UI thread; heavy folders
+/// nested inside stay collapsed, but git-ignore status is not re-applied (everything inside an
+/// ignored folder is ignored).
+pub fn load_folder_contents(folder: &Path, prefix: &str) -> FolderContents {
     use rayon::prelude::*;
     let tree = tree::scan_tree(folder, tree::ScanOptions { gitignored_heavy: false });
     let text: Vec<PathBuf> = tree.text_files().collect();
-    let parsed = text.par_iter().map(|p| extract_file(p, p.strip_prefix(folder).unwrap_or(p))).collect();
-    (tree, parsed)
+    let parsed: Vec<_> = text.par_iter().map(|p| extract_file(p, p.strip_prefix(folder).unwrap_or(p))).collect();
+    let files = Arc::new(file_segment(&FileListing::from_tree(&tree, prefix)));
+    let symbols = Arc::new(folder_symbol_segment(prefix, &parsed));
+    FolderContents { tree, parsed, files, symbols }
+}
+
+/// The search index of a graph loaded from the cache: the same file segment a fresh scan gives
+/// (rebuilt from the graph's cards and unloaded folders, minus files git ignores), and its symbols.
+fn cached_search_index(path: &Path, graph: &Graph) -> SearchIndex {
+    let root = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let (_, ignored) = tree::git_ignored(&root);
+    let files = file_segment(&FileListing::from_graph(graph, &ignored));
+    SearchIndex::loaded(Arc::new(files), Arc::new(symbol_segment(graph)))
 }
 
 /// Convenience function to scan, extract, and build a Graph for a Rust project at given path.
@@ -106,7 +135,7 @@ pub fn spawn_load_project_opt(
                         percentage: 0.90,
                     });
 
-                    let search_index = SymbolSearchIndex::build(&graph);
+                    let search_index = cached_search_index(&path, &graph);
 
                     let _ = tx.send(LoaderMessage::Complete { graph, stats, search_index, from_cache: true });
                     return;
@@ -135,7 +164,8 @@ pub fn spawn_load_project_opt(
 
         // Tier 1 instant layout: immediately emit skeleton files & clusters (< 100ms)
         let (skeleton_graph, skeleton_stats) = builder::build_skeleton_files_graph(&scanned);
-        let search_index = SymbolSearchIndex::build(&skeleton_graph);
+        let files = Arc::new(file_segment(&FileListing::from_tree(&scanned.tree, "")));
+        let search_index = SearchIndex::loaded(files.clone(), Arc::default());
         let _ =
             tx.send(LoaderMessage::InitialLayoutReady { graph: skeleton_graph, stats: skeleton_stats, search_index });
 
@@ -163,13 +193,13 @@ pub fn spawn_load_project_opt(
         let (graph, stats) = build_project_graph(&extracted);
 
         let _ = tx.send(LoaderMessage::Progress {
-            stage: "Building in-memory Trigram search index...".to_string(),
+            stage: "Building the search index...".to_string(),
             files_done: total_files,
             total_files,
             percentage: 0.95,
         });
 
-        let search_index = SymbolSearchIndex::build(&graph);
+        let search_index = SearchIndex::loaded(files, Arc::new(symbol_segment(&graph)));
 
         // Send Complete immediately so UI displays rich nodes & wires with zero lag
         let _ = tx.send(LoaderMessage::Complete {
@@ -225,10 +255,36 @@ mod tests {
         assert!(stats.file_count >= 5, "Should find at least 5 files");
         assert!(stats.node_count > 20, "Should extract nodes");
         assert!(stats.wire_count > 10, "Should connect wires");
+    }
 
-        let index = SymbolSearchIndex::build(&graph);
-        let results = index.search("parse", 10);
-        assert!(!results.is_empty(), "Search should find symbols");
+    #[test]
+    fn the_loader_index_finds_files_by_name_and_path_and_symbols_by_name() {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel();
+        spawn_load_project_opt(manifest_dir, true, tx).join().expect("loader thread");
+        let index = rx
+            .try_iter()
+            .find_map(|m| match m {
+                LoaderMessage::Complete { search_index, .. } => Some(search_index),
+                _ => None,
+            })
+            .expect("complete message");
+        assert_eq!(index.segments().len(), 3, "files, symbols and a free slot");
+        assert!(index.segments()[search_index::SOURCES_SLOT].is_empty());
+
+        let first = |q: &str| {
+            let groups = index.search(&Query::parse(q), |_| 8);
+            let hit = &groups.first().unwrap_or_else(|| panic!("{q}: no hits")).hits[0];
+            let e = index.entry(hit);
+            (e.kind, e.name.clone(), e.path.clone().unwrap_or_default())
+        };
+        assert_eq!(first("search_index"), (EntryKind::File, "search_index.rs".into(), "src/search_index.rs".into()));
+        assert_eq!(first("src/fuzzy"), (EntryKind::File, "fuzzy.rs".into(), "src/fuzzy.rs".into()));
+        assert_eq!(
+            first("@load_folder_contents"),
+            (EntryKind::Symbol, "load_folder_contents".into(), "src/lib.rs".into())
+        );
+        assert!(index.search(&Query::parse("qqqqzzzz"), |_| 8).is_empty());
     }
 
     #[test]
@@ -494,8 +550,8 @@ mod tests {
         assert!(graph.clusters.iter().find(|c| c.id == "dir:empty").unwrap().subtitle.as_deref() == Some("empty"));
 
         // Expanding it loads its files, parsed, under the right folders.
-        let (subtree, parsed) = load_folder_contents(Path::new(&nm.lazy.unwrap().abs_path));
-        let added = materialize_folder(&mut graph, "dir:node_modules", &subtree, &parsed).unwrap();
+        let loaded = load_folder_contents(Path::new(&nm.lazy.unwrap().abs_path), "node_modules");
+        let added = materialize_folder(&mut graph, "dir:node_modules", &loaded.tree, &loaded.parsed).unwrap();
         assert_eq!(added, 2);
         let nm = graph.clusters.iter().find(|c| c.id == "dir:node_modules").unwrap();
         assert!(!nm.is_collapsed() && nm.lazy.is_none());
@@ -503,6 +559,20 @@ mod tests {
         assert_eq!(pkg.parent_id.as_deref(), Some("dir:node_modules"));
         assert_eq!(pkg.node_ids.len(), 2);
         assert!(!card_in(&graph, "index.js").member_nodes.is_empty());
+
+        // The folder brings its own search segments, with project-relative paths, and each symbol
+        // key finds its member on the card the load made.
+        let paths: Vec<_> = loaded.files.entries().iter().map(|e| e.path.clone().unwrap()).collect();
+        assert_eq!(paths, ["node_modules/pkg/index.js", "node_modules/pkg/package.json"]);
+        assert!(!loaded.symbols.is_empty());
+        for sym in loaded.symbols.entries() {
+            let card = graph
+                .nodes
+                .values()
+                .find(|n| builder::common::node_rel_path(n).as_deref() == sym.path.as_deref())
+                .expect("symbol's card");
+            assert_eq!(card.member_nodes[search_index::member_index(sym.key)].name, sym.name);
+        }
     }
 
     #[test]

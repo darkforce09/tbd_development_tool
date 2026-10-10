@@ -5,17 +5,22 @@ use studio_canvas::{CanvasState, CanvasView, SpatialHashGrid};
 use studio_graph::{DataType, Graph, NodeArchetype};
 use studio_parser::{
     build_project_graph, clear_project_cache, extract_project, load_project_cache, save_project_cache, scan_project,
-    ProjectStats, SymbolSearchIndex,
+    Entry, EntryKind, ProjectStats, Query, Scope, SearchIndex, Segment,
 };
 use studio_viewer::telemetry::{TelemetryBudget, TimelineTracker};
 
-const USAGE: &str = "usage: bench_scale [PROJECT_DIR] [--ram-budget-gb GB] [--target-fps FPS]
+const USAGE: &str =
+    "usage: bench_scale [PROJECT_DIR] [--ram-budget-gb GB] [--target-fps FPS] [--palette [--target-ms MS]]
   PROJECT_DIR      project to load for the real-world benchmark (default: current directory)
   --ram-budget-gb  RAM ceiling checked by the benchmark (default: half of system RAM)
   --target-fps     frame rate the render simulation must sustain (default: 60)
   --real-only      only benchmark the project, skip the synthetic suites
   --layout-report  print the shape of the project's layout: size, aspect, widest and tallest folders
-  --cpu-wires      time canvas frames with wires painted by egui instead of the GPU";
+  --cpu-wires      time canvas frames with wires painted by egui instead of the GPU
+  --palette        only benchmark the \u{2318}K palette: load the project as the app does, time the
+                   index build, replay every prefix of 40 fixed queries cold; exits 1 if p95 is over
+                   the target
+  --target-ms      p95 query target for --palette, in ms (default: 8)";
 
 /// `--cpu-wires`: canvas frames paint wires with egui (the painter path) instead of preparing GPU
 /// instances.
@@ -26,6 +31,8 @@ struct BenchArgs {
     budget: TelemetryBudget,
     real_only: bool,
     layout_report: bool,
+    palette: bool,
+    target_ms: f64,
 }
 
 fn parse_args() -> Result<BenchArgs, String> {
@@ -33,6 +40,8 @@ fn parse_args() -> Result<BenchArgs, String> {
     let mut project = None;
     let mut real_only = false;
     let mut layout_report = false;
+    let mut palette = false;
+    let mut target_ms = palette::TARGET_MS;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let mut number = |flag: &str| -> Result<f64, String> {
@@ -44,6 +53,8 @@ fn parse_args() -> Result<BenchArgs, String> {
             "--target-fps" => budget.target_fps = number("--target-fps")?,
             "--real-only" => real_only = true,
             "--layout-report" => layout_report = true,
+            "--palette" => palette = true,
+            "--target-ms" => target_ms = number("--target-ms")?,
             "--cpu-wires" => CPU_WIRES.store(true, std::sync::atomic::Ordering::Relaxed),
             "-h" | "--help" => return Err(String::new()),
             flag if flag.starts_with('-') => return Err(format!("unknown option {flag}")),
@@ -55,7 +66,7 @@ fn parse_args() -> Result<BenchArgs, String> {
         Some(p) => p,
         None => std::env::current_dir().map_err(|e| format!("no project given and cwd unavailable: {e}"))?,
     };
-    Ok(BenchArgs { project, budget, real_only, layout_report })
+    Ok(BenchArgs { project, budget, real_only, layout_report, palette, target_ms })
 }
 
 fn main() {
@@ -69,6 +80,9 @@ fn main() {
             std::process::exit(if msg.is_empty() { 0 } else { 2 });
         }
     };
+    if args.palette {
+        std::process::exit(palette::run(&args.project, args.target_ms));
+    }
 
     println!("================================================================================");
     println!("     STUDIO HIGH-SCALE PERFORMANCE & SCALE VERIFICATION SUITE                   ");
@@ -249,13 +263,16 @@ fn benchmark_real_project(tracker: &mut TimelineTracker, target_path: &std::path
         print_layout_report(&graph);
     }
 
-    // 5. Symbol Search Index (Trigram DDR5)
-    let t4 = Instant::now();
-    let search_index = SymbolSearchIndex::build(&graph);
-    let _search_dur = t4.elapsed();
+    // 5. Palette search index: file and symbol segments
+    let built = palette::build_index(&scanned.tree, &graph);
     tracker.record_stage(
-        "Trigram Search Index",
-        "In-memory DDR5 streaming trigram index",
+        "Search Index",
+        format!(
+            "{} entries, {} KB in {:.1} ms; query times: bench_scale --palette",
+            built.index.counts().iter().sum::<usize>(),
+            built.index.heap_bytes() / 1024,
+            built.files_ms + built.symbols_ms
+        ),
         None,
         None,
         Some(stats.node_count),
@@ -275,17 +292,6 @@ fn benchmark_real_project(tracker: &mut TimelineTracker, target_path: &std::path
         Some(stats.node_count),
         Some(stats.wire_count),
     );
-
-    // Run sample search queries
-    let test_queries = ["event", "handler", "config", "token", "message"];
-    println!("  Testing Spotlight Symbol Queries:");
-    for q in test_queries {
-        let t_search = Instant::now();
-        let matches = search_index.search(q, 16);
-        let s_dur = t_search.elapsed();
-        println!("    Query {:<10} -> {:>2} results in {:>6.2?}", format!("'{}'", q), matches.len(), s_dur);
-    }
-    println!();
 
     // 7. Real canvas frames across zoom levels (frame budget verification)
     benchmark_canvas_frames(tracker, &mut graph);
@@ -753,7 +759,16 @@ fn benchmark_extreme_scale(tracker: &mut TimelineTracker) {
     let mut spatial_grid = SpatialHashGrid::new(768.0);
     spatial_grid.build_from_graph(&graph);
     let scene = studio_canvas::CanvasScene::build(&graph, true);
-    let search_index = SymbolSearchIndex::build(&graph);
+    let titles = graph.nodes.values().map(|n| Entry {
+        kind: EntryKind::File,
+        name: n.title.clone(),
+        detail: String::new(),
+        path: None,
+        line: None,
+        key: n.id.0,
+    });
+    let mut search_index = SearchIndex::default();
+    search_index.push(std::sync::Arc::new(Segment::new(titles.collect())));
 
     tracker.record_stage(
         "Extreme Scale Gen & Index",
@@ -799,8 +814,8 @@ fn benchmark_extreme_scale(tracker: &mut TimelineTracker) {
             let wire_cull_rect = visible_rect.expand(200.0);
             let _ = scene.visible_ranges(wire_cull_rect).len() + scene.visible_curve_ranges(wire_cull_rect).len();
 
-            // 5. Spotlight Search query
-            let _ = search_index.search("component_node_10", 12);
+            // 5. One palette query over every card title
+            let _ = search_index.search(&Query::parse("component_node_10"), palette::per_kind(Scope::All));
 
             let frame_us = frame_start.elapsed().as_secs_f64() * 1_000_000.0;
             scenario_us += frame_us;
@@ -1056,4 +1071,304 @@ fn benchmark_ultra_scale_5m(tracker: &mut TimelineTracker) {
         budget.target_fps,
         budget.ram_gb()
     );
+}
+
+/// `--palette`: the ⌘K palette's index build and query times (exit E1).
+mod palette {
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::time::Instant;
+    use studio_graph::Graph;
+    use studio_parser::tree::ProjectTree;
+    use studio_parser::{
+        file_segment, spawn_load_project, symbol_segment, EntryKind, FileListing, LoaderMessage, Query, Scope,
+        SearchIndex,
+    };
+
+    /// The p95 a query may take, in ms, unless `--target-ms` says otherwise.
+    pub const TARGET_MS: f64 = 8.0;
+    /// Timed rounds over every prefix, after one warm-up round.
+    const ROUNDS: usize = 3;
+
+    /// Fixed queries, realistic for TBD-Reforger (an Enfusion game mod with Rust tools beside it) but
+    /// none needs it: on any project they still exercise file names, paths, symbol pieces, typos,
+    /// both scopes, a long query, non-ASCII and no match. Every prefix of each is timed.
+    const QUERIES: [&str; 40] = [
+        // File names.
+        "hud",
+        "main.rs",
+        "Cargo.toml",
+        "README",
+        "mod.rs",
+        "config.json",
+        // Path fragments.
+        "ui/hud",
+        "crates/api",
+        "src/components",
+        "scripts/game",
+        "tests/fixtures",
+        "docs/ROADMAP",
+        // Snake and camel symbol pieces.
+        "parse_",
+        "ObjectiveHud",
+        "objhud",
+        "OnInit",
+        "get_player",
+        "SCR_",
+        "EOnFrame",
+        "handleRequest",
+        "new",
+        "objective hud",
+        // Typos and subsequences.
+        "sttngs",
+        "cnfg",
+        "plyrctrl",
+        "hnadler",
+        "e",
+        "gamemode",
+        // Scoped: `>` commands and tools, `@` symbols.
+        ">build",
+        "> files",
+        ">test",
+        "@parse",
+        "@Update",
+        "@ObjHud",
+        // One long query, 30 characters.
+        "objective_hud_component_widget",
+        // Non-ASCII.
+        "ünïcödé",
+        "日本語",
+        "café",
+        // No match.
+        "zzqxjv",
+        "qqqqqqqq",
+    ];
+
+    /// How many hits the palette shows per group: Files 8, Symbols 8, others 5; 50 in a scoped query.
+    pub fn per_kind(scope: Scope) -> impl Fn(EntryKind) -> usize {
+        move |kind| match (scope, kind) {
+            (Scope::Commands | Scope::Symbols, _) => 50,
+            (Scope::All, EntryKind::File | EntryKind::Folder | EntryKind::Symbol) => 8,
+            (Scope::All, _) => 5,
+        }
+    }
+
+    /// The index the loader builds (files from the scan, symbols from the graph), with each half timed.
+    pub struct BuiltIndex {
+        pub index: SearchIndex,
+        pub files_ms: f64,
+        pub symbols_ms: f64,
+    }
+
+    /// Builds the file and symbol segments the way the loader does, timing each.
+    pub fn build_index(tree: &ProjectTree, graph: &Graph) -> BuiltIndex {
+        let t = Instant::now();
+        let files = file_segment(&FileListing::from_tree(tree, ""));
+        let files_ms = ms(t);
+        let t = Instant::now();
+        let symbols = symbol_segment(graph);
+        let symbols_ms = ms(t);
+        BuiltIndex { index: SearchIndex::loaded(Arc::new(files), Arc::new(symbols)), files_ms, symbols_ms }
+    }
+
+    /// The `p`th percentile (0 to 100) of sorted values, by nearest rank; 0 when there are none.
+    pub fn percentile(sorted: &[f64], p: f64) -> f64 {
+        if sorted.is_empty() {
+            return 0.0;
+        }
+        let rank = (p / 100.0 * sorted.len() as f64).ceil() as usize;
+        sorted[rank.clamp(1, sorted.len()) - 1]
+    }
+
+    /// Runs the palette stage and returns the process exit code: 1 when p95 is over `target_ms`.
+    pub fn run(project: &Path, target_ms: f64) -> i32 {
+        println!(">>> PALETTE: {}", project.display());
+        let Some((index, graph, load_ms, from_cache, loader)) = load(project) else { return 2 };
+        println!(
+            "  load        {load_ms:.0} ms to Complete ({}), {} cards",
+            if from_cache { "from the cache" } else { "fresh parse" },
+            graph.nodes.len()
+        );
+        // The loader goes on to count heavy folders and write its cache; let it finish first, so
+        // queries are timed on a quiet machine and the cache is never left half written.
+        let t = Instant::now();
+        let _ = loader.join();
+        println!("  loader      done {:.0} ms after Complete (folder totals, cache)", ms(t));
+        print_index("index", &index);
+        rebuild_and_compare(project, &graph, &index);
+
+        let samples = replay(&index);
+        let p95 = print_times(&samples);
+        if p95 > target_ms {
+            println!("  FAIL        p95 {p95:.3} ms is over the {target_ms} ms target");
+            return 1;
+        }
+        println!("  PASS        p95 {p95:.3} ms is within the {target_ms} ms target");
+        0
+    }
+
+    /// Loads the project on the loader thread, as the app does, up to `Complete`.
+    fn load(project: &Path) -> Option<(SearchIndex, Graph, f64, bool, std::thread::JoinHandle<()>)> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let t = Instant::now();
+        let loader = spawn_load_project(project.to_path_buf(), tx);
+        for message in rx {
+            match message {
+                LoaderMessage::Complete { graph, search_index, from_cache, .. } => {
+                    return Some((search_index, graph, ms(t), from_cache, loader));
+                }
+                LoaderMessage::Error(e) => {
+                    println!("  [-] load failed: {e}");
+                    return None;
+                }
+                _ => {}
+            }
+        }
+        println!("  [-] the loader stopped before Complete");
+        None
+    }
+
+    /// Times the build of the same two segments from a fresh scan and the loaded graph, and checks
+    /// they hold what the loader's index holds.
+    fn rebuild_and_compare(project: &Path, graph: &Graph, loaded: &SearchIndex) {
+        let t = Instant::now();
+        let scanned = match studio_parser::scan_project(project) {
+            Ok(scanned) => scanned,
+            Err(e) => return println!("  [-] scan failed: {e}"),
+        };
+        let scan_ms = ms(t);
+        let built = build_index(&scanned.tree, graph);
+        println!(
+            "  index build {:.1} ms: files {:.1} ms, symbols {:.1} ms (after a {scan_ms:.0} ms scan, not counted)",
+            built.files_ms + built.symbols_ms,
+            built.files_ms,
+            built.symbols_ms
+        );
+        let same = built.index.counts() == loaded.counts();
+        println!(
+            "  rebuilt     {}",
+            if same { "same entries per kind as the loader" } else { "DIFFERS from the loader" }
+        );
+        if !same {
+            print_index("rebuilt", &built.index);
+        }
+    }
+
+    fn print_index(title: &str, index: &SearchIndex) {
+        let counts = index.counts();
+        let kinds: Vec<String> = EntryKind::ALL
+            .iter()
+            .zip(counts)
+            .filter(|(_, n)| *n > 0)
+            .map(|(kind, n)| format!("{} {n}", kind.label()))
+            .collect();
+        println!("  {title:<11} {} entries: {}", counts.iter().sum::<usize>(), kinds.join(", "));
+        let segments: Vec<String> = index
+            .segments()
+            .iter()
+            .enumerate()
+            .map(|(slot, s)| format!("slot {slot} {:.1} MB", s.heap_bytes() as f64 / 1_048_576.0))
+            .collect();
+        println!("  heap        {:.1} MB ({})", index.heap_bytes() as f64 / 1_048_576.0, segments.join(", "));
+    }
+
+    /// Every prefix of every query, by characters.
+    fn prefixes() -> Vec<&'static str> {
+        QUERIES.iter().flat_map(|q| q.char_indices().map(|(i, c)| &q[..i + c.len_utf8()])).collect()
+    }
+
+    /// One cold query: a fresh parse and search, nothing kept from earlier ones.
+    fn search(index: &SearchIndex, raw: &str) -> (usize, f64) {
+        let t = Instant::now();
+        let query = Query::parse(raw);
+        let groups = index.search(&query, per_kind(query.scope));
+        let elapsed = ms(t);
+        (groups.iter().map(|g| g.total).sum(), elapsed)
+    }
+
+    /// One warm-up round, then [`ROUNDS`] timed rounds over every prefix: (prefix, ms) per query.
+    fn replay(index: &SearchIndex) -> Vec<(&'static str, f64)> {
+        let prefixes = prefixes();
+        println!(
+            "  queries     {} fixed, {} prefixes, {ROUNDS} timed rounds after one warm-up",
+            QUERIES.len(),
+            prefixes.len()
+        );
+        for raw in QUERIES {
+            let (matches, ms) = search(index, raw);
+            println!("    {:<34} {matches:>7} matches  {ms:>7.3} ms (warm-up)", format!("{raw:?}"));
+        }
+        for prefix in &prefixes {
+            search(index, prefix);
+        }
+        (0..ROUNDS).flat_map(|_| prefixes.iter().map(|&p| (p, search(index, p).1)).collect::<Vec<_>>()).collect()
+    }
+
+    /// Prints p50, p95, p99, max and the five slowest prefixes; returns p95.
+    fn print_times(samples: &[(&str, f64)]) -> f64 {
+        let mut times: Vec<f64> = samples.iter().map(|s| s.1).collect();
+        times.sort_by(f64::total_cmp);
+        let p95 = percentile(&times, 95.0);
+        println!(
+            "  times       p50 {:.3} ms, p95 {p95:.3} ms, p99 {:.3} ms, max {:.3} ms over {} timed queries",
+            percentile(&times, 50.0),
+            percentile(&times, 99.0),
+            times.last().copied().unwrap_or(0.0),
+            times.len()
+        );
+        let mut worst: std::collections::BTreeMap<&str, f64> = Default::default();
+        for &(prefix, ms) in samples {
+            let slot = worst.entry(prefix).or_default();
+            *slot = slot.max(ms);
+        }
+        let mut worst: Vec<(&str, f64)> = worst.into_iter().collect();
+        worst.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(b.0)));
+        println!("  slowest     (worst of {ROUNDS} rounds)");
+        for (prefix, ms) in worst.iter().take(5) {
+            println!("    {:<34} {ms:.3} ms", format!("{prefix:?}"));
+        }
+        p95
+    }
+
+    fn ms(since: Instant) -> f64 {
+        since.elapsed().as_secs_f64() * 1000.0
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn percentile_takes_the_nearest_rank() {
+            let values: Vec<f64> = (1..=100).map(f64::from).collect();
+            assert_eq!(percentile(&values, 50.0), 50.0);
+            assert_eq!(percentile(&values, 95.0), 95.0);
+            assert_eq!(percentile(&values, 99.0), 99.0);
+            assert_eq!(percentile(&values, 100.0), 100.0);
+            assert_eq!(percentile(&values, 0.0), 1.0);
+            assert_eq!(percentile(&[2.0, 7.0, 9.0], 50.0), 7.0);
+            assert_eq!(percentile(&[4.0], 95.0), 4.0);
+            assert_eq!(percentile(&[], 95.0), 0.0);
+        }
+
+        #[test]
+        fn the_fixed_queries_cover_what_e1_asks_for() {
+            assert_eq!(QUERIES.len(), 40);
+            assert!(QUERIES.iter().any(|q| q.starts_with('>')) && QUERIES.iter().any(|q| q.starts_with('@')));
+            assert!(QUERIES.iter().any(|q| q.chars().count() == 30));
+            assert!(QUERIES.iter().any(|q| !q.is_ascii()));
+            let distinct: std::collections::BTreeSet<_> = QUERIES.iter().collect();
+            assert_eq!(distinct.len(), QUERIES.len());
+            assert_eq!(prefixes().len(), QUERIES.iter().map(|q| q.chars().count()).sum::<usize>());
+        }
+
+        #[test]
+        fn scoped_queries_show_fifty_and_the_rest_follow_the_palette() {
+            assert_eq!(per_kind(Scope::Symbols)(EntryKind::Symbol), 50);
+            assert_eq!(per_kind(Scope::Commands)(EntryKind::Tool), 50);
+            assert_eq!(per_kind(Scope::All)(EntryKind::File), 8);
+            assert_eq!(per_kind(Scope::All)(EntryKind::Symbol), 8);
+            assert_eq!(per_kind(Scope::All)(EntryKind::Branch), 5);
+        }
+    }
 }

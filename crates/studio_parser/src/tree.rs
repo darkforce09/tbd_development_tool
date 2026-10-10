@@ -22,6 +22,9 @@ pub struct ProjectTree {
     /// `dirs[0]` is the root itself (empty relative path).
     pub dirs: Vec<DirNode>,
     pub files: Vec<FileNode>,
+    /// Single files git ignores (relative to the root), sorted. They stay in `files`; the palette
+    /// leaves them out. Empty when ignored folders are not looked up.
+    pub ignored_files: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -120,11 +123,13 @@ impl ProjectTree {
 
 /// Lists every file and folder under `root`.
 pub fn scan_tree(root: &Path, opts: ScanOptions) -> ProjectTree {
-    let ignored_dirs = if opts.gitignored_heavy { git_ignored_dirs(root) } else { HashSet::new() };
+    let (ignored_dirs, ignored_files) =
+        if opts.gitignored_heavy { git_ignored(root) } else { (HashSet::new(), Vec::new()) };
     let mut tree = ProjectTree {
         root: root.to_path_buf(),
         dirs: vec![DirNode { rel: PathBuf::new(), parent: None, kind: DirKind::Normal }],
         files: Vec::new(),
+        ignored_files,
     };
     let mut dir_ids: std::collections::HashMap<PathBuf, DirId> = std::collections::HashMap::new();
     dir_ids.insert(PathBuf::new(), 0);
@@ -240,7 +245,7 @@ pub fn measure_heavy_dirs(tree: &mut ProjectTree) {
 /// descending into heavy folders or reading file contents.
 pub fn hash_tree_state(root: &Path, hasher: &mut impl std::hash::Hasher) {
     use std::hash::Hash;
-    let ignored_dirs = git_ignored_dirs(root);
+    let (ignored_dirs, _) = git_ignored(root);
     let mut walker = WalkDir::new(root).follow_links(false).sort_by_file_name().into_iter();
     while let Some(entry) = walker.next() {
         let Ok(entry) = entry else { continue };
@@ -280,24 +285,30 @@ fn heavy_reason(path: &Path, rel: &Path, ignored_dirs: &HashSet<PathBuf>) -> Opt
     None
 }
 
-/// Folders git ignores entirely (relative to `root`). Empty when git is unavailable.
-fn git_ignored_dirs(root: &Path) -> HashSet<PathBuf> {
+/// Folders git ignores entirely, and single ignored files outside them (sorted), relative to
+/// `root`. Both empty when git is unavailable.
+pub fn git_ignored(root: &Path) -> (HashSet<PathBuf>, Vec<PathBuf>) {
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(root)
         .args(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"])
         .output();
-    let Ok(output) = output else { return HashSet::new() };
+    let Ok(output) = output else { return Default::default() };
     if !output.status.success() {
-        return HashSet::new();
+        return Default::default();
     }
-    output
-        .stdout
-        .split(|&b| b == 0)
-        .filter_map(|chunk| std::str::from_utf8(chunk).ok())
-        .filter_map(|p| p.strip_suffix('/'))
-        .map(|p| p.split('/').collect::<PathBuf>())
-        .collect()
+    let (mut dirs, mut files) = (HashSet::new(), Vec::new());
+    for p in output.stdout.split(|&b| b == 0).filter_map(|chunk| std::str::from_utf8(chunk).ok()) {
+        match p.strip_suffix('/') {
+            Some(dir) => {
+                dirs.insert(dir.split('/').collect::<PathBuf>());
+            }
+            None if !p.is_empty() => files.push(p.split('/').collect::<PathBuf>()),
+            None => {}
+        }
+    }
+    files.sort();
+    (dirs, files)
 }
 
 fn classify_file(path: &Path) -> (u64, FileKind) {

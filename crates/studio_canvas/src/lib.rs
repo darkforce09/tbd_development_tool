@@ -29,6 +29,7 @@ pub use interaction::{HoverState, InteractionMode};
 pub use scene::CanvasScene;
 pub use spatial::SpatialHashGrid;
 pub use transform::{screen_to_world, world_to_screen, CanvasTransform};
+pub use view::shortcuts;
 pub use view::{
     archetype_color, calculate_file_node_size, data_type_color, edge_kind_color, CanvasAction, CanvasFrameStats,
     CanvasState, CanvasView,

@@ -1,4 +1,4 @@
-use egui::{CursorIcon, Key, Pos2, Rect, Ui, Vec2};
+use egui::{CursorIcon, Pos2, Rect, Ui, Vec2};
 use studio_graph::Graph;
 
 use crate::camera::{CameraTarget, Stop};
@@ -6,6 +6,7 @@ use crate::interaction::{HoverState, InteractionMode};
 
 use super::gate::InputGate;
 use super::layout::port_world_position;
+use super::shortcuts::{actions_of, pressed, KeyFocus, ShortcutAction, ShortcutOwner};
 use super::types::{CanvasAction, CanvasState, NodeContextMenu};
 
 /// Pans, zooms, hovers, selects and opens the context menu, with only the input the canvas owns
@@ -17,9 +18,7 @@ pub fn handle_canvas_input(state: &mut CanvasState, graph: &mut Graph, ui: &Ui, 
     if gate.pointer.is_some_and(|pointer| wheel(state, graph, ui, pointer)) {
         state.camera.cancel();
     }
-    if gate.keyboard {
-        keys(state, ui, rect);
-    }
+    keys(state, ui, gate, rect);
     if gate.dragging {
         state.camera.cancel();
         if state.interaction == InteractionMode::Idle {
@@ -113,35 +112,61 @@ fn wheel(state: &mut CanvasState, graph: &mut Graph, ui: &Ui, pointer: Pos2) -> 
     }
 }
 
-/// Home goes to the world view; `=` and `-` zoom about the middle; `0` goes to 100% (where a
-/// district's text is crisp); Escape closes the menu, then clears the selection.
-fn keys(state: &mut CanvasState, ui: &Ui, rect: Rect) {
-    let (home, zoom_in, zoom_out, actual, escape) = ui.input(|i| {
-        let plain = !(i.modifiers.command || i.modifiers.ctrl || i.modifiers.alt);
-        (
-            i.key_pressed(Key::Home),
-            plain && (i.key_pressed(Key::Equals) || i.key_pressed(Key::Plus)),
-            plain && i.key_pressed(Key::Minus),
-            plain && i.key_pressed(Key::Num0),
-            i.key_pressed(Key::Escape),
-        )
+/// The canvas's keys from the SHORTCUTS table, read only while it has the keyboard: Home goes to
+/// the world view; `=` and `-` zoom about the middle; `0` goes to 100% (where a district's text
+/// is crisp); Escape closes the menu, then clears the selection. 100% wins over the zoom keys,
+/// and zooming in over zooming out.
+///
+/// Escape typed into a text field takes the field's focus away before the canvas runs (egui does
+/// that as the frame begins), so keys also wait while a widget had the keyboard last frame.
+fn keys(state: &mut CanvasState, ui: &Ui, gate: &InputGate, rect: Rect) {
+    let typed_last_frame = ui.ctx().data_mut(|d| {
+        let id = egui::Id::new("canvas_keys_typing");
+        let before = d.get_temp::<bool>(id).unwrap_or(false);
+        d.insert_temp(id, !gate.keyboard);
+        before
     });
-    if home {
-        state.fly_to(CameraTarget::Stop(Stop::World));
+    if !gate.keyboard || typed_last_frame {
+        return;
     }
-    if actual {
-        state.actual_size();
-    } else if zoom_in || zoom_out {
-        state.camera.cancel();
-        state.transform.zoom_at_pointer(rect.center(), if zoom_in { 1.25 } else { 0.8 });
+    let mut fired: Vec<ShortcutAction> = ui
+        .input(|i| actions_of(ShortcutOwner::Canvas).into_iter().filter(|&a| pressed(i, KeyFocus::Free, a)).collect());
+    if fired.contains(&ShortcutAction::ActualSize) {
+        fired.retain(|a| !matches!(a, ShortcutAction::ZoomIn | ShortcutAction::ZoomOut));
+    } else if fired.contains(&ShortcutAction::ZoomIn) {
+        fired.retain(|&a| a != ShortcutAction::ZoomOut);
     }
-    if escape {
-        if state.context_menu.is_some() {
-            state.context_menu = None;
-        } else {
-            state.selected_nodes.clear();
+    for action in fired {
+        canvas_key(state, action, rect);
+    }
+}
+
+/// Does what a canvas key says, on a canvas filling `rect`. Returns whether the canvas handles
+/// `action`; the others belong to the app or the palette.
+pub(crate) fn canvas_key(state: &mut CanvasState, action: ShortcutAction, rect: Rect) -> bool {
+    use ShortcutAction::*;
+    match action {
+        World => state.fly_to(CameraTarget::Stop(Stop::World)),
+        ActualSize => state.actual_size(),
+        ZoomIn | ZoomOut => {
+            state.camera.cancel();
+            state.transform.zoom_at_pointer(rect.center(), if action == ZoomIn { 1.25 } else { 0.8 });
         }
+        Escape => {
+            if state.context_menu.is_some() {
+                state.context_menu = None;
+            } else {
+                state.selected_nodes.clear();
+            }
+        }
+        // The app's (app/shortcuts.rs) and the palette's (app/palette.rs).
+        OpenSearch | ToggleDebug | PaletteUp | PaletteDown | PaletteOpen | PaletteReveal | PaletteClose => {
+            return false
+        }
+        // Gestures, read by `wheel` and the input gate.
+        WheelZoom | Pan => return false,
     }
+    true
 }
 
 /// Scrolls the code of the open card under the pointer, if the pointer is on its code. Returns
@@ -220,4 +245,136 @@ fn folder_at(graph: &Graph, world: Pos2) -> Option<String> {
         .filter(|c| Rect::from_min_size(Pos2::from(c.position), Vec2::new(c.size[0], c.size[1])).contains(world))
         .max_by_key(|c| c.depth)
         .map(|c| c.id.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use egui::{Event, Modifiers, Pos2, Rect, Vec2};
+    use studio_graph::{Graph, NodeArchetype};
+
+    use super::super::shortcuts::{Chord, Mods, ShortcutAction, ShortcutOwner, SHORTCUTS};
+    use super::super::{CanvasState, CanvasView};
+    use crate::camera::{CameraTarget, Stop};
+
+    /// The real canvas on a 1200×800 screen at the Code district, zoomed to 2, with one card
+    /// selected; optionally under a focused text field.
+    struct Canvas {
+        ctx: egui::Context,
+        time: f64,
+        state: CanvasState,
+        graph: Graph,
+        field: Option<String>,
+    }
+
+    impl Canvas {
+        fn new(field: bool) -> Self {
+            let mut graph = Graph::new();
+            let id = graph.add_node("a.rs", NodeArchetype::File, "", None, vec![], vec![], [0.0, 0.0]);
+            let mut state = CanvasState::default();
+            state.use_gpu_wires = false;
+            state.jump_to(CameraTarget::Stop(Stop::Code));
+            let mut c = Self { ctx: egui::Context::default(), time: 0.0, state, graph, field: field.then(String::new) };
+            c.frames(vec![], 3);
+            c.state.transform.zoom_at_pointer(Pos2::new(600.0, 400.0), 2.0);
+            c.state.selected_nodes.insert(id);
+            c
+        }
+
+        fn frames(&mut self, events: Vec<Event>, idle: usize) {
+            for mut events in std::iter::once(events).chain((0..idle).map(|_| Vec::new())) {
+                self.time += 1.0 / 60.0;
+                if let Some(Event::Key { modifiers, .. }) = events.last() {
+                    events.insert(0, Event::ModifiersChanged(*modifiers));
+                }
+                let raw = egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0))),
+                    time: Some(self.time),
+                    events,
+                    ..Default::default()
+                };
+                let (state, graph, field) = (&mut self.state, &mut self.graph, &mut self.field);
+                let mut output = self.ctx.run_ui(raw, |ui| {
+                    CanvasView::new(&mut *state, &mut *graph).show(ui);
+                    if let Some(text) = field.as_mut() {
+                        egui::Area::new(egui::Id::new("field")).fixed_pos(Pos2::new(10.0, 10.0)).show(ui.ctx(), |ui| {
+                            ui.add(egui::TextEdit::singleline(text)).request_focus();
+                        });
+                    }
+                });
+                output.textures_delta.clear();
+            }
+        }
+
+        /// Presses and releases `chord`.
+        fn press(&mut self, chord: &Chord) {
+            let Chord::Key(mods, key) = *chord else { panic!("a gesture has no key") };
+            let modifiers = if let Mods::Logical(m) = mods { m } else { Modifiers::NONE };
+            let event = |pressed| Event::Key { key, physical_key: None, pressed, repeat: false, modifiers };
+            self.frames(vec![event(true)], 0);
+            self.frames(vec![event(false)], 1);
+        }
+
+        /// What a canvas key can change.
+        fn look(&self) -> (Vec2, f32, usize, bool) {
+            let t = &self.state.transform;
+            (t.pan, t.zoom, self.state.selected_nodes.len(), self.state.camera.is_flying())
+        }
+    }
+
+    fn canvas_rows() -> impl Iterator<Item = (ShortcutAction, &'static Chord)> {
+        SHORTCUTS
+            .iter()
+            .filter(|s| s.action.owner() == ShortcutOwner::Canvas && !s.display_only())
+            .flat_map(|s| s.chords.iter().map(move |c| (s.action, c)))
+    }
+
+    /// E6 (a), canvas side: every canvas key in the table does what the sheet says.
+    #[test]
+    fn every_canvas_shortcut_is_dispatched() {
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0));
+        for (action, chord) in canvas_rows() {
+            assert!(super::canvas_key(&mut CanvasState::default(), action, rect), "{action:?} is handled");
+            let mut c = Canvas::new(false);
+            let (_, zoom, selected, _) = c.look();
+            c.press(chord);
+            let (_, after, now_selected, flying) = c.look();
+            let did = match action {
+                ShortcutAction::World => flying && c.state.stop == Stop::World,
+                ShortcutAction::ZoomIn => (after - zoom * 1.25).abs() < 1e-4,
+                ShortcutAction::ZoomOut => (after - zoom * 0.8).abs() < 1e-4,
+                ShortcutAction::ActualSize => (after - 1.0).abs() < 1e-4,
+                ShortcutAction::Escape => selected == 1 && now_selected == 0,
+                other => panic!("{other:?} is not the canvas's"),
+            };
+            assert!(did, "{action:?} via {chord:?}");
+        }
+    }
+
+    /// AM3: no canvas key in the table reaches the map while a text field has focus.
+    #[test]
+    fn canvas_shortcuts_are_ignored_while_a_text_field_has_focus() {
+        let mut count = 0;
+        for (action, chord) in canvas_rows() {
+            let mut c = Canvas::new(true);
+            let before = c.look();
+            c.press(chord);
+            c.frames(vec![], 60);
+            assert_eq!(c.look(), before, "{action:?} via {chord:?} typed into a field");
+            count += 1;
+        }
+        assert_eq!(count, 6, "Home, =, +, -, 0 and Escape");
+    }
+
+    #[test]
+    fn hundred_percent_wins_over_the_zoom_keys() {
+        let key =
+            |key| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE };
+        let mut c = Canvas::new(false);
+        c.frames(vec![key(egui::Key::Equals), key(egui::Key::Num0), key(egui::Key::Minus)], 1);
+        assert!((c.state.transform.zoom - 1.0).abs() < 1e-4);
+        let mut c = Canvas::new(false);
+        let zoom = c.state.transform.zoom;
+        c.frames(vec![key(egui::Key::Minus), key(egui::Key::Equals)], 1);
+        assert!((c.state.transform.zoom - zoom * 1.25).abs() < 1e-4, "zooming in wins, once");
+    }
 }

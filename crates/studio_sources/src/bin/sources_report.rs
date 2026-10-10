@@ -142,7 +142,7 @@ fn main() {
     }
 
     // The pipeline: routes, tags, contracts and the flows through them.
-    print_pipeline(&root.canonicalize().unwrap_or(root.clone()), &packages, &tools, &files);
+    let pipeline = print_pipeline(&root.canonicalize().unwrap_or(root.clone()), &packages, &tools, &files);
 
     // The disk as git sees it, and settings.
     let canonical = root.canonicalize().unwrap_or(root.clone());
@@ -163,7 +163,7 @@ fn main() {
         }
         Err(e) => println!("  git                {e:?}"),
     }
-    git_history_section(&runner, &canonical);
+    let history = git_history_section(&runner, &canonical);
     let json: Vec<std::path::PathBuf> =
         files.iter().filter(|f| f.extension().is_some_and(|e| e == "json")).cloned().collect();
     let started = Instant::now();
@@ -197,8 +197,10 @@ fn main() {
 
     // Tickets (`.ai/tickets`), with every `shipped_at` asked of git once.
     let started = Instant::now();
+    let mut tickets = 0;
     match studio_sources::read_tickets(&runner, &canonical) {
         Ok(index) => {
+            tickets = index.tickets.len();
             println!("  tickets            read in {:.2?}", started.elapsed());
             println!("    files            {} ({} bad)", index.files, index.bad_files.len());
             for (file, why) in index.bad_files.iter().take(5) {
@@ -237,6 +239,17 @@ fn main() {
             println!("{tests:>7} {path}");
         }
     }
+    let sources = [
+        ("tools", tools.tools.iter().map(|t| t.walk().len()).sum::<usize>()),
+        ("settings", settings.sheets.len()),
+        ("routes", pipeline.map_or(0, |p| p.0)),
+        ("flows", pipeline.map_or(0, |p| p.1)),
+        ("branches", history.map_or(0, |h| h.0)),
+        ("worktrees", history.map_or(0, |h| h.1)),
+        ("tickets", tickets),
+    ];
+    palette_section(&canonical, &graph, &sources);
+
     let about: Vec<(&str, &str)> = graph
         .clusters
         .iter()
@@ -254,13 +267,45 @@ fn args_has(flag: &str) -> bool {
     std::env::args().any(|a| a == flag)
 }
 
+/// The palette's file and symbol segments, built the way the loader builds them, and what the
+/// sources read above would add to slot 2 (the viewer builds that segment; this counts its inputs).
+fn palette_section(root: &std::path::Path, graph: &studio_graph::Graph, sources: &[(&str, usize)]) {
+    let tree = match studio_parser::scan_project(root) {
+        Ok(scanned) => scanned.tree,
+        Err(e) => return println!("  palette            {e:?}"),
+    };
+    let started = Instant::now();
+    let files = studio_parser::file_segment(&studio_parser::FileListing::from_tree(&tree, ""));
+    let files_time = started.elapsed();
+    let started = Instant::now();
+    let symbols = studio_parser::symbol_segment(graph);
+    let symbols_time = started.elapsed();
+    let index = studio_parser::SearchIndex::loaded(std::sync::Arc::new(files), std::sync::Arc::new(symbols));
+    println!(
+        "  palette            built in {:.2?} (files {files_time:.2?}, symbols {symbols_time:.2?})",
+        files_time + symbols_time
+    );
+    let counts = index.counts();
+    for (kind, n) in studio_parser::EntryKind::ALL.iter().zip(counts).filter(|(_, n)| *n > 0) {
+        println!("    {:<16} {n}", kind.label().to_lowercase());
+    }
+    println!("    heap             {} bytes", index.heap_bytes());
+    let slot2: Vec<String> = sources.iter().map(|(what, n)| format!("{what} {n}")).collect();
+    println!("    slot 2 inputs    {} (sessions with --sessions)", slot2.join(", "));
+}
+
 /// Branches, history, co-authors, worktrees, the per-folder last commit and one commit's files.
-fn git_history_section(runner: &studio_sources::Runner, root: &std::path::Path) {
+/// Returns the number of local branches and worktrees.
+fn git_history_section(runner: &studio_sources::Runner, root: &std::path::Path) -> Option<(usize, usize)> {
     let started = Instant::now();
     let history = match studio_sources::read_history(runner, root) {
         Ok(history) => history,
-        Err(e) => return println!("  git history        {e:?}"),
+        Err(e) => {
+            println!("  git history        {e:?}");
+            return None;
+        }
     };
+    let counts = (history.branches.len(), history.worktrees.len());
     println!("  git history        read in {:.2?}", started.elapsed());
     println!("    local branches   {}", history.branches.len());
     println!("    commits on HEAD  {} ({} read)", history.commit_count, history.commits.len());
@@ -293,7 +338,7 @@ fn git_history_section(runner: &studio_sources::Runner, root: &std::path::Path) 
         ),
         Err(e) => println!("  part commits       {e:?}"),
     }
-    let Some(head) = history.commits.first() else { return };
+    let Some(head) = history.commits.first() else { return Some(counts) };
     let dir = std::env::temp_dir().join(format!("studio-sources-report-{}", std::process::id()));
     let store = studio_sources::Store::in_dir(&dir);
     let started = Instant::now();
@@ -312,6 +357,7 @@ fn git_history_section(runner: &studio_sources::Runner, root: &std::path::Path) 
         ),
         (cold, warm) => println!("  commit files       cold {cold:?}, warm {warm:?}"),
     }
+    Some(counts)
 }
 
 /// `--sessions [--cold]`: the agent session index for the project and its linked worktrees,
@@ -428,18 +474,17 @@ fn sessions_section(root: &std::path::Path, cold: bool) {
     println!("    index time       {} ms (warm pass, as the index measures itself)", s.elapsed_ms);
 }
 
-/// The pipeline section: what the Pipeline district would show, with the job's time.
+/// The pipeline section: what the Pipeline district would show, with the job's time. Returns the
+/// number of routes and flows.
 fn print_pipeline(
     root: &std::path::Path,
     packages: &studio_sources::Packages,
     tools: &studio_sources::Tools,
     files: &[std::path::PathBuf],
-) {
+) -> Option<(usize, usize)> {
     use studio_sources::{FlowGroupKind, LinkKind, StepKind};
     let started = Instant::now();
-    let Some((p, report)) = studio_sources::pipeline::build_with(root, packages, tools, files, &|| false) else {
-        return;
-    };
+    let (p, report) = studio_sources::pipeline::build_with(root, packages, tools, files, &|| false)?;
     let t = report.timings;
     let s = &p.stats;
     println!(
@@ -559,6 +604,7 @@ fn print_pipeline(
     if crossing.len() > 40 {
         println!("      … {} more", crossing.len() - 40);
     }
+    Some((s.routes, s.flows))
 }
 
 fn tier_index(tier: studio_graph::EvidenceTier) -> usize {

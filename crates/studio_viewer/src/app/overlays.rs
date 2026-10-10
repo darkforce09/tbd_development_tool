@@ -1,12 +1,12 @@
 //! What floats over the canvas: the compass at the top right and the Dock at the bottom.
 
 use eframe::egui;
-use egui::{Align2, Id, Order, Pos2, Rect, Vec2};
-use studio_canvas::districts::run::{section_world_rect, tile_world_rect};
-use studio_canvas::{CameraTarget, RunSection, Stop};
+use egui::{Align2, Id, Order};
+use studio_canvas::Stop;
 use studio_ui::color_tokens::*;
 use studio_ui::{compass, dock, CompassClick, CompassStop, DockItem};
 
+use super::commands::{dock_commands, run_command, AppCommand, CommandSpec};
 use super::title_bar::TITLE_BAR_HEIGHT;
 use super::StudioApp;
 
@@ -43,25 +43,31 @@ impl StudioApp {
             .show(ctx, |ui| compass(ui, &stops, current, zoom))
             .inner;
         match clicked {
-            Some(CompassClick::Stop(i)) => self.canvas_state.fly_to(CameraTarget::Stop(COMPASS[i].0)),
-            Some(CompassClick::ActualSize) => self.canvas_state.actual_size(),
+            Some(CompassClick::Stop(i)) => run_command(self, AppCommand::Fly(COMPASS[i].0)),
+            Some(CompassClick::ActualSize) => run_command(self, AppCommand::ActualSize),
             None => {}
         }
     }
 }
 
-/// Most tools pinned to the Dock.
-const PINNED: usize = 8;
-
-/// What a Dock icon does.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DockAction {
-    Build,
-    Test,
-    Trace,
-    Tool(usize),
-    AllTools,
-    AddTool,
+/// A Dock icon for a command: the Run commands in the Run colour, Trace in the Pipeline's, the
+/// tools after a divider, All tools after another.
+fn dock_item(cmd: AppCommand, spec: &CommandSpec) -> DockItem {
+    let (color, divider_before) = match cmd {
+        AppCommand::Build | AppCommand::Test => (DISTRICT_RUN, false),
+        AppCommand::Trace => (DISTRICT_PIPELINE, false),
+        AppCommand::Tool(i) => (TEXT_SECONDARY, i == 0),
+        AppCommand::AllTools => (TEXT_SECONDARY, true),
+        _ => (TEXT_DIM, false),
+    };
+    DockItem {
+        icon: spec.icon,
+        label: spec.title.clone(),
+        tooltip: spec.detail.clone(),
+        color,
+        divider_before,
+        running: false,
+    }
 }
 
 /// Where Studio looks for tools, for "Add a tool".
@@ -76,117 +82,23 @@ const TOOL_SOURCES: &[(&str, &str)] = &[
 
 impl StudioApp {
     /// The Dock: Build, Test and Trace, the first tools of the Run district, All tools and Add a
-    /// tool. Running things from it comes later; for now each icon goes to what it would run.
+    /// tool, from the command registry. Running things from it comes later; for now each icon goes
+    /// to what it would run.
     pub(crate) fn render_dock(&mut self, ctx: &egui::Context) {
         if self.current_project_path.is_none() {
             return;
         }
-        use egui_phosphor::regular as icon;
-        let run = self.canvas_state.districts.run.clone();
-        let mut items = vec![
-            DockItem {
-                icon: icon::HAMMER,
-                label: "Build".into(),
-                tooltip: "Shows the packages the project builds".into(),
-                color: DISTRICT_RUN,
-                divider_before: false,
-                running: false,
-            },
-            DockItem {
-                icon: icon::TEST_TUBE,
-                label: "Test".into(),
-                tooltip: "Shows the tests, by package".into(),
-                color: DISTRICT_RUN,
-                divider_before: false,
-                running: false,
-            },
-            DockItem {
-                icon: icon::PATH,
-                label: "Trace".into(),
-                tooltip: "Shows what the selection connects to, or the pipeline".into(),
-                color: DISTRICT_PIPELINE,
-                divider_before: false,
-                running: false,
-            },
-        ];
-        let mut actions = vec![DockAction::Build, DockAction::Test, DockAction::Trace];
-        if let Some(run) = &run {
-            for (i, tool) in run.tools.iter().take(PINNED).enumerate() {
-                items.push(DockItem {
-                    icon: tool.icon,
-                    label: tool.name.clone(),
-                    tooltip: if tool.invocation.is_empty() { tool.kind.to_string() } else { tool.invocation.clone() },
-                    color: TEXT_SECONDARY,
-                    divider_before: i == 0,
-                    running: false,
-                });
-                actions.push(DockAction::Tool(i));
-            }
-        }
-        items.push(DockItem {
-            icon: icon::SQUARES_FOUR,
-            label: "All tools".into(),
-            tooltip: String::new(),
-            color: TEXT_SECONDARY,
-            divider_before: true,
-            running: false,
-        });
-        items.push(DockItem {
-            icon: icon::PLUS,
-            label: "Add a tool".into(),
-            tooltip: "Where Studio finds tools".into(),
-            color: TEXT_DIM,
-            divider_before: false,
-            running: false,
-        });
-        actions.extend([DockAction::AllTools, DockAction::AddTool]);
-
+        let commands = dock_commands(&self.canvas_state);
+        let items: Vec<DockItem> = commands.iter().map(|(cmd, spec)| dock_item(*cmd, spec)).collect();
         let clicked = egui::Area::new(Id::new("dock"))
             .order(Order::Foreground)
             .anchor(Align2::CENTER_BOTTOM, [0.0, -14.0])
             .show(ctx, |ui| dock(ui, &items))
             .inner;
-        let Some(action) = clicked.map(|i| actions[i]) else {
-            self.render_tool_sources(ctx);
-            return;
-        };
-        let world = self.canvas_state.world;
-        let section = |s| run.as_ref().map(|r| section_world_rect(&world, r, s));
-        match action {
-            DockAction::Build => self.fly_or_run(section(RunSection::Builds)),
-            DockAction::Test => self.fly_or_run(section(RunSection::Tests)),
-            DockAction::AllTools => self.fly_or_run(section(RunSection::Tools)),
-            DockAction::Tool(i) => {
-                self.canvas_state.run_selected = Some(i);
-                let tile = run.as_ref().and_then(|r| tile_world_rect(&world, r, i));
-                self.fly_or_run(tile.map(|t| t.expand(t.width() * 1.5)));
-            }
-            DockAction::Trace => match self.traced_rect() {
-                Some(rect) => self.canvas_state.fly_to(CameraTarget::Rect(rect)),
-                None => self.canvas_state.fly_to(CameraTarget::Stop(Stop::Pipeline)),
-            },
-            DockAction::AddTool => self.show_tool_sources = !self.show_tool_sources,
+        if let Some(i) = clicked {
+            run_command(self, commands[i].0);
         }
         self.render_tool_sources(ctx);
-    }
-
-    /// Flies to a place in the Run district, or to the district while its tools are still being
-    /// read.
-    fn fly_or_run(&mut self, rect: Option<Rect>) {
-        match rect.filter(|r| r.is_positive()) {
-            Some(r) => self.canvas_state.fly_to(CameraTarget::Rect(r)),
-            None => self.canvas_state.fly_to(CameraTarget::Stop(Stop::Run)),
-        }
-    }
-
-    /// The cards the selection's trace lights, as one rectangle.
-    fn traced_rect(&self) -> Option<Rect> {
-        let traced = self.canvas_state.trace_nodes.as_ref()?;
-        traced
-            .iter()
-            .filter_map(|id| self.graph.nodes.get(id))
-            .map(|n| Rect::from_min_size(Pos2::from(n.position), Vec2::new(n.size[0], n.size[1])))
-            .reduce(|a, b| a.union(b))
     }
 
     /// "Add a tool": where Studio finds tools on its own.
@@ -212,5 +124,46 @@ impl StudioApp {
                 });
             });
         self.show_tool_sources = open;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use studio_canvas::{CanvasState, RunView, ToolTile};
+
+    #[test]
+    fn the_dock_shows_what_it_showed_before_the_registry() {
+        let tool = |name: &str, invocation: &str| ToolTile {
+            name: name.to_string(),
+            kind: "script",
+            icon: egui_phosphor::regular::TERMINAL,
+            invocation: invocation.to_string(),
+            description: None,
+            file: "package.json".into(),
+            line: 3,
+            children: Vec::new(),
+        };
+        let mut canvas = CanvasState::default();
+        let run = RunView { tools: vec![tool("dev", "npm run dev"), tool("ci", "")], ..Default::default() };
+        canvas.districts.run = Some(std::sync::Arc::new(run));
+        let items: Vec<(String, String, egui::Color32, bool)> = dock_commands(&canvas)
+            .iter()
+            .map(|(cmd, spec)| dock_item(*cmd, spec))
+            .map(|i| (i.label, i.tooltip, i.color, i.divider_before))
+            .collect();
+        let row = |l: &str, t: &str, c, d| (l.to_string(), t.to_string(), c, d);
+        assert_eq!(
+            items,
+            [
+                row("Build", "Shows the packages the project builds", DISTRICT_RUN, false),
+                row("Test", "Shows the tests, by package", DISTRICT_RUN, false),
+                row("Trace", "Shows what the selection connects to, or the pipeline", DISTRICT_PIPELINE, false),
+                row("dev", "npm run dev", TEXT_SECONDARY, true),
+                row("ci", "script", TEXT_SECONDARY, false),
+                row("All tools", "", TEXT_SECONDARY, true),
+                row("Add a tool", "Where Studio finds tools", TEXT_DIM, false),
+            ]
+        );
     }
 }

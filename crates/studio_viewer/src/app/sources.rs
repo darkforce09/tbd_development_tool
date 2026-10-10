@@ -393,6 +393,8 @@ impl StudioApp {
     /// Puts what the sources read on the graph: run after they arrive and after the graph is
     /// replaced.
     pub(crate) fn apply_sources(&mut self) {
+        // The palette's commands and sources (slot 2), built again only when they changed.
+        self.sync_palette_sources();
         let (Some(sources), Some(root)) = (&mut self.sources, &self.current_project_path) else { return };
         let files = super::districts::files_view(sources.disk.as_deref(), &sources.sizes, sources.settings.as_deref());
         self.canvas_state.districts.files = Some(Arc::new(files));

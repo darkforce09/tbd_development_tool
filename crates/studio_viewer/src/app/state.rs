@@ -1,7 +1,7 @@
 use std::path::Path;
 use studio_canvas::CanvasState;
 use studio_graph::Graph;
-use studio_parser::{spawn_load_project, SymbolSearchIndex};
+use studio_parser::{spawn_load_project, SearchIndex};
 use studio_ui::apply_theme;
 
 use super::settings::PersistedSettings;
@@ -47,10 +47,10 @@ impl StudioApp {
             loading_files_done: 0,
             loading_total_files: 0,
             loading_progress: 0.0,
-            search_index: SymbolSearchIndex::default(),
+            search_index: SearchIndex::default(),
             folder_loads: Vec::new(),
-            spotlight_open: false,
-            spotlight_search: String::new(),
+            palette: Default::default(),
+            shortcut_sheet_open: false,
             activity: Default::default(),
             desk_reader: Default::default(),
             sources: None,

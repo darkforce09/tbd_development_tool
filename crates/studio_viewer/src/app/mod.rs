@@ -1,11 +1,14 @@
 pub mod activity;
+pub mod commands;
 pub mod debug_panel;
 pub mod desk_io;
 pub mod districts;
 pub mod folders;
 pub mod modals;
 pub mod overlays;
+pub mod palette;
 pub mod settings;
+pub mod shortcut_sheet;
 pub mod shortcuts;
 pub mod sources;
 pub mod state;
@@ -14,12 +17,11 @@ pub mod view_menu;
 pub mod window_frame;
 
 use eframe::{egui, App, Frame};
-use egui::Key;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use studio_canvas::{CameraTarget, CanvasAction, CanvasState, CanvasView, Stop};
 use studio_graph::Graph;
-use studio_parser::{LoaderMessage, ProjectStats, SymbolSearchIndex};
+use studio_parser::{LoaderMessage, ProjectStats, SearchIndex};
 
 /// The Studio desktop application: one infinite canvas for the whole project.
 pub struct StudioApp {
@@ -48,13 +50,15 @@ pub struct StudioApp {
     pub loading_total_files: usize,
     pub loading_progress: f32,
 
-    pub search_index: SymbolSearchIndex,
+    pub search_index: SearchIndex,
 
     // Collapsed folders being loaded in the background
     pub folder_loads: Vec<folders::FolderLoad>,
 
-    pub spotlight_open: bool,
-    pub spotlight_search: String,
+    /// The ⌘K palette under the title bar's search field.
+    pub palette: palette::PaletteState,
+    /// The keyboard-shortcut sheet is open.
+    pub shortcut_sheet_open: bool,
 
     /// What the title bar's activity line shows.
     pub activity: activity::Activity,
@@ -167,6 +171,7 @@ impl App for StudioApp {
         }
 
         if graph_replaced {
+            self.palette_graph_replaced();
             self.apply_sources();
         }
         self.poll_folder_loads();
@@ -185,16 +190,8 @@ impl App for StudioApp {
 
         self.debug.push_frame_time(ctx.input(|i| i.unstable_dt) * 1000.0);
 
-        // Global Keyboard Shortcuts
-        if ctx.input(|i| i.key_pressed(Key::F3)) {
-            self.debug.open = !self.debug.open;
-        }
-        if shortcuts::search_shortcut(ctx) {
-            self.spotlight_open = !self.spotlight_open;
-            if self.spotlight_open {
-                self.spotlight_search.clear();
-            }
-        }
+        // Global keyboard shortcuts, from the SHORTCUTS table
+        self.handle_shortcuts(ctx);
 
         // Handle canvas external actions
         if let Some(action) = self.canvas_state.action_request.take() {
@@ -231,19 +228,20 @@ impl App for StudioApp {
 
         self.render_title_bar(root);
 
-        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(studio_ui::color_tokens::CANVAS_BG)).show(
-            root,
-            |ui| {
+        let canvas = egui::CentralPanel::default()
+            .frame(egui::Frame::NONE.fill(studio_ui::color_tokens::CANVAS_BG))
+            .show(root, |ui| {
                 let started = std::time::Instant::now();
                 CanvasView::new(&mut self.canvas_state, &mut self.graph).show(ui);
                 self.debug.canvas_ms = started.elapsed().as_secs_f32() * 1000.0;
-            },
-        );
+            });
+        self.palette.canvas_rect = Some(canvas.response.rect);
 
         self.render_compass(ctx);
         self.render_dock(ctx);
         self.render_empty_state(ctx);
-        self.render_spotlight_modal(ctx);
+        self.render_palette(ctx);
+        self.render_shortcut_sheet(ctx);
         self.render_debug_panel(ctx);
         // macOS keeps its native window frame, which resizes itself.
         if !cfg!(target_os = "macos") {

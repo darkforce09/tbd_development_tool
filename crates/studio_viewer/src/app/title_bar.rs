@@ -13,6 +13,7 @@ use studio_ui::color_tokens::*;
 use studio_ui::Pill;
 
 use super::activity::{ActivityInputs, ActivityLine};
+use super::commands::{run_command, AppCommand};
 use super::{view_menu, window_frame, StudioApp};
 
 /// Height of the bar, in points.
@@ -45,14 +46,15 @@ impl StudioApp {
                             window_frame::window_controls(ui);
                             ui.add_space(6.0);
                         }
-                        MenuBar::new()
+                        let ticked = MenuBar::new()
                             .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside))
-                            .ui(ui, |ui| view_menu::view_menu(ui, &mut self.canvas_state));
-                        ui.add_space(6.0);
-                        if search_field(ui).clicked() {
-                            self.spotlight_open = true;
-                            self.spotlight_search.clear();
+                            .ui(ui, |ui| view_menu::view_menu(ui, &self.canvas_state))
+                            .inner;
+                        if let Some(i) = ticked {
+                            run_command(self, AppCommand::ToggleView(i));
                         }
+                        ui.add_space(6.0);
+                        self.search_field(ui);
                         controls_left = ui.min_rect().left();
                     });
                 });
@@ -199,27 +201,62 @@ impl StudioApp {
     }
 }
 
-/// A button that looks like a search field and opens the search.
-fn search_field(ui: &mut egui::Ui) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(vec2(200.0, 26.0), Sense::click());
-    let hovered = response.hovered();
-    let painter = ui.painter();
-    let fill = if hovered { FLOATING_BTN_HOVER } else { FLOATING_TOOLBAR_BG };
-    painter.rect(rect, CornerRadius::from(8.0), fill, Stroke::new(1.0, FLOATING_TOOLBAR_BORDER), StrokeKind::Inside);
-    let text = if hovered { TEXT_PRIMARY } else { TEXT_DIM };
-    let left = rect.left_center() + vec2(10.0, 0.0);
-    painter.text(left, Align2::LEFT_CENTER, egui_phosphor::regular::MAGNIFYING_GLASS, FontId::proportional(13.0), text);
-    painter.text(left + vec2(20.0, 0.0), Align2::LEFT_CENTER, "Search", FontId::proportional(12.5), text);
-    let shortcut = if cfg!(target_os = "macos") { "⌘K" } else { "Ctrl K" };
-    painter.text(
-        rect.right_center() - vec2(10.0, 0.0),
-        Align2::RIGHT_CENTER,
-        shortcut,
-        FontId::proportional(11.0),
-        TEXT_DIM,
-    );
-    response.on_hover_text("Search files and symbols (/ or ⌘K)")
+impl StudioApp {
+    /// The search field, in its fixed 200×26 slot so the pills never move. Closed, it is a button
+    /// that opens the palette; open, a text field in the same place, focused, whose Enter, arrows
+    /// and Escape the palette has already taken.
+    fn search_field(&mut self, ui: &mut egui::Ui) {
+        let (rect, response) = ui.allocate_exact_size(vec2(200.0, 26.0), Sense::click());
+        self.palette.field_rect = Some(rect);
+        let open = self.palette.open;
+        let hovered = response.hovered() && !open;
+        let fill = if hovered { FLOATING_BTN_HOVER } else { FLOATING_TOOLBAR_BG };
+        let border = if open { CARD_BORDER_SELECTED } else { FLOATING_TOOLBAR_BORDER };
+        let painter = ui.painter();
+        painter.rect(rect, CornerRadius::from(8.0), fill, Stroke::new(1.0, border), StrokeKind::Inside);
+        let text = if hovered || open { TEXT_PRIMARY } else { TEXT_DIM };
+        let left = rect.left_center() + vec2(10.0, 0.0);
+        painter.text(
+            left,
+            Align2::LEFT_CENTER,
+            egui_phosphor::regular::MAGNIFYING_GLASS,
+            FontId::proportional(13.0),
+            text,
+        );
+        if open {
+            let field = Rect::from_min_max(rect.min + vec2(30.0, 4.0), rect.max - vec2(8.0, 4.0));
+            let edit = ui.put(
+                field,
+                egui::TextEdit::singleline(&mut self.palette.text)
+                    .id(egui::Id::new(SEARCH_FIELD_ID))
+                    .hint_text("Go to anything")
+                    .frame(egui::Frame::NONE)
+                    .font(FontId::proportional(12.5))
+                    .text_color(TEXT_PRIMARY)
+                    .return_key(None)
+                    .desired_width(field.width()),
+            );
+            // The field keeps the keyboard while the palette is open.
+            edit.request_focus();
+            return;
+        }
+        painter.text(left + vec2(20.0, 0.0), Align2::LEFT_CENTER, "Go to anything", FontId::proportional(12.5), text);
+        let shortcut = if cfg!(target_os = "macos") { "⌘K" } else { "Ctrl K" };
+        painter.text(
+            rect.right_center() - vec2(10.0, 0.0),
+            Align2::RIGHT_CENTER,
+            shortcut,
+            FontId::proportional(11.0),
+            TEXT_DIM,
+        );
+        if response.on_hover_text("Files, symbols, commands and more (/ or ⌘K)").clicked() {
+            self.open_palette();
+        }
+    }
 }
+
+/// The search field's text edit.
+pub const SEARCH_FIELD_ID: &str = "palette_field";
 
 /// The activity line, centred in the bar, with a thin progress bar under it while loading.
 /// Returns where it is.

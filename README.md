@@ -13,7 +13,7 @@ Built in Rust with [egui](https://github.com/emilk/egui) and [wgpu](https://wgpu
 - **Polyglot parsing**: Rust through `syn`, 17 more languages through tree-sitter, plus Markdown and Bohemia Enforce Script (Arma Reforger / DayZ). See [Supported languages](#supported-languages).
 - **Wires**: imports, calls and Markdown links between files and between individual members, drawn on the GPU in instanced batches. There is a CPU fallback.
 - **Fast reopen**: parsed graphs are cached per project with zero-copy `rkyv`. The cache is invalidated when any source file changes.
-- **Search**: <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd> or <kbd>/</kbd> searches symbols across the project.
+- **Go to anything**: <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd> or <kbd>/</kbd> opens a search field in the title bar. It finds files, folders, symbols, commands and tools, and what Studio read about the project, grouped by kind. Start with <kbd>&gt;</kbd> for commands only, or <kbd>@</kbd> for symbols only. The same query always gives the same order.
 - **Debug panel**: <kbd>F3</kbd> shows project numbers, frame timing, memory, CPU, disk, GPU and canvas statistics.
 
 ## Build and run
@@ -46,7 +46,13 @@ To use a specific graphics backend, set `WGPU_BACKEND` (`vulkan`, `metal`, `dx12
 | Back to 100% | <kbd>0</kbd>, or the zoom under the compass |
 | Scroll inside an open code card | scroll over the card's code |
 | Select and trace | click a card: everything upstream and downstream of it is highlighted, the rest dims |
-| Search symbols | <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd>, or <kbd>/</kbd> when no text field has focus |
+| Go to anything | <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd>, or <kbd>/</kbd> when no text field has focus |
+| Only commands / only symbols | type <kbd>&gt;</kbd> / <kbd>@</kbd> first |
+| Move through results | <kbd>↑</kbd> / <kbd>↓</kbd> |
+| Open a result on the Desk | <kbd>Enter</kbd> (a symbol opens at its line) |
+| Show a result on the map | <kbd>Shift</kbd>+<kbd>Enter</kbd> |
+| Close the results | <kbd>Esc</kbd> |
+| Every key and gesture | the **Keyboard shortcuts** command (type <kbd>&gt;</kbd> shortcuts) |
 | Close / deselect | <kbd>Esc</kbd> |
 | Open a file on the Desk | double-click its card, pick it in the Desk's navigator, or **Open on the Desk** in its context menu |
 | See a tool's commands | click its tile in the Run district; click a command to open where it is defined |
@@ -155,6 +161,12 @@ cargo run --release -p studio_viewer --bin bench_scale -- /path/to/project --tar
 ```
 
 By default it uses the current directory, half of system RAM, and 60 FPS.
+
+`--palette` runs only the search benchmark. It loads the project the way the app does and times building the search index (entries per kind, memory). Then it types every prefix of 40 fixed queries, each one searched from scratch, three times over. It prints p50, p95, p99 and max query times and the five slowest queries. It exits with an error when p95 is over 8 ms; `--target-ms` changes that limit.
+
+```bash
+cargo run --release -p studio_viewer --bin bench_scale -- /path/to/project --palette
+```
 
 ## Development
 

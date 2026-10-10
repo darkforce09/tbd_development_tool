@@ -10,6 +10,7 @@ pub mod input;
 pub mod layout;
 pub mod render_nodes;
 pub mod render_wires;
+pub mod shortcuts;
 pub mod types;
 
 #[cfg(test)]

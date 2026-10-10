@@ -1,0 +1,65 @@
+# Palette ranking fixture: kind | name | detail | path | line
+# Empty path or line = none. Files and folders take name and detail from the path.
+file | | | crates/ui/hud.rs |
+file | | | crates/ui/hud_layout.rs |
+file | | | crates/game/HUD.rs |
+file | | | src/ui/hud/objective_hud.ts |
+file | | | src/ui/hud/ObjectiveHud.tsx |
+file | | | scripts/Game/UI/HUD/SCR_ObjectiveHUDComponent.c |
+file | | | scripts/Game/UI/HUD/SCR_ObjectiveHudManager.c |
+file | | | scripts/Game/Objectives/SCR_ObjectiveManager.c |
+file | | | scripts/Game/Objectives/SCR_ObjectiveBase.c |
+file | | | crates/studio_parser/src/parse.rs |
+file | | | crates/studio_parser/src/parser.rs |
+file | | | crates/studio_parser/src/extractor/parse.rs |
+file | | | crates/studio_parser/src/lib.rs |
+file | | | crates/studio_viewer/src/app/files.rs |
+file | | | crates/studio_viewer/src/app/folders.rs |
+file | | | docs/ROADMAP.md |
+file | | | README.md |
+file | | | docs/Größe.md |
+file | | | docs/été/notes.md |
+file | | | web/src/components/FileTree.tsx |
+file | | | web/src/components/file_tree.css |
+file | | | Cargo.toml |
+file | | | crates/ui/Cargo.toml |
+folder | | build cache | target |
+folder | | dependencies | web/node_modules |
+folder | | version control | .git |
+folder | | gitignored | Saves |
+symbol | parse_file | | crates/studio_parser/src/parse.rs | 12
+symbol | parse | | crates/studio_parser/src/parser.rs | 3
+symbol | Parser | | crates/studio_parser/src/parser.rs | 20
+symbol | ParseError | | crates/studio_parser/src/parser.rs | 40
+symbol | extract_source | | crates/studio_parser/src/extractor/parse.rs | 30
+symbol | SCR_ObjectiveHUDComponent | | scripts/Game/UI/HUD/SCR_ObjectiveHUDComponent.c | 5
+symbol | SCR_ObjectiveHUDComponent::OnInit | | scripts/Game/UI/HUD/SCR_ObjectiveHUDComponent.c | 12
+symbol | SCR_ObjectiveHudManager | | scripts/Game/UI/HUD/SCR_ObjectiveHudManager.c | 3
+symbol | ObjectiveHud | | src/ui/hud/ObjectiveHud.tsx | 8
+symbol | objective_hud | | src/ui/hud/objective_hud.ts | 4
+symbol | render_hud | | crates/ui/hud.rs | 10
+symbol | HudLayout | | crates/ui/hud_layout.rs | 5
+symbol | load_folder_contents | | crates/studio_parser/src/lib.rs | 78
+symbol | FileTree | | web/src/components/FileTree.tsx | 12
+symbol | GrößeBerechnen | | docs/Größe.md | 2
+command | Files | Go to the Files district | |
+command | Find in files | Search file contents | |
+command | Open folder… | Open another project | |
+command | Toggle file tree | View | |
+command | Keyboard shortcuts | Show every shortcut | |
+command | Pipeline | Go to the Pipeline district | |
+command | Reload project | Parse the project again | |
+tool | cargo test | cargo test --workspace | Cargo.toml | 1
+tool | npm run build | vite build | web/package.json | 6
+setting | edition | 2021 | Cargo.toml | 4
+setting | hud.scale | 1.25 | config/ui.toml | 2
+route | GET /api/files | handler listFiles | web/server/files.ts | 22
+route | POST /api/parse | handler parseProject | web/server/parse.ts | 9
+flow | Parse project | entry parse_project | crates/studio_parser/src/lib.rs | 90
+flow | Open file | entry open_file | crates/studio_viewer/src/app/files.rs | 14
+branch | main | | |
+branch | studio-v4 | | |
+branch | feature/objective-hud | | |
+worktree | studio-v4-s8 | v4-s8 | ../studio-v4-s8 |
+ticket | T-090 | Objective HUD rework · open | docs/tickets/T-090.md |
+session | brave-otter | 2026-10-10 09:12 | |

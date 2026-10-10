@@ -1,58 +1,96 @@
 //! The View menu: toggles for what the canvas shows. To add a toggle, add a field to
-//! `CanvasState` and one entry to `view_toggles`.
+//! `CanvasState` and one entry to `VIEW_TOGGLES`. Each runs as `AppCommand::ToggleView`, so the
+//! menu and the search palette switch the same flags.
 
 use eframe::egui;
 use studio_canvas::CanvasState;
 
-/// A View menu entry: label, hover text and the flag it switches.
-pub struct ViewToggle<'a> {
+/// A View menu entry: label, palette title, hover text and the flag it switches.
+pub struct ViewToggle {
     pub label: &'static str,
+    /// How the search palette names it: "Show wires".
+    pub title: &'static str,
     pub tooltip: &'static str,
-    pub value: &'a mut bool,
+    /// Whether it is on.
+    pub get: fn(&CanvasState) -> bool,
+    /// The flag it switches.
+    pub flag: fn(&mut CanvasState) -> &mut bool,
 }
 
-pub fn view_toggles(canvas: &mut CanvasState) -> [ViewToggle<'_>; 8] {
-    let kinds = &mut canvas.wire_kinds;
-    [
-        ViewToggle { label: "Wires", tooltip: "Show or hide every wire.", value: &mut canvas.show_wires },
-        ViewToggle {
-            label: "Member wires",
-            tooltip:
-                "Wires between the functions and types inside files. Off bundles them into one wire per pair of files.",
-            value: &mut canvas.show_subnode_wires_globally,
-        },
-        ViewToggle { label: "Calls", tooltip: "Green: a function calls another.", value: &mut kinds.calls },
-        ViewToggle {
-            label: "Type uses",
-            tooltip: "Orange: code uses a type defined elsewhere.",
-            value: &mut kinds.type_uses,
-        },
-        ViewToggle {
-            label: "Implements",
-            tooltip: "Violet: a type implements or inherits.",
-            value: &mut kinds.implements,
-        },
-        ViewToggle {
-            label: "Imports",
-            tooltip: "Slate: a file imports or includes another.",
-            value: &mut kinds.imports,
-        },
-        ViewToggle {
-            label: "Documentation",
-            tooltip: "Sky blue: documentation links to code.",
-            value: &mut kinds.documentation,
-        },
-        ViewToggle { label: "Assets", tooltip: "Pink: code references an asset.", value: &mut kinds.assets },
-    ]
-}
+/// Every View toggle, in menu order.
+pub const VIEW_TOGGLES: [ViewToggle; 8] = [
+    ViewToggle {
+        label: "Wires",
+        title: "Show wires",
+        tooltip: "Show or hide every wire.",
+        get: |c| c.show_wires,
+        flag: |c| &mut c.show_wires,
+    },
+    ViewToggle {
+        label: "Member wires",
+        title: "Show member wires",
+        tooltip:
+            "Wires between the functions and types inside files. Off bundles them into one wire per pair of files.",
+        get: |c| c.show_subnode_wires_globally,
+        flag: |c| &mut c.show_subnode_wires_globally,
+    },
+    ViewToggle {
+        label: "Calls",
+        title: "Show call wires",
+        tooltip: "Green: a function calls another.",
+        get: |c| c.wire_kinds.calls,
+        flag: |c| &mut c.wire_kinds.calls,
+    },
+    ViewToggle {
+        label: "Type uses",
+        title: "Show type-use wires",
+        tooltip: "Orange: code uses a type defined elsewhere.",
+        get: |c| c.wire_kinds.type_uses,
+        flag: |c| &mut c.wire_kinds.type_uses,
+    },
+    ViewToggle {
+        label: "Implements",
+        title: "Show implements wires",
+        tooltip: "Violet: a type implements or inherits.",
+        get: |c| c.wire_kinds.implements,
+        flag: |c| &mut c.wire_kinds.implements,
+    },
+    ViewToggle {
+        label: "Imports",
+        title: "Show import wires",
+        tooltip: "Slate: a file imports or includes another.",
+        get: |c| c.wire_kinds.imports,
+        flag: |c| &mut c.wire_kinds.imports,
+    },
+    ViewToggle {
+        label: "Documentation",
+        title: "Show documentation wires",
+        tooltip: "Sky blue: documentation links to code.",
+        get: |c| c.wire_kinds.documentation,
+        flag: |c| &mut c.wire_kinds.documentation,
+    },
+    ViewToggle {
+        label: "Assets",
+        title: "Show asset wires",
+        tooltip: "Pink: code references an asset.",
+        get: |c| c.wire_kinds.assets,
+        flag: |c| &mut c.wire_kinds.assets,
+    },
+];
 
-/// The View dropdown. Ticking an entry keeps the menu open.
-pub fn view_menu(ui: &mut egui::Ui, canvas: &mut CanvasState) {
+/// The View dropdown. Ticking an entry keeps the menu open. Returns the toggle ticked, for the
+/// caller to run as `AppCommand::ToggleView`.
+pub fn view_menu(ui: &mut egui::Ui, canvas: &CanvasState) -> Option<usize> {
+    let mut ticked = None;
     ui.menu_button("View", |ui| {
-        for toggle in view_toggles(canvas) {
-            ui.checkbox(toggle.value, toggle.label).on_hover_text(toggle.tooltip);
+        for (i, toggle) in VIEW_TOGGLES.iter().enumerate() {
+            let mut on = (toggle.get)(canvas);
+            if ui.checkbox(&mut on, toggle.label).on_hover_text(toggle.tooltip).changed() {
+                ticked = Some(i);
+            }
         }
     });
+    ticked
 }
 
 #[cfg(test)]
@@ -65,8 +103,9 @@ mod tests {
         assert!(canvas.show_wires && canvas.show_subnode_wires_globally);
         let docs = 1 << studio_graph::EdgeKind::Documentation as u32;
         assert_eq!(canvas.wire_kinds.mask(), 0b11_1111 & !docs, "every kind but documentation shows by default");
-        for toggle in view_toggles(&mut canvas) {
-            *toggle.value = false;
+        for toggle in &VIEW_TOGGLES {
+            *(toggle.flag)(&mut canvas) = false;
+            assert!(!(toggle.get)(&canvas), "{} reads its own flag", toggle.label);
         }
         assert!(!canvas.show_wires);
         assert!(!canvas.show_subnode_wires_globally);

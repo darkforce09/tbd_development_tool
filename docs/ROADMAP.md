@@ -89,15 +89,15 @@ Goal: remove everything that is mock, duplicated or in the way, so later work bu
 - [x] Project stats move into the F3 debug panel, alongside frame timing, process, GPU and canvas telemetry. The old "Architecture Graph Valid" title is dropped because nothing was validated.
 - [x] Remove the view dropdown (Files & Folders / All Items / Public API / Modules) from the UI.
 - [x] Remove the Items, Public API and Modules graph builders from `studio_parser`, and granularity from the cache key.
-- [x] Remove the Ingress / Compute / State / Egress filter categories and the Spotlight buttons that created such nodes. They came from the abandoned lanes idea and are not derived from code.
+- [x] Remove the Ingress / Compute / State / Egress filter categories and the buttons in the old Search window that created such nodes. They came from the abandoned lanes idea and are not derived from code.
 - [ ] Remove those archetypes from the graph model, the mock pipeline graph and `bench_scale` (needs a cache version bump; fold into Phase 1).
 - [x] Remove the Repo, Showcase and Force Reparse buttons. With no project open, the canvas shows an Open folder prompt.
 - [x] Wire toggles move into a View menu (Wires, Member wires) built so new toggles are one line each.
-- [x] Remove the Spotlight "create node" buttons; it is now Search. They added nodes that no code backs.
+- [x] Remove the "create node" buttons from the old Search window. They added nodes that no code backs. The window was later replaced by the ⌘K palette (S8).
 - [x] Integrated title bar: no OS decorations; search, open and the View menu on the left, the project name in the centre, window buttons on the right. The window edges resize it.
 - [x] Filters button removed; the sidebar opens from an arrow tab under the title bar (Eden editor style).
 - [x] Messages and errors: the debug panel shows the last message and any load error, and a failed load puts a warning on the title.
-- [ ] Keyboard shortcut help, which went away with the bottom bar.
+- [x] Keyboard shortcut help, which went away with the bottom bar. The **Keyboard shortcuts** command opens a sheet built from the one shortcut table every key is read through, so the sheet cannot drift from the keys (S8).
 - [x] Visual language standard: direction (providers left), ports, layout laws, gates, folder detail levels, colours. See [VISUAL_LANGUAGE.md](VISUAL_LANGUAGE.md).
 - [x] Wire kinds on every edge, Markdown links as documentation wires into a documentation port, provider-to-consumer direction, and keep every wire into an input (no fan-in loss).
 - [x] Left-to-right layout engine: lifting wires through folder gates, cycle boxes, layering, crossing reduction, coordinates.
