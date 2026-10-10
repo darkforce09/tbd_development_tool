@@ -1,0 +1,268 @@
+# Exact route table of the axum fixture, in table order (canonical template, method, `.route(` line).
+# `handler` is the R1 target as "file:line" (the function's name line) or the unresolved reason.
+# `conditional` is omitted for unconditional routes. The main roots are the two serve sites of web's bins: main.rs
+# hands a binding to `axum::serve`, relay.rs makes the service in the `let` itself.
+# Left out by rule: web/tests/stub.rs (an integration test), `#[cfg(test)] mod t` in web/src/lib.rs and the
+# `#[cfg(test)]` statements in web/src/more.rs. The unreferenced router functions of web/src/more.rs and
+# web/src/extra.rs are roots of their own; extra.rs is a `#[cfg(feature = "extra")]` module, so its routes carry that
+# condition. The router functions more.rs nests from code that is not an evaluated root are skipped, never roots.
+services = 2 # web/src/router.rs:19 nest_service, web/src/bin/relay.rs:9 fallback
+
+[[entry]]
+method = "ANY"
+template = "/api/v1/any"
+handler = "things/src/handlers/things.rs:3"
+handler_text = "handlers::things::list"
+at = "things/src/routes.rs:22"
+root = "web/src/main.rs:6"
+
+[[entry]]
+method = "POST"
+template = "/api/v1/dev/reset"
+handler = "web/src/handlers/debug.rs:7"
+handler_text = "handlers::debug::reset"
+conditional = "dev"
+at = "web/src/router.rs:26"
+root = "web/src/main.rs:6"
+
+[[entry]]
+method = "GET"
+template = "/api/v1/ping"
+handler = "unresolved Other: closure"
+handler_text = '|| async { "pong" }'
+at = "things/src/routes.rs:16"
+root = "web/src/main.rs:6"
+
+[[entry]]
+method = "GET"
+template = "/api/v1/status"
+handler = "web/src/handlers/mod.rs:3"
+handler_text = "handlers::health"
+conditional = "!(dev)"
+at = "web/src/router.rs:28"
+root = "web/src/main.rs:6"
+
+[[entry]]
+method = "GET"
+template = "/api/v1/things"
+handler = "things/src/handlers/things.rs:3"
+handler_text = "handlers::things::list"
+at = "things/src/routes.rs:11"
+root = "web/src/main.rs:6"
+
+[[entry]]
+method = "POST"
+template = "/api/v1/things"
+handler = "things/src/handlers/things.rs:5"
+handler_text = "handlers::things::create"
+at = "things/src/routes.rs:11"
+root = "web/src/main.rs:6"
+
+[[entry]]
+method = "PUT"
+template = "/api/v1/things/{id}"
+handler = "things/src/handlers/things.rs:9"
+handler_text = "handlers::things::replace"
+at = "things/src/routes.rs:18"
+root = "web/src/main.rs:6"
+
+[[entry]]
+method = "POST"
+template = "/api/v1/things/{thingId}/done"
+handler = "things/src/handlers/things.rs:1"
+handler_text = "handlers::things::done"
+at = "things/src/routes.rs:10"
+root = "web/src/main.rs:6"
+
+[[entry]]
+method = "DELETE"
+template = "/api/v1/x"
+handler = "things/src/handlers/things.rs:7"
+handler_text = "handlers::things::remove"
+at = "things/src/routes.rs:15"
+root = "web/src/main.rs:6"
+
+[[entry]]
+method = "GET"
+template = "/cfg/always"
+handler = "web/src/handlers/mod.rs:3"
+handler_text = "handlers::health"
+at = "web/src/more.rs:11"
+root = "web/src/more.rs:10"
+
+[[entry]]
+method = "GET"
+template = "/cfg/debug"
+handler = "web/src/handlers/debug.rs:5"
+handler_text = "handlers::debug::trace"
+conditional = "cfg(debug_assertions)"
+at = "web/src/more.rs:25"
+root = "web/src/more.rs:10"
+
+[[entry]]
+method = "GET"
+template = "/cfg/metrics"
+handler = "web/src/handlers/mod.rs:3"
+handler_text = "handlers::health"
+conditional = 'cfg(feature = "metrics")'
+at = "web/src/more.rs:18"
+root = "web/src/more.rs:10"
+
+[[entry]]
+method = "GET"
+template = "/cfg/not-test"
+handler = "web/src/handlers/mod.rs:3"
+handler_text = "handlers::health"
+at = "web/src/more.rs:22"
+root = "web/src/more.rs:10"
+
+[[entry]]
+method = "GET"
+template = "/debug"
+handler = "web/src/handlers/debug.rs:1"
+handler_text = "handlers::debug::dump"
+conditional = "dev"
+at = "web/src/router.rs:14"
+root = "web/src/main.rs:6"
+
+[[entry]]
+method = "GET"
+template = "/debug/trace"
+handler = "web/src/handlers/debug.rs:5"
+handler_text = "handlers::debug::trace"
+conditional = "dev && cfg!(debug_assertions)"
+at = "web/src/router.rs:16"
+root = "web/src/main.rs:6"
+
+[[entry]]
+method = "GET"
+template = "/early/base"
+handler = "web/src/handlers/mod.rs:3"
+handler_text = "handlers::health"
+at = "web/src/more.rs:33"
+root = "web/src/more.rs:32"
+
+[[entry]]
+method = "GET"
+template = "/early/full"
+handler = "web/src/handlers/mod.rs:3"
+handler_text = "handlers::health"
+conditional = "!(minimal)"
+at = "web/src/more.rs:37"
+root = "web/src/more.rs:32"
+
+[[entry]]
+method = "GET"
+template = "/early/min"
+handler = "web/src/handlers/mod.rs:3"
+handler_text = "handlers::health"
+conditional = "minimal"
+at = "web/src/more.rs:35"
+root = "web/src/more.rs:32"
+
+[[entry]]
+method = "GET"
+template = "/extra"
+handler = "web/src/handlers/mod.rs:3"
+handler_text = "crate::handlers::health"
+conditional = 'cfg(feature = "extra")'
+at = "web/src/extra.rs:7"
+root = "web/src/extra.rs:6"
+
+[[entry]]
+method = "GET"
+template = "/extra/linux"
+handler = "web/src/handlers/mod.rs:3"
+handler_text = "crate::handlers::health"
+conditional = 'cfg(feature = "extra") && cfg(target_os = "linux")'
+at = "web/src/extra.rs:15"
+root = "web/src/extra.rs:14"
+
+[[entry]]
+method = "GET"
+template = "/extra/unix"
+handler = "web/src/handlers/mod.rs:3"
+handler_text = "crate::handlers::health"
+conditional = 'cfg(feature = "extra") && cfg(unix)'
+at = "web/src/extra.rs:9"
+root = "web/src/extra.rs:6"
+
+[[entry]]
+method = "GET"
+template = "/healthz"
+handler = "web/src/handlers/mod.rs:3"
+handler_text = "handlers::health"
+at = "web/src/router.rs:11"
+root = "web/src/main.rs:6"
+
+[[entry]]
+method = "GET"
+template = "/relay"
+handler = "web/src/bin/relay.rs:3"
+handler_text = "relay"
+at = "web/src/bin/relay.rs:8"
+root = "web/src/bin/relay.rs:7"
+
+[[entry]]
+method = "GET"
+template = "/twins/admin"
+handler = "web/src/handlers/mod.rs:3"
+handler_text = "handlers::health"
+conditional = "admin"
+at = "web/src/more.rs:96"
+root = "web/src/more.rs:90"
+
+[[entry]]
+method = "GET"
+template = "/twins/other"
+handler = "web/src/handlers/mod.rs:3"
+handler_text = "handlers::health"
+conditional = "cfg(not(unix))"
+at = "web/src/more.rs:94"
+root = "web/src/more.rs:90"
+
+[[entry]]
+method = "GET"
+template = "/twins/unix"
+handler = "web/src/handlers/mod.rs:3"
+handler_text = "handlers::health"
+conditional = "!(cfg(not(unix))) && cfg(unix)"
+at = "web/src/more.rs:92"
+root = "web/src/more.rs:90"
+
+# Sorted by (file, line, reason).
+[[skipped]]
+at = "things/src/local.rs:16"
+reason = "method router `get` does not resolve to axum::routing (resolves to `get`, local.rs:4)"
+
+[[skipped]]
+at = "things/src/routes.rs:17"
+reason = "`.route` path `OTHER` is not a string literal"
+
+[[skipped]]
+at = "web/src/more.rs:45"
+reason = "early `return` inside a match the evaluator does not follow"
+
+[[skipped]]
+at = "web/src/more.rs:53"
+reason = "`GET /inner` left out: router fn `tangled_inner` is referenced at more.rs:44 but not folded into an evaluated root"
+
+[[skipped]]
+at = "web/src/more.rs:59"
+reason = "returns `identity(r)`, not a router expression the evaluator follows"
+
+[[skipped]]
+at = "web/src/more.rs:67"
+reason = "`GET /inner` left out: router fn `wrapped_inner` is referenced at more.rs:58 but not folded into an evaluated root"
+
+[[skipped]]
+at = "web/src/more.rs:76"
+reason = "`GET /inner` left out: router fn `fallible_inner` is referenced at more.rs:72 but not folded into an evaluated root"
+
+[[skipped]]
+at = "web/src/more.rs:86"
+reason = "`GET /inner` left out: router fn `unserved_inner` is referenced at more.rs:81 but not folded into an evaluated root"
+
+[[skipped]]
+at = "web/src/router.rs:30"
+reason = "router used in a loop"

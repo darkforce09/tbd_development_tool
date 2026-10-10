@@ -1,3 +1,3 @@
-pub mod pipeline;
+pub mod sample;
 
-pub use pipeline::create_showcase_graph;
+pub use sample::create_sample_graph;

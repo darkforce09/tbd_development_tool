@@ -1,0 +1,10 @@
+[workspace]
+members = ["crates/*", "tools/runner"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+
+[workspace.dependencies]
+base = { path = "crates/base" }
+serde = "1.0"

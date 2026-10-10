@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": ["object", "null"],
+  "properties": {
+    "name": { "type": "string" },
+    "members": { "type": "array", "items": { "$ref": "user.schema.json" } },
+    "site": { "type": "string", "format": "uri" }
+  },
+  "required": ["name"],
+  "definitions": {
+    "role": { "enum": ["lead", "member"] },
+    "level": { "type": "integer" }
+  }
+}

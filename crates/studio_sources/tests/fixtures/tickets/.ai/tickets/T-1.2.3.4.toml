@@ -1,0 +1,5 @@
+id = "T-1.2.3.4"
+kind = "work"
+title = "A deeply nested slice"
+status = "queued"
+parent = "T-1"

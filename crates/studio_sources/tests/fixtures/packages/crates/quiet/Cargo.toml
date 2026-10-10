@@ -1,0 +1,9 @@
+[package]
+name = "quiet"
+version = "1.0.0"
+edition = "2021"
+autobins = false
+
+[[bin]]
+name = "explicit"
+path = "src/explicit.rs"

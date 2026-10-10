@@ -1,0 +1,22 @@
+# =====================
+# 1. Secrets
+# =====================
+.env
+!.env.example
+
+# =====================
+# 2. Build output
+# =====================
+# what cargo builds
+/target/
+/target-*/
+
+# Old CI folders
+/ci-cache/
+
+# =====================
+# 3. Editors
+# =====================
+.idea/
+.vscode/
+*.swp

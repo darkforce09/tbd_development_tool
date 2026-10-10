@@ -1,0 +1,7 @@
+# No `edition`: edition 2015. The library is named apart from the package.
+[package]
+name = "legacy-lib"
+version = "0.1.0"
+
+[lib]
+name = "legacy_core"

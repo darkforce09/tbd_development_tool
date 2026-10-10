@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+rayon.workspace = true
 egui.workspace = true
 egui-phosphor.workspace = true
 syntect.workspace = true

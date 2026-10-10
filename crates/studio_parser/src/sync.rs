@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use studio_graph::{EdgeId, EdgeKind, Graph, NodeArchetype, NodeId, PortId};
+use studio_graph::{EdgeId, EdgeKind, EvidenceTier, Graph, NodeArchetype, NodeId, PortId, Provenance};
 
 use crate::builder::common::{node_rel_path, resolve_link};
 use crate::builder::members::{attach_member_ports, build_member_nodes, link_member_id, member_calls, MemberPortIndex};
@@ -111,9 +111,16 @@ fn refresh_file_node(graph: &mut Graph, node_id: NodeId, extracted: &ExtractedFi
     rewire_member_edges(graph, node_id, extracted, &ports_by_member);
 }
 
-/// Re-wires the card's member edges from the new extraction the same way the Files builder does,
-/// so a save matches a fresh load: calls its members make (provider → member input) and the
+/// Re-wires the card's member edges from the new extraction the same way the Files builder does
+/// for files R1 does not read: calls its members make (provider → member input) and the
 /// documentation links its rows hold (link row → target's documentation port).
+///
+/// Call wires are matched by name here, so every call wire into the saved card comes back
+/// Unresolved, even one a full load had Proven through R1: a save never mints a Proven wire by
+/// name. The card's own file-level wires (its imports and calls as a whole) that were Proven are
+/// never kept Proven either: each becomes Unresolved while a name the new text uses still names
+/// its provider, and is dropped when none does. Wires leaving the saved card's members are left as
+/// they are; a fresh load (or a later R1 pass on save) restores the exact tiers.
 fn rewire_member_edges(
     graph: &mut Graph,
     node_id: NodeId,
@@ -149,6 +156,8 @@ fn rewire_member_edges(
         }
     }
 
+    demote_file_wires(graph, node_id, extracted);
+
     let Some(from) = graph.nodes.get(&node_id).and_then(node_rel_path) else { return };
     let path_to_node: HashMap<String, NodeId> = graph
         .nodes
@@ -165,7 +174,48 @@ fn rewire_member_edges(
             continue;
         }
         if let Some(doc_in) = graph.nodes.get(&target).and_then(|n| n.doc_port()) {
-            graph.connect_kind(node_id, link_out, target, doc_in, EdgeKind::Documentation);
+            if let Some(id) = graph.connect_kind(node_id, link_out, target, doc_in, EdgeKind::Documentation) {
+                graph.set_provenance(id, studio_graph::Provenance::proven(studio_graph::Basis::DocLink));
+            }
+        }
+    }
+}
+
+/// The saved card's Proven file-level wires (provider → the card's code input): Unresolved while a
+/// name the new text uses (a `use` path or item, a call) still names the provider — its file stem
+/// or one of its members — and dropped otherwise. A save never keeps a stale Proven wire.
+fn demote_file_wires(graph: &mut Graph, node_id: NodeId, extracted: &ExtractedFile) {
+    let Some(card_in) = graph.nodes.get(&node_id).and_then(|n| n.inputs.first()).map(|p| p.id) else { return };
+    let wires: Vec<(EdgeId, NodeId)> = graph
+        .edges
+        .iter()
+        .filter(|e| e.to_node == node_id && e.to_port == card_in && e.provenance.tier == EvidenceTier::Proven)
+        .map(|e| (e.id, e.from_node))
+        .collect();
+    if wires.is_empty() {
+        return;
+    }
+    let mut segments: HashSet<&str> = HashSet::new();
+    let names = extracted
+        .uses
+        .iter()
+        .flat_map(|u| std::iter::once(u.path.as_str()).chain(u.items.iter().map(String::as_str)))
+        .chain(member_calls(extracted).into_iter().flat_map(|(_, calls)| calls.iter().map(String::as_str)));
+    for name in names {
+        segments.extend(name.split([':', '.', '/', '\\', '>', '-']).map(str::trim).filter(|s| !s.is_empty()));
+    }
+    for (edge_id, provider) in wires {
+        let named = graph.nodes.get(&provider).is_some_and(|p| {
+            let stem = Path::new(&p.title).file_stem().and_then(|s| s.to_str()).unwrap_or(&p.title);
+            segments.contains(stem)
+                || p.member_nodes
+                    .iter()
+                    .any(|m| m.archetype != NodeArchetype::Link && segments.contains(m.name.as_str()))
+        });
+        if named {
+            graph.set_provenance(edge_id, Provenance::default());
+        } else {
+            graph.disconnect_edge(edge_id);
         }
     }
 }

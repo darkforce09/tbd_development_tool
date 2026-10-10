@@ -5,6 +5,7 @@ members = [
     "crates/studio_graph",
     "crates/studio_canvas",
     "crates/studio_parser",
+    "crates/studio_sources",
     "crates/studio_viewer",
 ]
 
@@ -19,6 +20,7 @@ studio_ui = { path = "crates/studio_ui" }
 studio_graph = { path = "crates/studio_graph" }
 studio_canvas = { path = "crates/studio_canvas" }
 studio_parser = { path = "crates/studio_parser" }
+studio_sources = { path = "crates/studio_sources" }
 
 # Common dependencies
 eframe = { version = "0.36.2", default-features = false, features = ["default_fonts", "wgpu", "glow", "wayland", "x11", "persistence"] }
@@ -26,6 +28,8 @@ egui = "0.36.2"
 egui-wgpu = { version = "0.36.2", default-features = false }
 wgpu = { version = "30.0.1", default-features = false, features = ["wgsl"] }
 serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+yaml-rust2 = "0.10"
 syn = { version = "2.0", features = ["full", "visit", "extra-traits"] }
 quote = "1.0"
 walkdir = "2.5"
@@ -36,6 +40,7 @@ bytemuck = { version = "1.19", features = ["derive"] }
 rkyv = { version = "0.8.18", features = ["std", "bytecheck"] }
 memmap2 = "0.9"
 dirs = "6.0"
+memchr = "2"
 egui-phosphor = { version = "0.14.0", default-features = false, features = ["regular"] }
 syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
 pulldown-cmark = { version = "0.13", default-features = false }

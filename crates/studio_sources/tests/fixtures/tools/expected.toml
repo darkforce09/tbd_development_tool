@@ -1,0 +1,67 @@
+# What tools.rs finds in this folder (tests/tools_fixture.rs reads the packages from the manifests and passes
+# every file, sorted). Checked by hand against the files here.
+#
+# Order: cargo aliases (key order), then each package by name (binaries, then examples), then the files in path
+# order (.github/workflows/ci.yml, Makefile, justfile, web/package.json).
+#
+# - xtask: one binary, run by the `xtask` alias, whose parser lives in src/cli.rs. Its subcommands nest through
+#   a field (`deploy`, `cache`), through an `Args` struct (`db`, `cache clear`), and `deploy`'s enum is
+#   `ops::DeployCmd`, defined in ops/src/deploy.rs and re-exported from ops/src/lib.rs. `#[command(skip)]`
+#   hides `Internal`; `#[command(name = "fmt-all")]` renames `FormatAll`.
+# - cli: two binaries (one with its own parser in src/bin/stats.rs) and an example; no alias runs them.
+# - Makefile: no `.PHONY`, variable or pattern rule; `clean dist:` defines two targets.
+# - justfile: no setting, alias or variable; `@release` is `release`; `[private]` is no comment.
+# - web/package.json: scripts in file order, run with pnpm (web/pnpm-lock.yaml).
+#
+# Lines: "kind name (file:line) $ invocation # description", children indented two spaces per level.
+
+tools = [
+    "cargo alias ci (.cargo/config.toml:3) $ cargo ci # cargo xtask ci",
+    "cargo alias xtask (.cargo/config.toml:2) $ cargo xtask # cargo run --package xtask --",
+    "binary cli (cli/src/main.rs:1) $ cargo run -p cli --bin cli -- # -",
+    "binary stats (cli/src/bin/stats.rs:5) $ cargo run -p cli --bin stats -- # Print project stats",
+    "example tour (cli/examples/tour.rs:1) $ cargo run -p cli --example tour # -",
+    "binary xtask (xtask/src/cli.rs:6) $ cargo xtask # Workspace tasks",
+    "  subcommand build (xtask/src/cli.rs:14) $ cargo xtask build # Build everything",
+    "  subcommand deploy (xtask/src/cli.rs:16) $ cargo xtask deploy # Deploy a part",
+    "    subcommand website (ops/src/deploy.rs:7) $ cargo xtask deploy website # Ship the website",
+    "    subcommand game-server (ops/src/deploy.rs:9) $ cargo xtask deploy game-server # Ship the game server",
+    "  subcommand db (xtask/src/cli.rs:21) $ cargo xtask db # Database chores",
+    "    subcommand migrate (xtask/src/cli.rs:42) $ cargo xtask db migrate # Apply migrations",
+    "    subcommand reset (xtask/src/cli.rs:44) $ cargo xtask db reset # Drop and recreate",
+    "  subcommand cache (xtask/src/cli.rs:23) $ cargo xtask cache # Cache chores",
+    "    subcommand show (xtask/src/cli.rs:50) $ cargo xtask cache show # Show cache sizes",
+    "    subcommand clear (xtask/src/cli.rs:52) $ cargo xtask cache clear # Clear one cache",
+    "      subcommand index (xtask/src/cli.rs:62) $ cargo xtask cache clear index # -",
+    "      subcommand layout (xtask/src/cli.rs:62) $ cargo xtask cache clear layout # -",
+    "  subcommand fmt-all (xtask/src/cli.rs:28) $ cargo xtask fmt-all # -",
+    "CI workflow CI (.github/workflows/ci.yml:1) $  # on push, pull_request",
+    "  CI job check (.github/workflows/ci.yml:7) $  # runs on ubuntu-latest",
+    "  CI job Build docs (.github/workflows/ci.yml:11) $  # runs on macos-latest",
+    "make target build (Makefile:6) $ make build # Build everything",
+    "make target test (Makefile:9) $ make test # Run the tests",
+    "make target deps (Makefile:12) $ make deps # -",
+    "make target clean (Makefile:18) $ make clean # Remove outputs",
+    "make target dist (Makefile:18) $ make dist # Remove outputs",
+    "just recipe serve (justfile:4) $ just serve # Serve the site",
+    "just recipe release (justfile:12) $ just release # Release a build",
+    "just recipe helper (justfile:16) $ just helper # -",
+    "script dev (web/package.json:5) $ cd web && pnpm run dev # vite",
+    "script build (web/package.json:6) $ cd web && pnpm run build # vite build",
+    "script lint (web/package.json:7) $ cd web && pnpm run lint # eslint .",
+    "script test:e2e (web/package.json:8) $ cd web && pnpm run test:e2e # playwright test",
+]
+
+# Every tool, nested ones included.
+total = 34
+
+[counts]
+binary = 3
+example = 1
+"cargo alias" = 2
+subcommand = 13
+script = 4
+"make target" = 5
+"just recipe" = 3
+"CI workflow" = 1
+"CI job" = 2

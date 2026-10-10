@@ -5,8 +5,7 @@ use studio_ui::{
     with_alpha, CardFrameProps, CodeCardProps, FileCardMember, FileCardProps, PortDisplayInfo, SocketVisualState,
 };
 
-use crate::interaction::InteractionMode;
-
+use super::gate::InputGate;
 use super::layout::port_world_position;
 use super::types::{archetype_color, data_type_color, CanvasState, RenderEvents};
 
@@ -48,19 +47,9 @@ fn build_members_ui<'a>(member_nodes: &'a [studio_graph::FileMemberNode]) -> Vec
         .collect()
 }
 
-/// Whether a card is dimmed because it does not match the search (`query`, lowercase) or the
-/// category filter.
-pub fn is_dimmed(
-    node: &studio_graph::Node,
-    query: &str,
-    categories: &std::collections::BTreeSet<NodeArchetype>,
-) -> bool {
-    let matches_search = query.is_empty()
-        || node.title.to_lowercase().contains(query)
-        || node.description.to_lowercase().contains(query)
-        || node.crate_name.as_deref().is_some_and(|c| c.to_lowercase().contains(query));
-    let matches_category = categories.is_empty() || categories.contains(&node.archetype);
-    !matches_search || !matches_category
+/// Whether a card is dimmed: something is selected and the card is not on its trace.
+pub fn is_dimmed(node: &studio_graph::Node, trace: Option<&std::collections::BTreeSet<NodeId>>) -> bool {
+    trace.is_some_and(|t| !t.contains(&node.id))
 }
 
 /// The first wire on a port, through the port index.
@@ -74,14 +63,11 @@ pub fn render_nodes_and_sockets(
     state: &CanvasState,
     graph: &Graph,
     visible_node_ids: &[NodeId],
-    pointer_pos: Pos2,
-    pointer_clicked: bool,
+    gate: &InputGate,
     interactive_rects: &mut Vec<Rect>,
     events: &mut RenderEvents,
-) -> Option<(NodeId, Rect)> {
+) {
     let zoom = state.transform.zoom;
-    let search_query = state.search_filter.trim().to_lowercase();
-    let mut single_selected_rect = None;
 
     // Layer D: Node Cards
     for &node_id in visible_node_ids {
@@ -100,13 +86,10 @@ pub fn render_nodes_and_sockets(
         let card_rect = Rect::from_min_max(min_screen, max_screen);
 
         let is_selected = state.selected_nodes.contains(&node_id);
-        if is_selected && state.selected_nodes.len() == 1 {
-            single_selected_rect = Some((node_id, card_rect));
-        }
 
         let is_hovered = state.hover.hovered_node == Some(node_id);
 
-        let is_dimmed = is_dimmed(node, &search_query, &state.category_filter);
+        let is_dimmed = is_dimmed(node, state.trace_nodes.as_ref());
         let arch_color = archetype_color(node.archetype);
 
         if zoom < 0.03 {
@@ -228,7 +211,7 @@ pub fn render_nodes_and_sockets(
                         collapsed_subnodes: Some(&collapsed_set),
                         inputs: &input_infos,
                         outputs: &output_infos,
-                        hovered_pos: Some(pointer_pos),
+                        hovered_pos: gate.pointer,
                         scroll_y: node.scroll_offset_y,
                     },
                 );
@@ -244,13 +227,11 @@ pub fn render_nodes_and_sockets(
                 interactive_rects.extend(code_layout.member_code_clicks.iter().map(|(r, _)| *r));
                 interactive_rects.extend(code_layout.member_row_clicks.iter().map(|(r, _)| *r));
 
-                if pointer_clicked {
+                if let Some(pointer_pos) = gate.click() {
                     if code_layout.close_button_rect.contains(pointer_pos) {
                         events.code_close_clicked = Some(node_id);
-                    } else if let Some(toggle_r) = code_layout.preview_toggle_rect {
-                        if toggle_r.contains(pointer_pos) {
-                            events.markdown_preview_toggle_clicked = Some(node_id);
-                        }
+                    } else if code_layout.preview_toggle_rect.is_some_and(|r| r.contains(pointer_pos)) {
+                        events.markdown_preview_toggle_clicked = Some(node_id);
                     } else {
                         let mut handled = false;
                         for (tab_rect, tab_idx) in code_layout.tab_rects {
@@ -335,7 +316,7 @@ pub fn render_nodes_and_sockets(
                         has_docs: node.doc_comment.is_some(),
                         step_number,
                         zoom,
-                        hovered_pos: Some(pointer_pos),
+                        hovered_pos: gate.pointer,
                     },
                 );
 
@@ -344,7 +325,7 @@ pub fn render_nodes_and_sockets(
                 interactive_rects.extend(file_layout.member_code_clicks.iter().map(|(r, _)| *r));
                 interactive_rects.extend(file_layout.member_row_clicks.iter().map(|(r, _)| *r));
 
-                if pointer_clicked {
+                if let Some(pointer_pos) = gate.click() {
                     if file_layout.dropdown_button_rect.contains(pointer_pos) {
                         events.file_dropdown_toggle_clicked = Some(node_id);
                     } else if file_layout.code_expand_button_rect.contains(pointer_pos) {
@@ -443,6 +424,12 @@ pub fn render_nodes_and_sockets(
         }
     }
 
+    // Layer D-2: the chosen agent session's files, ringed (outside the card, apart from the
+    // selection's border).
+    if !state.session_lit_nodes.is_empty() {
+        paint_session_rings(painter, state, graph, visible_node_ids);
+    }
+
     // Layer E: Pin Sockets
     if zoom >= 0.35 {
         for &node_id in visible_node_ids {
@@ -469,22 +456,13 @@ pub fn render_nodes_and_sockets(
                     if let Some(wpos) = port_world_position(node, port.id) {
                         let spos = state.transform.world_to_screen(wpos);
                         let is_hovered = state.hover.hovered_port == Some((node_id, port.id));
-                        let is_snapped =
-                            if let InteractionMode::Connecting { snapped_target: Some((sn_id, sp_id)), .. } =
-                                state.interaction
-                            {
-                                sn_id == node_id && sp_id == port.id
-                            } else {
-                                false
-                            };
-
                         let port_color = data_type_color(&port.data_type);
 
                         paint_pin_socket(
                             painter,
                             spos,
                             port_color,
-                            SocketVisualState { is_hovered, is_connected, is_snapped },
+                            SocketVisualState { is_hovered, is_connected },
                             zoom,
                         );
                     }
@@ -492,6 +470,29 @@ pub fn render_nodes_and_sockets(
             }
         }
     }
+}
 
-    single_selected_rect
+/// A purple ring and a soft glow around each visible card the chosen agent session touched.
+fn paint_session_rings(painter: &Painter, state: &CanvasState, graph: &Graph, visible_node_ids: &[NodeId]) {
+    let zoom = state.transform.zoom;
+    let gap = (4.0 * zoom).clamp(1.0, 4.0);
+    for &node_id in visible_node_ids {
+        if !state.session_lit_nodes.contains(&node_id) || graph.is_node_in_collapsed_cluster(node_id) {
+            continue;
+        }
+        let Some(node) = graph.nodes.get(&node_id) else { continue };
+        let min = state.transform.world_to_screen(Pos2::new(node.position[0], node.position[1]));
+        let max = state
+            .transform
+            .world_to_screen(Pos2::new(node.position[0] + node.size[0], node.position[1] + node.size[1]));
+        let ring = Rect::from_min_max(min, max).expand(gap);
+        let radius = CornerRadius::from((6.0 * zoom).clamp(1.0, 8.0));
+        painter.rect_stroke(
+            ring.expand(gap),
+            radius,
+            Stroke::new(gap * 1.5, with_alpha(DISTRICT_CHANGES, 50)),
+            egui::StrokeKind::Middle,
+        );
+        painter.rect_stroke(ring, radius, Stroke::new(1.5, DISTRICT_CHANGES), egui::StrokeKind::Middle);
+    }
 }

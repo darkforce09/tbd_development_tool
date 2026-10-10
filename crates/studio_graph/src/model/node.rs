@@ -40,6 +40,9 @@ pub struct Node {
     pub content: FileContent,
     #[serde(default)]
     pub size_bytes: Option<u64>,
+    /// Tests the file defines, as its test runner counts them.
+    #[serde(default)]
+    pub test_count: u32,
 }
 
 impl Node {

@@ -113,18 +113,26 @@ pub const SOCKET_RING_IDLE: Color32 = Color32::from_rgb(0x2d, 0x2d, 0x38);
 pub const SOCKET_RING_HOVER: Color32 = Color32::from_rgb(0xff, 0xff, 0xff);
 
 // Overlay & toolbar
+// Districts (docs/VISUAL_LANGUAGE.md, Districts): each keeps its place and colour in every project.
+pub const DISTRICT_PIPELINE: Color32 = Color32::from_rgb(0xff, 0xd6, 0x0a);
+pub const DISTRICT_FILES: Color32 = Color32::from_rgb(0x63, 0xe6, 0xe2);
+pub const DISTRICT_CODE: Color32 = Color32::from_rgb(0x0a, 0x84, 0xff);
+pub const DISTRICT_DESK: Color32 = Color32::from_rgb(0x64, 0xd2, 0xff);
+pub const DISTRICT_RUN: Color32 = Color32::from_rgb(0x30, 0xd1, 0x58);
+pub const DISTRICT_CHANGES: Color32 = Color32::from_rgb(0xbf, 0x5a, 0xf2);
+
 pub const PANEL_BG: Color32 = Color32::from_rgb(0x14, 0x14, 0x17);
 pub const PANEL_BORDER: Color32 = Color32::from_rgb(0x27, 0x27, 0x2f);
 pub const BADGE_BG: Color32 = Color32::from_rgb(0x27, 0x27, 0x33);
 
 // CodeSee Group Clusters
 pub const CLUSTER_TINTS: &[(Color32, Color32)] = &[
-    (Color32::from_rgba_premultiplied(14, 30, 48, 60), Color32::from_rgba_premultiplied(56, 189, 248, 120)), // Sky
-    (Color32::from_rgba_premultiplied(35, 18, 48, 60), Color32::from_rgba_premultiplied(168, 85, 247, 120)), // Purple
-    (Color32::from_rgba_premultiplied(16, 38, 30, 60), Color32::from_rgba_premultiplied(52, 211, 153, 120)), // Emerald
-    (Color32::from_rgba_premultiplied(48, 30, 16, 60), Color32::from_rgba_premultiplied(251, 146, 60, 120)), // Orange
-    (Color32::from_rgba_premultiplied(40, 24, 40, 60), Color32::from_rgba_premultiplied(236, 72, 153, 120)), // Pink
-    (Color32::from_rgba_premultiplied(28, 28, 36, 60), Color32::from_rgba_premultiplied(148, 163, 184, 100)), // Slate
+    (Color32::from_rgba_premultiplied(6, 12, 19, 24), Color32::from_rgba_premultiplied(56, 189, 248, 120)), // Sky
+    (Color32::from_rgba_premultiplied(14, 7, 19, 24), Color32::from_rgba_premultiplied(168, 85, 247, 120)), // Purple
+    (Color32::from_rgba_premultiplied(6, 15, 12, 24), Color32::from_rgba_premultiplied(52, 211, 153, 120)), // Emerald
+    (Color32::from_rgba_premultiplied(19, 12, 6, 24), Color32::from_rgba_premultiplied(251, 146, 60, 120)), // Orange
+    (Color32::from_rgba_premultiplied(16, 10, 16, 24), Color32::from_rgba_premultiplied(236, 72, 153, 120)), // Pink
+    (Color32::from_rgba_premultiplied(11, 11, 14, 24), Color32::from_rgba_premultiplied(148, 163, 184, 100)), // Slate
 ];
 pub const CLUSTER_HEADER_BG: Color32 = Color32::from_rgb(0x1a, 0x1c, 0x24);
 
@@ -171,3 +179,17 @@ pub fn with_alpha(color: Color32, alpha: u8) -> Color32 {
         alpha,
     )
 }
+
+// Evidence tiers (docs/VISUAL_LANGUAGE.md, Colours): accents of the chips that name a link's tier.
+// A wire keeps its kind's colour; its line style shows the tier.
+pub const TIER_PROVEN: Color32 = Color32::from_rgb(0xe4, 0xe4, 0xe7);
+pub const TIER_POSSIBLE: Color32 = Color32::from_rgb(0xfb, 0xbf, 0x24);
+pub const TIER_OBSERVED: Color32 = Color32::from_rgb(0x38, 0xbd, 0xf8);
+pub const TIER_UNRESOLVED: Color32 = Color32::from_rgb(0x71, 0x71, 0x7a);
+
+// Pipeline district (docs/VISUAL_LANGUAGE.md, Districts): the language marks on its step cards,
+// and the chip of a link that crosses from one language to another through a contract.
+pub const LANG_RUST: Color32 = Color32::from_rgb(0xe8, 0xa8, 0x7c);
+pub const LANG_ENFORCE: Color32 = Color32::from_rgb(0xbf, 0x5a, 0xf2);
+pub const LANG_JSON: Color32 = Color32::from_rgb(0x7d, 0x7a, 0xff);
+pub const CONTRACT_CHIP_TEXT: Color32 = Color32::from_rgb(0xb7, 0xb5, 0xff);

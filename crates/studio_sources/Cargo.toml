@@ -1,0 +1,23 @@
+[package]
+name = "studio_sources"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Everything Studio reads about a project besides its source code: packages, settings, tools, git, agent sessions. Read-only, off the UI thread."
+
+[dependencies]
+studio_parser.workspace = true
+studio_graph.workspace = true
+rkyv.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+yaml-rust2.workspace = true
+syn.workspace = true
+quote.workspace = true
+walkdir.workspace = true
+rayon.workspace = true
+serde.workspace = true
+memchr.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

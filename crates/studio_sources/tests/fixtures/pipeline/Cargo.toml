@@ -1,0 +1,4 @@
+# The pipeline fixture: a small polyglot project the pipeline test reads (never built; axum is external).
+[workspace]
+resolver = "2"
+members = ["api", "tool"]

@@ -1,9 +1,9 @@
 use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use super::cluster::GroupCluster;
-use super::edge::{Edge, EdgeKind};
+use super::edge::{Edge, EdgeKind, Provenance};
 use super::node::Node;
 use super::types::{DataType, EdgeId, FileContent, NodeArchetype, NodeId, Port, PortDirection, PortId};
 
@@ -58,6 +58,10 @@ pub struct Graph {
     #[serde(skip)]
     #[rkyv(with = rkyv::with::Skip)]
     pub doc_route_index: HashMap<(NodeId, NodeId), usize>,
+    /// Card pairs whose code wires a hub badge stands in for (not laid out or drawn).
+    #[serde(skip)]
+    #[rkyv(with = rkyv::with::Skip)]
+    pub hub_pairs: HashSet<(NodeId, NodeId)>,
     /// Shape of every container from the last dataflow layout, for the layout report.
     #[serde(skip)]
     #[rkyv(with = rkyv::with::Skip)]
@@ -88,6 +92,7 @@ impl Graph {
             hidden_cluster_ids: HashSet::new(),
             route_index: HashMap::new(),
             doc_route_index: HashMap::new(),
+            hub_pairs: HashSet::new(),
             layout_stats: Vec::new(),
             layout_cache: None,
         }
@@ -105,6 +110,15 @@ impl Graph {
         }
     }
 
+    /// The bundle a routed code wire is drawn as: what it stands for once folders are closed.
+    pub fn bundle_of(&self, edge: &Edge) -> Option<&crate::layout::WireBundle> {
+        if !edge.kind.is_code_flow() {
+            return None;
+        }
+        let route = self.route_of(edge)?;
+        self.flow.as_ref()?.bundles.get(route.bundle as usize)
+    }
+
     /// Whether [`Graph::route_of`] finds a route for this wire.
     pub fn has_route(&self, edge: &Edge) -> bool {
         let key = (edge.from_node, edge.to_node);
@@ -115,10 +129,49 @@ impl Graph {
         }
     }
 
+    /// Everything upstream and downstream of `start` along code wires: the wires on those paths
+    /// and the cards on them, `start` included.
+    pub fn trace(&self, start: &BTreeSet<NodeId>) -> (BTreeSet<EdgeId>, BTreeSet<NodeId>) {
+        let mut out_of: HashMap<NodeId, Vec<usize>> = HashMap::new();
+        let mut into: HashMap<NodeId, Vec<usize>> = HashMap::new();
+        for (i, e) in self.edges.iter().enumerate() {
+            if e.kind.is_code_flow() && e.from_node != e.to_node {
+                out_of.entry(e.from_node).or_default().push(i);
+                into.entry(e.to_node).or_default().push(i);
+            }
+        }
+        let mut wires = BTreeSet::new();
+        let mut cards = start.clone();
+        for downstream in [true, false] {
+            let mut seen = start.clone();
+            let mut stack: Vec<NodeId> = start.iter().copied().collect();
+            while let Some(n) = stack.pop() {
+                let next = if downstream { out_of.get(&n) } else { into.get(&n) };
+                for &i in next.into_iter().flatten() {
+                    let e = &self.edges[i];
+                    wires.insert(e.id);
+                    let other = if downstream { e.to_node } else { e.from_node };
+                    if seen.insert(other) {
+                        stack.push(other);
+                    }
+                }
+            }
+            cards.extend(seen);
+        }
+        (wires, cards)
+    }
+
+    /// Whether a hub badge stands in for this code wire.
+    pub fn is_behind_hub(&self, edge: &Edge) -> bool {
+        edge.kind.is_code_flow() && self.hub_pairs.contains(&(edge.from_node, edge.to_node))
+    }
+
     pub fn rebuild_route_index(&mut self) {
         self.route_index.clear();
         self.doc_route_index.clear();
+        self.hub_pairs.clear();
         let Some(flow) = &self.flow else { return };
+        self.hub_pairs.extend(flow.hubs.iter().flat_map(|h| h.pairs.iter().copied()));
         for (i, r) in flow.routes.iter().enumerate() {
             self.route_index.insert((r.provider, r.consumer), i);
         }
@@ -286,6 +339,7 @@ impl Graph {
             member_nodes: Vec::new(),
             content: FileContent::Code,
             size_bytes: None,
+            test_count: 0,
         };
 
         let arch_idx = archetype.index();
@@ -394,11 +448,29 @@ impl Graph {
         source_line: Option<usize>,
     ) -> Option<EdgeId> {
         let edge_id = EdgeId(self.next_raw_id());
-        let edge = Edge { id: edge_id, from_node, from_port, to_node, to_port, kind, label, step_number, source_line };
+        let edge = Edge {
+            id: edge_id,
+            from_node,
+            from_port,
+            to_node,
+            to_port,
+            kind,
+            label,
+            step_number,
+            source_line,
+            provenance: Provenance::default(),
+        };
         self.index_edge(&edge);
         self.edge_indices.insert(edge_id, self.edges.len());
         self.edges.push(edge);
         Some(edge_id)
+    }
+
+    /// Records where a wire comes from and how sure it is.
+    pub fn set_provenance(&mut self, id: EdgeId, provenance: Provenance) {
+        if let Some(&i) = self.edge_indices.get(&id) {
+            self.edges[i].provenance = provenance;
+        }
     }
 
     /// Removes every wire into an input port. Returns how many were removed.

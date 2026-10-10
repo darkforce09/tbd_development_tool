@@ -1,0 +1,19 @@
+[package]
+name = "app"
+version = "0.2.0"
+edition = "2021"
+
+[dependencies]
+base = { path = "../base" }
+json = { package = "serde_json", version = "1.0" }
+macros = { path = "../macros", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+serde = { workspace = true }
+
+[[bin]]
+name = "gen"
+path = "src/generate.rs"

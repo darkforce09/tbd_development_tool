@@ -1,0 +1,7 @@
+id = "T-4"
+kind = "work"
+title = "Shipped somewhere else"
+status = "shipped"
+priority = 3
+shipped_at = "0000000deadbeef0"
+completed_at = "2026-02-01T00:00:00Z"

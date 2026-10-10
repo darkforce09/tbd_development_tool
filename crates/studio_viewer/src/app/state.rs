@@ -1,8 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use studio_canvas::CanvasState;
-use studio_graph::{Graph, NodeArchetype};
-use studio_parser::{spawn_load_project, SymbolSearchIndex};
+use studio_graph::Graph;
+use studio_parser::{spawn_load_project, SearchIndex};
 use studio_ui::apply_theme;
 
 use super::settings::PersistedSettings;
@@ -12,14 +11,6 @@ impl StudioApp {
     pub fn new(cc: &eframe::CreationContext<'_>, initial_path: Option<std::path::PathBuf>) -> Self {
         apply_theme(&cc.egui_ctx);
         egui_extras::install_image_loaders(&cc.egui_ctx);
-
-        let mut category_filters = BTreeMap::new();
-        category_filters.insert(NodeArchetype::File, true);
-        category_filters.insert(NodeArchetype::Function, true);
-        category_filters.insert(NodeArchetype::Struct, true);
-        category_filters.insert(NodeArchetype::Enum, true);
-        category_filters.insert(NodeArchetype::Trait, true);
-        category_filters.insert(NodeArchetype::Module, true);
 
         let saved: PersistedSettings =
             cc.storage.and_then(|storage| eframe::get_value(storage, eframe::APP_KEY)).unwrap_or_default();
@@ -48,7 +39,6 @@ impl StudioApp {
             current_project_path: None,
             path_input: String::new(),
             project_stats: None,
-            pending_fit_view: false,
             is_from_cache: false,
             load_error: None,
             loader_rx: None,
@@ -57,13 +47,15 @@ impl StudioApp {
             loading_files_done: 0,
             loading_total_files: 0,
             loading_progress: 0.0,
-            search_index: SymbolSearchIndex::default(),
-            left_sidebar_open: false,
-            search_query: String::new(),
-            category_filters,
+            search_index: SearchIndex::default(),
             folder_loads: Vec::new(),
-            spotlight_open: false,
-            spotlight_search: String::new(),
+            palette: Default::default(),
+            shortcut_sheet_open: false,
+            activity: Default::default(),
+            desk_reader: Default::default(),
+            sources: None,
+            egui_ctx: cc.egui_ctx.clone(),
+            show_tool_sources: false,
         };
 
         // Explicit path, else the last project, else a Cargo project in the cwd, else nothing:
@@ -93,6 +85,10 @@ impl StudioApp {
     pub fn load_project(&mut self, path: &Path) {
         let path_buf = path.to_path_buf();
         self.current_project_path = Some(path_buf.clone());
+        self.canvas_state.desk.clear(path_buf.canonicalize().ok().or_else(|| Some(path_buf.clone())));
+        self.canvas_state.session_lit = None;
+        self.canvas_state.session_lit_nodes.clear();
+        self.canvas_state.changes_selected = Default::default();
         self.path_input = path_buf.to_string_lossy().to_string();
         self.is_loading = true;
         self.load_error = None;
@@ -102,14 +98,9 @@ impl StudioApp {
         self.loading_progress = 0.05;
         self.canvas_state.status_message = Some(format!("Loading {}...", path.display()));
 
+        self.sources = Some(super::sources::ProjectSources::new(path, &self.egui_ctx));
         let (tx, rx) = std::sync::mpsc::channel();
         spawn_load_project(path_buf, tx);
         self.loader_rx = Some(rx);
-    }
-
-    pub(crate) fn sync_category_filters(&mut self) {
-        let active: BTreeSet<NodeArchetype> =
-            self.category_filters.iter().filter(|(_, &enabled)| enabled).map(|(&arch, _)| arch).collect();
-        self.canvas_state.category_filter = active;
     }
 }

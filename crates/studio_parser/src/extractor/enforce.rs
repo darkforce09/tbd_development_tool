@@ -29,6 +29,7 @@ pub fn extract_enforce_script_file(file_path: &Path, rel_path: &Path, content: &
         impls: out.impls,
         uses: out.uses,
         links: Vec::new(),
+        tests: 0,
         parse_error: None,
         language: super::lang::SourceLang::Enforce,
     }
@@ -183,6 +184,7 @@ impl Scanner<'_> {
             variants,
             docs: self.docs_above(decl_start),
             line,
+            line_end: self.line_of(body_end.saturating_sub(1).max(decl_start)),
             source_code: self.slice(decl_start, body_end),
         });
     }
@@ -231,6 +233,7 @@ impl Scanner<'_> {
             derives,
             docs: self.docs_above(decl_start),
             line,
+            line_end: self.line_of(body_end.saturating_sub(1).max(decl_start)),
             source_code: self.slice(decl_start, body_end),
         });
         if !ctx.methods.is_empty() {
@@ -317,6 +320,7 @@ impl Scanner<'_> {
                 }
             },
             line,
+            line_end: self.line_of(source_end.saturating_sub(1).max(decl_start)),
             source_code: self.slice(decl_start, source_end),
         })
     }

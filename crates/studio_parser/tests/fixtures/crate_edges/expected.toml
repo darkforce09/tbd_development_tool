@@ -1,0 +1,20 @@
+# Exact manifest wires on the crate_edges fixture (tests/crate_edges.rs).
+# Path dependencies: 6 normal or build (each a wire), 1 dev (core -> model, no wire). One registry dependency
+# (core -> serde) has nothing to point at.
+
+[wires]
+# "<tier> <basis> <provider manifest> -> <consumer manifest>:<line of the entry in the consumer's manifest>", sorted.
+all = [
+    "proven manifest core/Cargo.toml -> app/Cargo.toml:11",
+    "proven manifest core/Cargo.toml -> model/Cargo.toml:7",
+    "proven manifest core/Cargo.toml -> render/Cargo.toml:7",
+    "proven manifest model/Cargo.toml -> app/Cargo.toml:8",
+    "proven manifest model/Cargo.toml -> render/Cargo.toml:9",
+    "proven manifest render/Cargo.toml -> app/Cargo.toml:7",
+]
+
+[counts]
+# Entries `path_dependencies` reads, every table.
+path_deps = 7
+dev_deps = 1
+manifest_edges = 6

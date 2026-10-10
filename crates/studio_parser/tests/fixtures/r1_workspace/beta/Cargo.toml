@@ -1,0 +1,18 @@
+[package]
+name = "beta"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+alpha = { workspace = true }
+# Not renamed: paths use the library name `legacy_core`.
+legacy-lib = { path = "../legacy" }
+
+# `alpha` again for the same crate stays unconditional; `twin` names two crates; `unixonly` exists only on unix.
+[target.'cfg(unix)'.dependencies]
+alpha = { workspace = true }
+twin = { path = "../alpha", package = "alpha" }
+unixonly = { path = "../alpha", package = "alpha" }
+
+[target.'cfg(windows)'.dependencies]
+twin = { path = "../legacy", package = "legacy-lib" }

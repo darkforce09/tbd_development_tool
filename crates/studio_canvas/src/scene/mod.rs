@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use bytemuck::{Pod, Zeroable};
 use egui::{Color32, Pos2, Rect};
 use rustc_hash::{FxHashMap, FxHashSet};
-use studio_graph::{Edge, EdgeId, FolderDetail, GateKind, GateSide, Graph, NodeId};
+use studio_graph::{Edge, EdgeId, EvidenceTier, FolderDetail, GateKind, GateSide, Graph, NodeId, VisibleEnd};
 use studio_ui::{cluster_tint, color_tokens::*, with_alpha};
 
 use crate::view::{archetype_color, edge_kind_color, port_world_position, routed_wire_points_into};
@@ -24,6 +24,48 @@ pub const WIRE_CURVE: u32 = 1 << 4;
 pub const WIRE_HIGHLIGHT: u32 = 1 << 5;
 /// Part of the active flow: a soft glow and moving pulses.
 pub const WIRE_ACTIVE: u32 = 1 << 6;
+/// Bits 7–9: how many card pairs the segment carries, as `floor(log2(pairs))` capped at 7. The
+/// shader draws heavier wires thicker.
+pub const WIRE_WEIGHT_SHIFT: u32 = 7;
+pub const WIRE_WEIGHT_MASK: u32 = 0x7 << WIRE_WEIGHT_SHIFT;
+
+/// Weight bits for a segment carrying `pairs` card pairs.
+pub fn wire_weight(pairs: u32) -> u32 {
+    (31 - pairs.max(1).leading_zeros()).min(7) << WIRE_WEIGHT_SHIFT
+}
+
+/// Bits 10-11: the evidence tier, `EvidenceTier as u32` (0 proven, 1 possible set, 2 observed,
+/// 3 unresolved). The shader and the painter draw it as the line style: solid, long dash, dots,
+/// short dash at lower alpha (docs/VISUAL_LANGUAGE.md, Colours).
+pub const WIRE_TIER_SHIFT: u32 = 10;
+pub const WIRE_TIER_MASK: u32 = 0x3 << WIRE_TIER_SHIFT;
+
+/// Tier bits for a wire with evidence `tier`.
+pub fn wire_tier(tier: EvidenceTier) -> u32 {
+    (tier as u32) << WIRE_TIER_SHIFT
+}
+
+/// The tier a wire drawn once for several edges shows: the strongest among them (proven, then
+/// possible set, then observed, then unresolved). `EvidenceTier` is ordered strongest first.
+pub fn strongest_tier(a: EvidenceTier, b: EvidenceTier) -> EvidenceTier {
+    a.min(b)
+}
+
+/// Raises the tier bits of `flags` to `tier` if it is stronger than the tier they hold.
+fn strengthen(flags: &mut u32, tier: EvidenceTier) {
+    let held = tier_of_flags(*flags);
+    *flags = (*flags & !WIRE_TIER_MASK) | wire_tier(strongest_tier(held, tier));
+}
+
+/// The tier held in wire flags.
+pub fn tier_of_flags(flags: u32) -> EvidenceTier {
+    match (flags & WIRE_TIER_MASK) >> WIRE_TIER_SHIFT {
+        0 => EvidenceTier::Proven,
+        1 => EvidenceTier::PossibleSet,
+        2 => EvidenceTier::Observed,
+        _ => EvidenceTier::Unresolved,
+    }
+}
 
 /// Below this zoom, cards are drawn as plain rects by the GPU card layer.
 pub const CARD_LAYER_ZOOM: f32 = 0.12;
@@ -55,6 +97,11 @@ impl WireInstance {
 
     pub fn is_curve(&self) -> bool {
         self.flags & WIRE_CURVE != 0
+    }
+
+    /// The evidence tier the wire is drawn with.
+    pub fn tier(&self) -> EvidenceTier {
+        tier_of_flags(self.flags)
     }
 }
 
@@ -90,6 +137,32 @@ pub struct PinLabel {
     pub text: String,
     /// On the left edge (an input); otherwise the right edge.
     pub input: bool,
+}
+
+/// The number of card pairs a bundle stands for, shown on its wire.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BundleLabel {
+    pub at: [f32; 2],
+    pub pairs: u32,
+    pub kind: studio_graph::EdgeKind,
+}
+
+/// What a chip says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChipKind {
+    /// "used by N": a hub's wires are hidden behind it.
+    Hub,
+    /// "docs N": documentation files linking to the card or into the closed folder.
+    Docs,
+}
+
+/// A small label on a card or folder, anchored in world space.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Chip {
+    /// Top-left of the chip for hubs (under the owner), top-right for docs (on the owner).
+    pub at: [f32; 2],
+    pub count: u32,
+    pub kind: ChipKind,
 }
 
 /// A run of `segments` whose midpoints fall in one world tile, with the bounds of the run.
@@ -132,6 +205,10 @@ pub struct CanvasScene {
     pub pin_labels: Vec<PinLabel>,
     /// Wires without a route that carry a label or step badge.
     pub labeled: Vec<EdgeId>,
+    /// Counts on wires that stand for more than one card pair.
+    pub bundle_labels: Vec<BundleLabel>,
+    /// Hub badges and documentation chips.
+    pub chips: Vec<Chip>,
     /// Whether member wires were drawn individually when the scene was built.
     pub member_wires: bool,
     /// How long the build took, in ms.
@@ -142,9 +219,10 @@ pub struct CanvasScene {
     tile_keys: Vec<(i32, i32)>,
 }
 
-/// A route segment while building: tile, quantized ends (tenths of a world unit), kind, and the
-/// order of the edge it came from.
-type SegmentKey = ((i32, i32), [i32; 4], u8, u32);
+/// A route segment while building: tile, quantized ends (tenths of a world unit), kind, the order
+/// of the edge it came from, the card pairs it carries, and the strongest evidence tier
+/// (`EvidenceTier as u8`) among the wires sharing it.
+type SegmentKey = ((i32, i32), [i32; 4], u8, u32, u32, u8);
 
 /// Index into `hit` cells: curves are marked with the top bit.
 const HIT_CURVE: u32 = 1 << 31;
@@ -158,6 +236,7 @@ impl CanvasScene {
         scene.build_wires(graph, member_wires);
         scene.build_folders(graph);
         scene.build_gates(graph);
+        scene.build_chips(graph);
         scene.build_ms = started.elapsed().as_secs_f32() * 1000.0;
         scene
     }
@@ -170,7 +249,7 @@ impl CanvasScene {
         // wire, are skipped.
         enum Plan {
             Skip,
-            /// Route ends in a collapsed folder: drawn once per card pair.
+            /// Route ends in a collapsed folder: drawn once per bundle.
             Hidden,
             Wire {
                 bundle: bool,
@@ -183,6 +262,10 @@ impl CanvasScene {
             .edges
             .par_iter()
             .map(|edge| {
+                // A hub's badge stands in for its wires.
+                if graph.is_behind_hub(edge) {
+                    return Plan::Skip;
+                }
                 if graph.is_node_in_collapsed_cluster(edge.from_node)
                     || graph.is_node_in_collapsed_cluster(edge.to_node)
                 {
@@ -209,31 +292,86 @@ impl CanvasScene {
             })
             .collect();
 
-        let mut routed: Vec<&Edge> = Vec::new();
+        // Routed wires to draw: the edge, the kind its colour comes from, and the card pairs it
+        // carries.
+        let mut routed: Vec<(&Edge, studio_graph::EdgeKind, u32)> = Vec::new();
         let mut curves: Vec<(WireInstance, EdgeId)> = Vec::new();
-        let mut hidden_pairs: FxHashSet<(NodeId, NodeId)> = FxHashSet::default();
-        let mut drawn_pairs: FxHashSet<(NodeId, NodeId, u32)> = FxHashSet::default();
-        let mut bundled_pairs: FxHashSet<(NodeId, NodeId)> = FxHashSet::default();
+        // A wire drawn once for several edges (a bundle, the copies of one pair and kind between
+        // closed cards, a pair's bundled member wires) shows the strongest tier among them, so
+        // the instance count does not depend on tiers. `routed_tier` runs parallel to `routed`;
+        // the maps remember which wire each skipped edge is drawn by.
+        enum Drawn {
+            Routed(usize),
+            Curve(usize),
+        }
+        let mut routed_tier: Vec<EvidenceTier> = Vec::new();
+        let mut hidden_bundles: FxHashMap<u32, usize> = FxHashMap::default();
+        let mut drawn_pairs: FxHashMap<(NodeId, NodeId, u32), usize> = FxHashMap::default();
+        let mut bundled_pairs: FxHashMap<(NodeId, NodeId), Drawn> = FxHashMap::default();
         for (edge, plan) in graph.edges.iter().zip(plans) {
             let pair = (edge.from_node, edge.to_node);
+            let tier = edge.provenance.tier;
             match plan {
                 Plan::Skip => {}
                 Plan::Hidden => {
-                    if hidden_pairs.insert(pair) {
-                        routed.push(edge);
+                    // One wire per bundle, in the colour of the kind it carries most.
+                    let Some(route) = graph.route_of(edge) else { continue };
+                    if let Some(&i) = hidden_bundles.get(&route.bundle) {
+                        routed_tier[i] = strongest_tier(routed_tier[i], tier);
+                    } else {
+                        hidden_bundles.insert(route.bundle, routed.len());
+                        routed_tier.push(tier);
+                        match graph.bundle_of(edge) {
+                            Some(b) => {
+                                routed.push((edge, b.main_kind(), b.pairs));
+                                if b.pairs > 1 {
+                                    if let Some(at) = label_anchor(&route.points) {
+                                        self.bundle_labels.push(BundleLabel {
+                                            at,
+                                            pairs: b.pairs,
+                                            kind: b.main_kind(),
+                                        });
+                                    }
+                                }
+                            }
+                            None => routed.push((edge, edge.kind, 1)),
+                        }
                     }
                 }
-                Plan::Wire { bundle, .. } if bundle && !bundled_pairs.insert(pair) => {}
-                Plan::Wire { routed: true, dedup, .. } => {
-                    if !dedup || drawn_pairs.insert((pair.0, pair.1, edge.kind as u32)) {
-                        routed.push(edge);
+                Plan::Wire { bundle, .. } if bundle && bundled_pairs.contains_key(&pair) => {
+                    match bundled_pairs[&pair] {
+                        Drawn::Routed(i) => routed_tier[i] = strongest_tier(routed_tier[i], tier),
+                        Drawn::Curve(i) => strengthen(&mut curves[i].0.flags, tier),
                     }
                 }
-                Plan::Wire { routed: false, .. } => {
+                Plan::Wire { bundle, routed: true, dedup } => {
+                    let key = (pair.0, pair.1, edge.kind as u32);
+                    let i = match drawn_pairs.get(&key) {
+                        Some(&i) if dedup => {
+                            routed_tier[i] = strongest_tier(routed_tier[i], tier);
+                            i
+                        }
+                        _ => {
+                            if dedup {
+                                drawn_pairs.insert(key, routed.len());
+                            }
+                            routed.push((edge, edge.kind, 1));
+                            routed_tier.push(tier);
+                            routed.len() - 1
+                        }
+                    };
+                    if bundle {
+                        bundled_pairs.insert(pair, Drawn::Routed(i));
+                    }
+                }
+                Plan::Wire { bundle, routed: false, .. } => {
                     let (p0, p1) = curve_ends(graph, edge);
                     let color = edge_kind_color(edge.kind).to_srgba_unmultiplied();
-                    let flags = edge.kind as u32 | WIRE_CURVE;
+                    let flags = edge.kind as u32 | WIRE_CURVE | wire_tier(tier);
                     curves.push((WireInstance { p0: p0.into(), p1: p1.into(), color, flags }, edge.id));
+                    if bundle {
+                        bundled_pairs.insert(pair, Drawn::Curve(curves.len() - 1));
+                    }
                     if edge.step_number.is_some() || edge.label.is_some() {
                         self.labeled.push(edge.id);
                     }
@@ -248,8 +386,8 @@ impl CanvasScene {
         // deterministic.
         let mut groups: Vec<Vec<u32>> = Vec::new();
         let mut group_of: FxHashMap<(NodeId, u32), usize> = FxHashMap::default();
-        for (i, edge) in routed.iter().enumerate() {
-            let g = *group_of.entry((edge.from_node, edge.kind as u32)).or_insert_with(|| {
+        for (i, (edge, kind, _)) in routed.iter().enumerate() {
+            let g = *group_of.entry((edge.from_node, *kind as u32)).or_insert_with(|| {
                 groups.push(Vec::new());
                 groups.len() - 1
             });
@@ -259,20 +397,30 @@ impl CanvasScene {
         let mut keys: Vec<SegmentKey> = groups
             .par_iter()
             .map_init(
-                || (Vec::new(), FxHashSet::default()),
-                |(points, seen): &mut (Vec<Pos2>, FxHashSet<[i32; 4]>), group| {
+                || (Vec::new(), FxHashMap::default()),
+                |(points, seen): &mut (Vec<Pos2>, FxHashMap<[i32; 4], usize>), group| {
                     seen.clear();
-                    let mut out = Vec::new();
+                    let mut out: Vec<SegmentKey> = Vec::new();
                     for &order in group {
-                        let edge = routed[order as usize];
+                        let (edge, kind, pairs) = routed[order as usize];
+                        let tier = routed_tier[order as usize] as u8;
                         routed_wire_points_into(graph, edge, points);
                         for w in points.windows(2).filter(|w| (w[0] - w[1]).length_sq() >= 1e-6) {
                             let (a, b) = if (w[0].x, w[0].y) <= (w[1].x, w[1].y) { (w[0], w[1]) } else { (w[1], w[0]) };
                             let ends = [q(a.x), q(a.y), q(b.x), q(b.y)];
-                            if seen.insert(ends) {
-                                let mid = a.lerp(b, 0.5);
-                                let tile = ((mid.x / TILE).floor() as i32, (mid.y / TILE).floor() as i32);
-                                out.push((tile, ends, edge.kind as u8, order));
+                            // A stretch shared by several wires carries all their pairs.
+                            // ... and shows the strongest tier among them.
+                            match seen.get(&ends) {
+                                Some(&i) => {
+                                    out[i].4 += pairs;
+                                    out[i].5 = out[i].5.min(tier);
+                                }
+                                None => {
+                                    let mid = a.lerp(b, 0.5);
+                                    let tile = ((mid.x / TILE).floor() as i32, (mid.y / TILE).floor() as i32);
+                                    seen.insert(ends, out.len());
+                                    out.push((tile, ends, kind as u8, order, pairs, tier));
+                                }
                             }
                         }
                     }
@@ -281,18 +429,30 @@ impl CanvasScene {
             )
             .flatten_iter()
             .collect();
-        keys.par_sort_unstable();
-        keys.dedup_by_key(|k| (k.0, k.1, k.2));
+        keys.par_sort_unstable_by_key(|k| (k.0, k.1, k.2, k.3));
+        // Copies of one segment sit side by side: keep the first, adding up what they carry. The
+        // merge key stays (tile, ends, kind), so tiers never add instances: the segment takes the
+        // strongest tier among its copies (a lower `EvidenceTier as u8` is stronger).
+        let mut merged: Vec<SegmentKey> = Vec::with_capacity(keys.len());
+        for k in keys {
+            match merged.last_mut() {
+                Some(m) if (m.0, m.1, m.2) == (k.0, k.1, k.2) => {
+                    m.4 += k.4;
+                    m.5 = m.5.min(k.5);
+                }
+                _ => merged.push(k),
+            }
+        }
 
-        self.segments.reserve(keys.len());
-        self.segment_owner.reserve(keys.len());
-        for (tile, ends, kind, order) in keys {
-            let edge = routed[order as usize];
+        self.segments.reserve(merged.len());
+        self.segment_owner.reserve(merged.len());
+        for (tile, ends, kind, order, pairs, tier) in merged {
+            let (edge, main_kind, _) = routed[order as usize];
             let instance = WireInstance {
                 p0: [ends[0] as f32 / 10.0, ends[1] as f32 / 10.0],
                 p1: [ends[2] as f32 / 10.0, ends[3] as f32 / 10.0],
-                color: edge_kind_color(edge.kind).to_srgba_unmultiplied(),
-                flags: kind as u32,
+                color: edge_kind_color(main_kind).to_srgba_unmultiplied(),
+                flags: kind as u32 | wire_weight(pairs) | (tier as u32) << WIRE_TIER_SHIFT,
             };
             let bounds = wire_bounds(&instance);
             let i = self.segments.len() as u32;
@@ -356,6 +516,81 @@ impl CanvasScene {
         }
     }
 
+    /// Hub badges under hubs, and documentation chips on cards and on closed folders that hide
+    /// documented cards.
+    fn build_chips(&mut self, graph: &Graph) {
+        let index: FxHashMap<&str, usize> =
+            graph.clusters.iter().enumerate().map(|(i, c)| (c.id.as_str(), i)).collect();
+        let folder_rect = |id: &str| {
+            let c = &graph.clusters[*index.get(id)?];
+            (!graph.hidden_cluster_ids.contains(&c.id) && c.size[0] > 1.0).then_some((c.position, c.size))
+        };
+        let card_rect = |n: NodeId| {
+            let node = graph.nodes.get(&n)?;
+            (!graph.is_node_in_collapsed_cluster(n)).then_some((node.position, node.size))
+        };
+        if let Some(flow) = &graph.flow {
+            for hub in &flow.hubs {
+                let owner = match &hub.item {
+                    VisibleEnd::Card(n) => card_rect(*n),
+                    VisibleEnd::Folder(id) => folder_rect(id),
+                };
+                if let Some((pos, size)) = owner {
+                    self.chips.push(Chip {
+                        at: [pos[0], pos[1] + size[1] + 4.0],
+                        count: hub.used_by,
+                        kind: ChipKind::Hub,
+                    });
+                }
+            }
+        }
+
+        // Documentation files linking to each card, counted on the card or on the outermost
+        // closed folder hiding it.
+        let outermost_closed = |n: NodeId| -> Option<usize> {
+            let mut at = graph.nodes.get(&n)?.group_id.as_deref().and_then(|id| index.get(id).copied());
+            let mut found = None;
+            while let Some(i) = at {
+                let c = &graph.clusters[i];
+                if c.is_collapsed() {
+                    found = Some(i);
+                }
+                at = c.parent_id.as_deref().and_then(|p| index.get(p).copied());
+            }
+            found
+        };
+        let mut on_card: std::collections::BTreeMap<NodeId, FxHashSet<NodeId>> = Default::default();
+        let mut on_folder: std::collections::BTreeMap<usize, FxHashSet<(NodeId, NodeId)>> = Default::default();
+        for e in graph.edges.iter().filter(|e| e.kind == studio_graph::EdgeKind::Documentation) {
+            match outermost_closed(e.to_node) {
+                Some(f) => {
+                    on_folder.entry(f).or_default().insert((e.from_node, e.to_node));
+                }
+                None => {
+                    on_card.entry(e.to_node).or_default().insert(e.from_node);
+                }
+            }
+        }
+        for (n, docs) in on_card {
+            if let Some((pos, size)) = card_rect(n) {
+                self.chips.push(Chip {
+                    at: [pos[0] + size[0], pos[1] - 9.0],
+                    count: docs.len() as u32,
+                    kind: ChipKind::Docs,
+                });
+            }
+        }
+        for (f, docs) in on_folder {
+            if let Some((pos, size)) = folder_rect(&graph.clusters[f].id) {
+                self.chips.push(Chip {
+                    at: [pos[0] + size[0], pos[1] - 9.0],
+                    count: docs.len() as u32,
+                    kind: ChipKind::Docs,
+                });
+            }
+        }
+    }
+
     fn build_gates(&mut self, graph: &Graph) {
         let Some(flow) = &graph.flow else { return };
         let collapsed: HashSet<&str> =
@@ -373,9 +608,14 @@ impl CanvasScene {
                 GateKind::Documentation => KIND_DOCUMENTATION,
             };
             self.gates.push(PinInstance { center: gate.position, fill: fill.to_srgba_unmultiplied(), ring });
-            // A folder in node view names the file behind each of its pins.
+            // A folder in node view names the file or closed folder behind each of its pins.
             if node_view.contains(gate.container.as_str()) {
-                let title = graph.nodes.get(&gate.provider).map_or_else(String::new, |n| n.title.clone());
+                let title = match &gate.source {
+                    VisibleEnd::Card(n) => graph.nodes.get(n).map_or_else(String::new, |n| n.title.clone()),
+                    VisibleEnd::Folder(id) => {
+                        graph.clusters.iter().find(|c| &c.id == id).map_or_else(String::new, |c| c.label.clone())
+                    }
+                };
                 self.pin_labels.push(PinLabel { at: gate.position, text: title, input: gate.side == GateSide::Input });
             }
         }
@@ -526,7 +766,7 @@ pub fn build_overlay(graph: &Graph, edges: impl IntoIterator<Item = (EdgeId, u32
             continue;
         }
         let color = edge_kind_color(edge.kind).to_srgba_unmultiplied();
-        let flags = edge.kind as u32 | flag;
+        let flags = edge.kind as u32 | flag | wire_tier(edge.provenance.tier);
         if routed_wire_points_into(graph, edge, &mut points) {
             straight.extend(points.windows(2).map(|w| WireInstance { p0: w[0].into(), p1: w[1].into(), color, flags }));
         } else if !graph.is_node_in_collapsed_cluster(edge.from_node)
@@ -541,11 +781,13 @@ pub fn build_overlay(graph: &Graph, edges: impl IntoIterator<Item = (EdgeId, u32
     (straight, curves_start)
 }
 
-/// Cards as plain rects, for zoom levels where their contents cannot be read.
+/// Cards as plain rects, for zoom levels where their contents cannot be read; selected cards and
+/// the cards of the chosen agent session (`session_lit`) stand out.
 pub fn build_card_layer(
     graph: &Graph,
     dimmed: impl Fn(&studio_graph::Node) -> bool,
     selected: &std::collections::BTreeSet<NodeId>,
+    session_lit: &std::collections::BTreeSet<NodeId>,
 ) -> Vec<BoxInstance> {
     graph
         .nodes
@@ -554,6 +796,9 @@ pub fn build_card_layer(
         .map(|n| {
             let fill = if selected.contains(&n.id) {
                 CARD_BORDER_SELECTED
+            } else if session_lit.contains(&n.id) {
+                // A file the chosen agent session touched.
+                DISTRICT_CHANGES
             } else {
                 with_alpha(archetype_color(n.archetype), if dimmed(n) { 35 } else { 175 })
             };
@@ -623,3 +868,12 @@ pub fn container_visible(graph: &Graph, collapsed: &HashSet<&str>, id: &str) -> 
 
 #[cfg(test)]
 mod tests;
+
+/// Where a bundle's count goes: the middle of its longest horizontal segment.
+fn label_anchor(points: &[[f32; 2]]) -> Option<[f32; 2]> {
+    points
+        .windows(2)
+        .filter(|w| (w[0][1] - w[1][1]).abs() < 0.01)
+        .max_by(|a, b| (a[1][0] - a[0][0]).abs().total_cmp(&(b[1][0] - b[0][0]).abs()))
+        .map(|w| [(w[0][0] + w[1][0]) * 0.5, w[0][1]])
+}

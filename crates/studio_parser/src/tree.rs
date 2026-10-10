@@ -1,10 +1,12 @@
 //! Discovery of every file and folder under a project root.
 //!
 //! Nothing is dropped: binary, large, symlinked and unreadable entries are recorded with a kind
-//! instead of being skipped. "Heavy" folders (version control, gitignored, build caches,
-//! dependency trees) are recorded with counts but not descended, so they can be shown collapsed
-//! and materialized on demand with [`scan_tree`] on their own path.
+//! instead of being skipped. "Heavy" folders (version control, gitignored, or holding a marker a
+//! tool writes, see [`crate::classify::HEAVY_MARKERS`]) are recorded with counts but not descended,
+//! so they can be shown collapsed and materialized on demand with [`scan_tree`] on their own path.
+//! No folder is heavy for its name alone. Every file gets its class from [`crate::classify`].
 
+use crate::classify::{self, ClassInputs, FileClass, Rule};
 use rayon::prelude::*;
 use std::collections::HashSet;
 use std::io::Read;
@@ -22,6 +24,9 @@ pub struct ProjectTree {
     /// `dirs[0]` is the root itself (empty relative path).
     pub dirs: Vec<DirNode>,
     pub files: Vec<FileNode>,
+    /// Single files git ignores (relative to the root), sorted. They stay in `files`; the palette
+    /// leaves them out. Empty when ignored folders are not looked up.
+    pub ignored_files: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -43,9 +48,9 @@ pub enum DirKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeavyInfo {
     pub reason: HeavyReason,
-    pub file_count: u64,
-    pub dir_count: u64,
-    pub total_bytes: u64,
+    /// Filled in by [`measure_heavy_dirs`], after the first layout: counting a build cache can
+    /// take seconds.
+    pub totals: Option<studio_graph::FolderTotals>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +78,19 @@ pub struct FileNode {
     pub dir: DirId,
     pub size: u64,
     pub kind: FileKind,
+    /// What the file is for, from the classification table, with the inputs the scan has (paths
+    /// and what git ignores; Linguist attributes are applied later, by the viewer).
+    pub class: FileClass,
+    /// The table row that decided `class`.
+    pub rule: &'static Rule,
+}
+
+impl FileNode {
+    /// A file not classified yet (the scan classifies every file once all paths are known).
+    fn new(rel: PathBuf, dir: DirId, size: u64, kind: FileKind) -> Self {
+        let fallback = &classify::RULES[classify::RULES.len() - 1];
+        Self { rel, dir, size, kind, class: fallback.class, rule: fallback }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -120,15 +138,16 @@ impl ProjectTree {
 
 /// Lists every file and folder under `root`.
 pub fn scan_tree(root: &Path, opts: ScanOptions) -> ProjectTree {
-    let ignored_dirs = if opts.gitignored_heavy { git_ignored_dirs(root) } else { HashSet::new() };
+    let (ignored_dirs, ignored_files) =
+        if opts.gitignored_heavy { git_ignored(root) } else { (HashSet::new(), Vec::new()) };
     let mut tree = ProjectTree {
         root: root.to_path_buf(),
         dirs: vec![DirNode { rel: PathBuf::new(), parent: None, kind: DirKind::Normal }],
         files: Vec::new(),
+        ignored_files,
     };
     let mut dir_ids: std::collections::HashMap<PathBuf, DirId> = std::collections::HashMap::new();
     dir_ids.insert(PathBuf::new(), 0);
-    let mut heavy_paths: Vec<(DirId, PathBuf, HeavyReason)> = Vec::new();
     let mut pending_files: Vec<(PathBuf, DirId, Option<PathBuf>)> = Vec::new();
 
     let mut walker = WalkDir::new(root).follow_links(false).sort_by_file_name().into_iter();
@@ -155,12 +174,7 @@ pub fn scan_tree(root: &Path, opts: ScanOptions) -> ProjectTree {
                                 });
                                 dir_ids.insert(rel, id);
                             } else {
-                                tree.files.push(FileNode {
-                                    rel,
-                                    dir: parent,
-                                    size: 0,
-                                    kind: FileKind::Unreadable(msg),
-                                });
+                                tree.files.push(FileNode::new(rel, parent, 0, FileKind::Unreadable(msg)));
                             }
                         }
                     }
@@ -178,13 +192,15 @@ pub fn scan_tree(root: &Path, opts: ScanOptions) -> ProjectTree {
 
         if file_type.is_dir() {
             let id = tree.dirs.len();
-            let heavy = heavy_reason(path, &rel, &ignored_dirs);
-            tree.dirs.push(DirNode { rel: rel.clone(), parent: Some(parent), kind: DirKind::Normal });
-            dir_ids.insert(rel.clone(), id);
-            if let Some(reason) = heavy {
-                heavy_paths.push((id, path.to_path_buf(), reason));
-                walker.skip_current_dir();
-            }
+            let kind = match heavy_reason(path, &rel, &ignored_dirs) {
+                Some(reason) => {
+                    walker.skip_current_dir();
+                    DirKind::Heavy(HeavyInfo { reason, totals: None })
+                }
+                None => DirKind::Normal,
+            };
+            tree.dirs.push(DirNode { rel: rel.clone(), parent: Some(parent), kind });
+            dir_ids.insert(rel, id);
         } else if file_type.is_symlink() {
             let target = std::fs::read_link(path).unwrap_or_default();
             pending_files.push((rel, parent, Some(target)));
@@ -199,28 +215,66 @@ pub fn scan_tree(root: &Path, opts: ScanOptions) -> ProjectTree {
         .map(|(rel, dir, link)| {
             let abs = root.join(&rel);
             match link {
-                Some(target) => FileNode { rel, dir, size: 0, kind: FileKind::Symlink(target) },
+                Some(target) => FileNode::new(rel, dir, 0, FileKind::Symlink(target)),
                 None => {
                     let (size, kind) = classify_file(&abs);
-                    FileNode { rel, dir, size, kind }
+                    FileNode::new(rel, dir, size, kind)
                 }
             }
         })
         .collect();
     tree.files.extend(classified);
     tree.files.sort_by(|a, b| a.rel.cmp(&b.rel));
+    classify_files(&mut tree);
+    tree
+}
 
-    let totals: Vec<(DirId, HeavyInfo)> = heavy_paths
+/// The classification inputs a scanned tree holds: every file's path, the single files git
+/// ignores and the folders that are heavy because git ignores them.
+pub fn class_inputs(tree: &ProjectTree) -> ClassInputs {
+    let ignored_dirs = tree.heavy_dirs().filter(|(_, _, i)| i.reason == HeavyReason::GitIgnored);
+    ClassInputs {
+        files: tree.files.iter().map(|f| slash(&f.rel)).collect(),
+        ignored: tree
+            .ignored_files
+            .iter()
+            .map(|p| slash(p))
+            .chain(ignored_dirs.map(|(_, d, _)| slash(&d.rel) + "/"))
+            .collect(),
+        ..Default::default()
+    }
+}
+
+/// Gives every file its class, in parallel (pure: same tree, same classes).
+fn classify_files(tree: &mut ProjectTree) {
+    let inputs = class_inputs(tree);
+    tree.files.par_iter_mut().for_each(|f| (f.class, f.rule) = classify::classify(&slash(&f.rel), &inputs));
+}
+
+fn slash(path: &Path) -> String {
+    path.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/")
+}
+
+/// Counts what every heavy folder holds, in parallel. Kept out of [`scan_tree`] so the first
+/// layout never waits on a build cache.
+pub fn measure_heavy_dirs(tree: &mut ProjectTree) {
+    let pending: Vec<(DirId, PathBuf)> = tree
+        .heavy_dirs()
+        .filter(|(_, _, info)| info.totals.is_none())
+        .map(|(id, dir, _)| (id, tree.root.join(&dir.rel)))
+        .collect();
+    let totals: Vec<(DirId, studio_graph::FolderTotals)> = pending
         .into_par_iter()
-        .map(|(id, path, reason)| {
+        .map(|(id, path)| {
             let (file_count, dir_count, total_bytes) = count_subtree(&path);
-            (id, HeavyInfo { reason, file_count, dir_count, total_bytes })
+            (id, studio_graph::FolderTotals { file_count, dir_count, total_bytes })
         })
         .collect();
-    for (id, info) in totals {
-        tree.dirs[id].kind = DirKind::Heavy(info);
+    for (id, measured) in totals {
+        if let DirKind::Heavy(info) = &mut tree.dirs[id].kind {
+            info.totals = Some(measured);
+        }
     }
-    tree
 }
 
 /// Hashes the shape of the tree cheaply, for cache invalidation: every visible folder and file
@@ -228,7 +282,7 @@ pub fn scan_tree(root: &Path, opts: ScanOptions) -> ProjectTree {
 /// descending into heavy folders or reading file contents.
 pub fn hash_tree_state(root: &Path, hasher: &mut impl std::hash::Hasher) {
     use std::hash::Hash;
-    let ignored_dirs = git_ignored_dirs(root);
+    let (ignored_dirs, _) = git_ignored(root);
     let mut walker = WalkDir::new(root).follow_links(false).sort_by_file_name().into_iter();
     while let Some(entry) = walker.next() {
         let Ok(entry) = entry else { continue };
@@ -248,6 +302,8 @@ pub fn hash_tree_state(root: &Path, hasher: &mut impl std::hash::Hasher) {
     }
 }
 
+/// Why a folder is heavy: the version control system's own metadata, ignored by git, or holding a
+/// marker a tool writes ([`classify::HEAVY_MARKERS`]). Never its name alone.
 fn heavy_reason(path: &Path, rel: &Path, ignored_dirs: &HashSet<PathBuf>) -> Option<HeavyReason> {
     let name = rel.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
     if matches!(name.as_ref(), ".git" | ".hg" | ".svn") {
@@ -256,36 +312,33 @@ fn heavy_reason(path: &Path, rel: &Path, ignored_dirs: &HashSet<PathBuf>) -> Opt
     if ignored_dirs.contains(rel) {
         return Some(HeavyReason::GitIgnored);
     }
-    // Standard cache-directory marker (Cargo's target/, many build tools).
-    if path.join("CACHEDIR.TAG").is_file() {
-        return Some(HeavyReason::BuildCache);
-    }
-    if matches!(name.as_ref(), "node_modules" | "__pycache__" | ".gradle" | ".tox" | ".mypy_cache" | ".pytest_cache")
-        || path.join("pyvenv.cfg").is_file()
-    {
-        return Some(HeavyReason::Dependencies);
-    }
-    None
+    classify::heavy_marker(path).map(|m| m.reason)
 }
 
-/// Folders git ignores entirely (relative to `root`). Empty when git is unavailable.
-fn git_ignored_dirs(root: &Path) -> HashSet<PathBuf> {
+/// Folders git ignores entirely, and single ignored files outside them (sorted), relative to
+/// `root`. Both empty when git is unavailable.
+pub fn git_ignored(root: &Path) -> (HashSet<PathBuf>, Vec<PathBuf>) {
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(root)
         .args(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"])
         .output();
-    let Ok(output) = output else { return HashSet::new() };
+    let Ok(output) = output else { return Default::default() };
     if !output.status.success() {
-        return HashSet::new();
+        return Default::default();
     }
-    output
-        .stdout
-        .split(|&b| b == 0)
-        .filter_map(|chunk| std::str::from_utf8(chunk).ok())
-        .filter_map(|p| p.strip_suffix('/'))
-        .map(|p| p.split('/').collect::<PathBuf>())
-        .collect()
+    let (mut dirs, mut files) = (HashSet::new(), Vec::new());
+    for p in output.stdout.split(|&b| b == 0).filter_map(|chunk| std::str::from_utf8(chunk).ok()) {
+        match p.strip_suffix('/') {
+            Some(dir) => {
+                dirs.insert(dir.split('/').collect::<PathBuf>());
+            }
+            None if !p.is_empty() => files.push(p.split('/').collect::<PathBuf>()),
+            None => {}
+        }
+    }
+    files.sort();
+    (dirs, files)
 }
 
 fn classify_file(path: &Path) -> (u64, FileKind) {
@@ -351,6 +404,7 @@ mod tests {
         std::fs::create_dir_all(r.join("empty")).unwrap();
         std::fs::create_dir_all(r.join("only_dirs/x")).unwrap();
         std::fs::create_dir_all(r.join("only_dirs/y")).unwrap();
+        write(r, "node_modules/.package-lock.json", b"{}");
         write(r, "node_modules/pkg/index.js", b"module.exports = 1;");
         write(r, "node_modules/pkg/lib/util.js", b"x");
         write(r, "target/CACHEDIR.TAG", b"Signature: 8a477f597d28d172789f06886806bc55");
@@ -409,14 +463,16 @@ mod tests {
     }
 
     #[test]
-    fn heavy_folders_carry_counts() {
+    fn heavy_folders_are_counted_after_the_scan() {
         let dir = fixture();
-        let tree = scan_tree(dir.path(), ScanOptions::default());
+        let mut tree = scan_tree(dir.path(), ScanOptions::default());
+        assert!(tree.heavy_dirs().all(|(_, _, info)| info.totals.is_none()), "the scan itself never counts them");
+        measure_heavy_dirs(&mut tree);
         let heavy: Vec<(String, HeavyReason, u64)> = tree
             .heavy_dirs()
-            .map(|(_, d, info)| (d.rel.to_string_lossy().to_string(), info.reason, info.file_count))
+            .map(|(_, d, info)| (d.rel.to_string_lossy().to_string(), info.reason, info.totals.unwrap().file_count))
             .collect();
-        assert!(heavy.contains(&("node_modules".to_string(), HeavyReason::Dependencies, 2)), "{heavy:?}");
+        assert!(heavy.contains(&("node_modules".to_string(), HeavyReason::Dependencies, 3)), "{heavy:?}");
         assert!(heavy.contains(&("target".to_string(), HeavyReason::BuildCache, 2)), "{heavy:?}");
     }
 
@@ -434,14 +490,61 @@ mod tests {
         if !git_ok {
             return;
         }
-        let tree = scan_tree(dir.path(), ScanOptions::default());
+        let mut tree = scan_tree(dir.path(), ScanOptions::default());
+        measure_heavy_dirs(&mut tree);
         let secret = tree.dirs.iter().find(|d| d.rel == Path::new("secret")).unwrap();
-        assert!(matches!(&secret.kind, DirKind::Heavy(i) if i.reason == HeavyReason::GitIgnored && i.file_count == 1));
+        assert!(matches!(&secret.kind,
+            DirKind::Heavy(i) if i.reason == HeavyReason::GitIgnored && i.totals.is_some_and(|t| t.file_count == 1)));
         let git = tree.dirs.iter().find(|d| d.rel == Path::new(".git")).unwrap();
         assert!(matches!(&git.kind, DirKind::Heavy(i) if i.reason == HeavyReason::VersionControl));
 
         let inside = scan_tree(&dir.path().join("secret"), ScanOptions { gitignored_heavy: false });
         assert_eq!(inside.files.len(), 1, "materializing an ignored folder lists its contents");
+    }
+
+    #[test]
+    fn a_folder_is_never_heavy_for_its_name_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = dir.path();
+        for name in ["node_modules", "__pycache__", ".gradle", ".tox", ".mypy_cache", ".pytest_cache", "target"] {
+            write(r, &format!("{name}/x.txt"), b"x");
+        }
+        write(r, "fake_cache/CACHEDIR.TAG", b"no signature");
+        let tree = scan_tree(r, ScanOptions::default());
+        assert_eq!(tree.heavy_dirs().count(), 0, "{:?}", tree.dirs);
+        assert_eq!(tree.files.len(), 8, "every folder is descended");
+    }
+
+    #[test]
+    fn every_marker_makes_its_folder_heavy() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = dir.path();
+        for (i, marker) in classify::HEAVY_MARKERS.iter().enumerate() {
+            let content: &[u8] = if marker.file == "CACHEDIR.TAG" { classify::CACHEDIR_SIGNATURE } else { b"" };
+            write(r, &format!("m{i}/{}", marker.file), content);
+            write(r, &format!("m{i}/inside/x.txt"), b"x");
+        }
+        let tree = scan_tree(r, ScanOptions::default());
+        let heavy: Vec<(String, HeavyReason)> =
+            tree.heavy_dirs().map(|(_, d, i)| (d.rel.to_string_lossy().to_string(), i.reason)).collect();
+        let expected: Vec<(String, HeavyReason)> =
+            classify::HEAVY_MARKERS.iter().enumerate().map(|(i, m)| (format!("m{i}"), m.reason)).collect();
+        assert_eq!(heavy, expected);
+        assert!(tree.files.is_empty(), "nothing inside a marked folder is listed");
+    }
+
+    #[test]
+    fn every_file_gets_its_class_at_scan_time() {
+        let dir = fixture();
+        write(dir.path(), "Cargo.toml", b"[package]\nname = \"x\"\n");
+        write(dir.path(), "tests/it.rs", b"#[test] fn a() {}");
+        let tree = scan_tree(dir.path(), ScanOptions::default());
+        let class = |rel: &str| tree.files.iter().find(|f| f.rel == Path::new(rel)).map(|f| (f.class, f.rule.why()));
+        assert_eq!(class("src/a/b/c/deep.rs"), Some((FileClass::Code, "extension".to_string())));
+        assert_eq!(class("tests/it.rs"), Some((FileClass::Tests, "tool convention: Cargo".to_string())));
+        assert_eq!(class("assets/logo.png"), Some((FileClass::Assets, "extension".to_string())));
+        assert_eq!(class("Cargo.lock"), Some((FileClass::Config, "file name".to_string())));
+        assert_eq!(class("assets/blob.bin"), Some((FileClass::Other, "fallback".to_string())));
     }
 
     #[cfg(unix)]

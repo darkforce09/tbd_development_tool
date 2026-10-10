@@ -9,6 +9,7 @@ studio_ui.workspace = true
 studio_graph.workspace = true
 studio_canvas.workspace = true
 studio_parser.workspace = true
+studio_sources.workspace = true
 rfd.workspace = true
 egui.workspace = true
 egui-phosphor.workspace = true

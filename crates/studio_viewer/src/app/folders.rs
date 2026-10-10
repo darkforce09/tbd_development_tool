@@ -2,9 +2,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 
 use studio_graph::FolderDetail;
-use studio_parser::extractor::ExtractedFile;
-use studio_parser::tree::ProjectTree;
-use studio_parser::{load_folder_contents, materialize_folder, SymbolSearchIndex};
+use studio_parser::{load_folder_contents, materialize_folder, FolderContents};
 
 use super::StudioApp;
 
@@ -14,7 +12,7 @@ pub struct FolderLoad {
     pub label: String,
     /// Detail level to show the folder at once it is loaded.
     pub detail: FolderDetail,
-    rx: Receiver<(ProjectTree, Vec<ExtractedFile>)>,
+    rx: Receiver<FolderContents>,
 }
 
 impl StudioApp {
@@ -27,14 +25,16 @@ impl StudioApp {
         let Some(cluster) = self.graph.clusters.iter_mut().find(|c| c.id == cluster_id) else { return };
         let Some(lazy) = cluster.lazy.clone() else { return };
 
-        cluster.subtitle = Some(format!("loading {} files…", lazy.file_count));
+        let files = lazy.totals.map(|t| format!(" {} files", t.file_count)).unwrap_or_default();
+        cluster.subtitle = Some(format!("loading{files}…"));
         let label = cluster.label.clone();
         let (tx, rx) = channel();
         let path = PathBuf::from(&lazy.abs_path);
+        let prefix = cluster_id.strip_prefix("dir:").unwrap_or_default().to_string();
         std::thread::spawn(move || {
-            let _ = tx.send(load_folder_contents(&path));
+            let _ = tx.send(load_folder_contents(&path, &prefix));
         });
-        self.canvas_state.status_message = Some(format!("Loading {label} ({} files)…", lazy.file_count));
+        self.canvas_state.status_message = Some(format!("Loading {label}{files}…"));
         self.folder_loads.push(FolderLoad { cluster_id, label, detail, rx });
     }
 
@@ -50,21 +50,27 @@ impl StudioApp {
         }
         for (i, result) in finished.into_iter().rev() {
             let load = self.folder_loads.remove(i);
-            let Some((tree, parsed)) = result else {
+            let Some(contents) = result else {
                 self.canvas_state.status_message = Some(format!("Loading {} failed", load.label));
+                self.palette_folder_failed(&load.cluster_id);
                 continue;
             };
-            match materialize_folder(&mut self.graph, &load.cluster_id, &tree, &parsed) {
+            match materialize_folder(&mut self.graph, &load.cluster_id, &contents.tree, &contents.parsed) {
                 Ok(added) => {
                     if load.detail != FolderDetail::Open {
                         self.graph.set_folder_detail(&load.cluster_id, load.detail);
                     }
                     self.canvas_state.mark_scene_dirty();
-                    self.search_index = SymbolSearchIndex::build(&self.graph);
+                    self.search_index.push(contents.files);
+                    self.search_index.push(contents.symbols);
                     self.canvas_state.status_message = Some(format!("Loaded {}: {} files", load.label, added));
+                    self.palette_folder_loaded(&load.cluster_id);
                 }
                 // The project was reloaded or switched while this folder was loading.
-                Err(e) => self.canvas_state.status_message = Some(format!("Skipped loading {}: {e}", load.label)),
+                Err(e) => {
+                    self.canvas_state.status_message = Some(format!("Skipped loading {}: {e}", load.label));
+                    self.palette_folder_failed(&load.cluster_id);
+                }
             }
         }
     }

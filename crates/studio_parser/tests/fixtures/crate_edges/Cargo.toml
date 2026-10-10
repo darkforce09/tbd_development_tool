@@ -1,0 +1,7 @@
+# The manifest-edge fixture: tests/crate_edges.rs builds the Code map of this virtual workspace (never compiled).
+[workspace]
+resolver = "2"
+members = ["core", "model", "render", "app"]
+
+[workspace.dependencies]
+core = { path = "core" }

@@ -565,11 +565,17 @@ fn every_documentation_pair_gets_a_route() {
 fn every_code_pair_gets_a_route() {
     let mut g = random_graph(5, 6, 30, 70);
     g.layout_folder_tree();
-    let pairs: BTreeSet<(NodeId, NodeId)> =
-        g.edges.iter().filter(|e| e.kind.is_code_flow()).map(|e| (e.from_node, e.to_node)).collect();
-    let routed: BTreeSet<(NodeId, NodeId)> =
-        g.flow.as_ref().unwrap().routes.iter().map(|r| (r.provider, r.consumer)).collect();
-    assert_eq!(pairs, routed);
+    let flow = g.flow.as_ref().unwrap();
+    let behind_hubs: BTreeSet<(NodeId, NodeId)> = flow.hubs.iter().flat_map(|h| h.pairs.iter().copied()).collect();
+    let pairs: BTreeSet<(NodeId, NodeId)> = g
+        .edges
+        .iter()
+        .filter(|e| e.kind.is_code_flow())
+        .map(|e| (e.from_node, e.to_node))
+        .filter(|p| !behind_hubs.contains(p))
+        .collect();
+    let routed: BTreeSet<(NodeId, NodeId)> = flow.routes.iter().map(|r| (r.provider, r.consumer)).collect();
+    assert_eq!(pairs, routed, "every pair not behind a hub badge is routed");
 }
 
 #[test]
@@ -718,15 +724,26 @@ fn a_folder_in_node_view_lists_every_gate_as_a_pin() {
             .unwrap()
             .id
             .clone();
-        let open: BTreeSet<(GateSide, GateKind, NodeId)> =
-            flow.gates.iter().filter(|x| x.container == busiest).map(|x| (x.side, x.kind, x.provider)).collect();
+        let open: BTreeSet<(GateSide, GateKind, VisibleEnd)> =
+            flow.gates.iter().filter(|x| x.container == busiest).map(|x| (x.side, x.kind, x.source.clone())).collect();
 
         g.set_folder_detail(&busiest, FolderDetail::NodeView);
         let c = g.clusters.iter().find(|c| c.id == busiest).unwrap().clone();
         assert_eq!(c.size[0], NODE_VIEW_WIDTH);
         let gates: Vec<&Gate> = g.flow.as_ref().unwrap().gates.iter().filter(|x| x.container == busiest).collect();
-        let pins: BTreeSet<(GateSide, GateKind, NodeId)> = gates.iter().map(|x| (x.side, x.kind, x.provider)).collect();
-        assert_eq!(pins, open, "node view shows the same gates as the open folder");
+        let pins: BTreeSet<(GateSide, GateKind, VisibleEnd)> =
+            gates.iter().map(|x| (x.side, x.kind, x.source.clone())).collect();
+        // Inputs are what feeds the folder, as when open. Outputs: the closed folder stands in for
+        // all its cards, so there is one output pin per kind, from the folder itself.
+        let inputs = |set: &BTreeSet<(GateSide, GateKind, VisibleEnd)>| -> BTreeSet<_> {
+            set.iter().filter(|x| x.0 == GateSide::Input).cloned().collect()
+        };
+        assert_eq!(inputs(&pins), inputs(&open), "node view lists what feeds the folder");
+        let out_kinds: BTreeSet<GateKind> = open.iter().filter(|x| x.0 == GateSide::Output).map(|x| x.1).collect();
+        let expected: BTreeSet<_> =
+            out_kinds.iter().map(|&k| (GateSide::Output, k, VisibleEnd::Folder(busiest.clone()))).collect();
+        let outputs: BTreeSet<_> = pins.iter().filter(|x| x.0 == GateSide::Output).cloned().collect();
+        assert_eq!(outputs, expected, "one output pin per kind, from the closed folder");
         for side in [GateSide::Input, GateSide::Output] {
             let mut column: Vec<&&Gate> = gates.iter().filter(|x| x.side == side).collect();
             column.sort_by(|a, b| a.position[1].total_cmp(&b.position[1]));
@@ -735,7 +752,10 @@ fn a_folder_in_node_view_lists_every_gate_as_a_pin() {
                 assert!((w[1].position[1] - w[0].position[1] - GATE_PITCH).abs() < 0.01, "pins are one pitch apart");
                 assert!(!(w[0].kind == GateKind::Code && w[1].kind == GateKind::Documentation));
                 if w[0].kind == w[1].kind {
-                    let name = |x: &Gate| g.nodes[&x.provider].title.clone();
+                    let name = |x: &Gate| match &x.source {
+                        VisibleEnd::Card(n) => g.nodes[n].title.clone(),
+                        VisibleEnd::Folder(id) => g.clusters.iter().find(|c| &c.id == id).unwrap().label.clone(),
+                    };
                     assert!(name(w[0]) <= name(w[1]), "pins are listed alphabetically");
                 }
             }
@@ -889,4 +909,137 @@ fn tracks_are_shared_only_by_spans_that_do_not_overlap() {
     assert_eq!(slots[4], 0, "a later span takes the lowest free track");
     assert_eq!(slots[3], 2, "(40, 60) fits after (20, 30) on track 2");
     assert_eq!(share_tracks::<u8>(&[]), (vec![], 0));
+}
+
+/// root/{lib (closed): a.rs, b.rs, app (open): main.rs}: a and b both feed main.
+fn closed_provider_folder() -> (Graph, [NodeId; 3]) {
+    let mut g = Graph::new();
+    g.tree_layout = true;
+    g.flow_layout = true;
+    let mut root = GroupCluster::new("root", "root", "Folder", 0);
+    let mut lib = GroupCluster::new("root/lib", "lib", "Folder", 0);
+    let mut app = GroupCluster::new("root/app", "app", "Folder", 0);
+    lib.parent_id = Some("root".into());
+    app.parent_id = Some("root".into());
+    lib.detail = crate::model::FolderDetail::NodeView;
+    root.child_cluster_ids = vec!["root/app".into(), "root/lib".into()];
+    let a = card(&mut g, "a.rs", "root/lib");
+    let b = card(&mut g, "b.rs", "root/lib");
+    let main = card(&mut g, "main.rs", "root/app");
+    lib.node_ids = vec![a, b];
+    app.node_ids = vec![main];
+    g.clusters = vec![root, lib, app];
+    wire(&mut g, a, main, EdgeKind::Import);
+    wire(&mut g, b, main, EdgeKind::Call);
+    g.rebuild_fast_indices();
+    g.layout_folder_tree();
+    (g, [a, b, main])
+}
+
+#[test]
+fn a_closed_folder_stands_in_for_its_cards() {
+    let (g, [_, _, main]) = closed_provider_folder();
+    let flow = g.flow.as_ref().unwrap();
+    let lib = VisibleEnd::Folder("root/lib".into());
+    let into_app: Vec<&Gate> =
+        flow.gates.iter().filter(|x| x.container == "root/app" && x.side == GateSide::Input).collect();
+    assert_eq!(into_app.len(), 1, "one gate into app, from the closed lib");
+    assert_eq!(into_app[0].source, lib);
+    let out_of_lib: Vec<&Gate> =
+        flow.gates.iter().filter(|x| x.container == "root/lib" && x.side == GateSide::Output).collect();
+    assert_eq!(out_of_lib.len(), 1, "one output pin on the closed lib");
+
+    assert_eq!(flow.bundles.len(), 1);
+    let bundle = &flow.bundles[0];
+    assert_eq!((&bundle.from, &bundle.to), (&lib, &VisibleEnd::Card(main)));
+    assert_eq!(bundle.pairs, 2);
+    assert_eq!(bundle.kinds[EdgeKind::Import as usize] + bundle.kinds[EdgeKind::Call as usize], 2);
+    let routes: Vec<&WireRoute> = flow.routes.iter().filter(|r| r.consumer == main).collect();
+    assert_eq!(routes.len(), 2);
+    assert!(routes.iter().all(|r| r.bundle == 0), "both pairs are in the one bundle");
+    assert_eq!(routes[0].points, routes[1].points, "pairs in a bundle share one path");
+    assert_routes_obey_the_laws(&g);
+}
+
+#[test]
+fn opening_the_folder_splits_it_back_into_cards() {
+    let (mut g, [a, b, main]) = closed_provider_folder();
+    g.set_folder_detail("root/lib", crate::model::FolderDetail::Open);
+    let flow = g.flow.as_ref().unwrap();
+    let sources: BTreeSet<VisibleEnd> = flow
+        .gates
+        .iter()
+        .filter(|x| x.container == "root/app" && x.side == GateSide::Input)
+        .map(|x| x.source.clone())
+        .collect();
+    assert_eq!(sources, BTreeSet::from([VisibleEnd::Card(a), VisibleEnd::Card(b)]));
+    assert_eq!(flow.bundles.len(), 2);
+    assert!(flow.bundles.iter().all(|x| x.pairs == 1 && x.to == VisibleEnd::Card(main)));
+    assert_routes_obey_the_laws(&g);
+}
+
+/// One provider feeding `fed` of `others` other cards in one folder (the rest feed each other).
+fn hub_candidate(fed: usize, others: usize) -> Graph {
+    let (g, _) = one_folder(others + 1, |g, ids| {
+        for &c in &ids[1..=fed] {
+            wire(g, ids[0], c, EdgeKind::Import);
+        }
+        // Keep every other card connected so it counts as a connected sibling.
+        for w in ids[fed + 1..].windows(2) {
+            wire(g, w[0], w[1], EdgeKind::Import);
+        }
+        if fed < others {
+            wire(g, ids[1], ids[fed + 1], EdgeKind::Import);
+        }
+    });
+    g
+}
+
+#[test]
+fn the_hub_rule_needs_half_the_siblings_and_at_least_eight() {
+    let hubs = |g: &Graph| g.flow.as_ref().unwrap().hubs.clone();
+    // Feeds 8 of 8: a hub.
+    let g = hub_candidate(8, 8);
+    let h = hubs(&g);
+    assert_eq!(h.len(), 1);
+    assert_eq!(h[0].used_by, 8);
+    assert_eq!(h[0].pairs.len(), 8);
+    // Feeds 7 of 7: too few.
+    assert!(hubs(&hub_candidate(7, 7)).is_empty());
+    // Feeds 8 of 17: under half.
+    assert!(hubs(&hub_candidate(8, 17)).is_empty());
+    // Feeds 8 of 16: exactly half.
+    assert_eq!(hubs(&hub_candidate(8, 16)).len(), 1);
+}
+
+#[test]
+fn a_hub_has_no_routes_or_gates_but_stays_left_of_what_it_feeds() {
+    let g = hub_candidate(10, 12);
+    let flow = g.flow.as_ref().unwrap();
+    assert_eq!(flow.hubs.len(), 1);
+    let VisibleEnd::Card(hub) = flow.hubs[0].item else { panic!("a card hub") };
+    assert!(flow.routes.iter().all(|r| r.provider != hub), "no routes from the hub");
+    assert!(flow.gates.iter().all(|x| x.source != VisibleEnd::Card(hub)), "no gates for the hub");
+    assert_providers_left(&g);
+    assert_routes_obey_the_laws(&g);
+}
+
+#[test]
+fn bundles_cover_every_route_once() {
+    for seed in 0..12 {
+        let mut g = random_graph(seed, 5, 30, 70);
+        for c in g.clusters.iter_mut().skip(1).step_by(2) {
+            c.detail = crate::model::FolderDetail::NodeView;
+        }
+        g.rebuild_collapsed_cache();
+        g.layout_folder_tree();
+        let flow = g.flow.as_ref().unwrap();
+        let total: u32 = flow.bundles.iter().map(|b| b.pairs).sum();
+        assert_eq!(total as usize, flow.routes.len(), "seed {seed}");
+        for r in &flow.routes {
+            let b = &flow.bundles[r.bundle as usize];
+            assert_eq!(flow.routes[b.route as usize].points, r.points, "seed {seed}: a bundle has one path");
+        }
+        assert_routes_obey_the_laws(&g);
+    }
 }

@@ -1,0 +1,227 @@
+# What `index_sessions` must find in `claude/` (format version 1 of the session logs).
+# Placeholders in the logs, filled by the test: {ROOT} the repo (roots = [{ROOT}, {ROOT}/wt]),
+# {LINK} a symlink to it, {OTHER} an unrelated folder, {PARENT} the repo's parent, {CLAUDE}
+# the fake ~/.claude. Every prompt, content, old/new string, command and task subject in the
+# logs and plan files holds the marker below; no cache byte may.
+marker = "SECRET-PROMPT-7f3a"
+
+# s7 starts outside the repo and moves into the worktree later (mapped by that line, D2 "any
+# line"); s8 only names the repo inside a tool input (not mapped).
+sessions = 5
+main_logs = 5
+subagent_logs = 1
+# Complete lines in the mapped logs (s2's incomplete last line waits for its newline).
+lines = 64
+bad_lines = 1
+# s3 copies three of s1's lines (resume); they count once, for s1.
+duplicate_lines = 3
+# s1 edits {OTHER}/elsewhere.txt (folder on disk); s7 edits {PARENT}/gone-wt/src/x.rs (gone).
+out_of_repo_touches = 2
+out_of_repo_gone = 1
+out_of_repo_existing = 1
+# Folder (relative to {PARENT}, the deepest folder holding the roots' parents) and count.
+out_of_repo_top = [["gone-wt", 1], ["other", 1]]
+# Main logs and sessions mapped by a line after the first cwd.
+later_cwd_logs = 1
+later_cwd_sessions = 1
+folders = 6
+folders_mapped = ["-link", "-moved", "-repo-a", "-repo-a-wt"]
+
+[unknown_types]
+queue-operation = 1
+custom-title = 1
+relocated = 1
+atis-latch = 1
+
+[touches]
+read = 4
+edit = 6
+write = 2
+bash_edit = 1
+subagent = 2
+
+# Touches per file, relative to {ROOT}.
+[per_file]
+"src/lib.rs" = 5
+"src/new.rs" = 1
+"src/main.rs" = 1
+"docs/rel.md" = 1
+"README.md" = 2
+"src/resumed.rs" = 1
+"wt/a.rs" = 1
+"wt/b.rs" = 1
+
+# plan: "line" (ExitPlanMode with its file), "line-no-file", "slug" (file only), "none".
+[[session]]
+id = "s1"
+slug = "brave-blue-fox"
+root = 0
+branches = ["main"]
+started = 1790848800000
+ended = 1790850011000
+logs = 2
+touches = 8
+plan = "line"
+plan_file = "brave-blue-fox.md"
+plan_time = 1790849460000
+tasks = ["1", "2"]
+# Task 1: in progress 10:02, completed 10:07. Task 2: in progress 10:09.
+task_states = [["1", 1790848920000, "in_progress"], ["1", 1790849220000, "completed"], ["2", 1790849340000, "in_progress"]]
+
+[[session]]
+id = "s3"
+slug = "calm-green-owl"
+root = 0
+branches = ["main"]
+started = 1790848801000
+ended = 1790852401000
+logs = 1
+touches = 1
+plan = "slug"
+plan_file = "calm-green-owl.md"
+tasks = []
+
+[[session]]
+id = "s2"
+slug = "quiet-red-elk"
+root = 0
+branches = ["feature/x"]
+started = 1790931600000
+ended = 1790931721000
+logs = 1
+touches = 1
+plan = "line-no-file"
+plan_time = 1790931720000
+tasks = []
+
+[[session]]
+id = "s6"
+root = 1
+branches = []
+started = 1791014400000
+ended = 1791014401000
+logs = 1
+touches = 1
+plan = "none"
+tasks = []
+
+# Its root is the one of its first line inside a root ({LINK}/wt), not of later ones.
+[[session]]
+id = "s7"
+slug = "slow-tan-ram"
+root = 1
+branches = ["main"]
+started = 1791100800000
+ended = 1791101041000
+logs = 1
+touches = 2
+plan = "none"
+tasks = []
+
+# Every touch, exactly (task = the task id in progress, "" for none).
+[[touch]]
+session = "s1"
+kind = "edit"
+path = "src/lib.rs"
+time = 1790848860000
+task = ""
+hunks = 1
+
+[[touch]]
+session = "s1"
+kind = "write"
+path = "src/new.rs"
+time = 1790848980000
+task = "1"
+hunks = 0
+
+[[touch]]
+session = "s1"
+kind = "read"
+path = "src/lib.rs"
+time = 1790849040000
+task = "1"
+hunks = 0
+read = [10, 20]
+
+[[touch]]
+session = "s1"
+kind = "bash_edit"
+path = "src/main.rs"
+time = 1790849100000
+task = "1"
+hunks = 1
+
+[[touch]]
+session = "s1"
+kind = "edit"
+path = "src/lib.rs"
+time = 1790849280000
+task = ""
+hunks = 2
+
+[[touch]]
+session = "s1"
+kind = "edit"
+path = "src/lib.rs"
+time = 1790849370000
+task = "2"
+hunks = 0
+subagent = true
+
+[[touch]]
+session = "s1"
+kind = "edit"
+path = "docs/rel.md"
+time = 1790849520000
+task = "2"
+hunks = 0
+
+[[touch]]
+session = "s1"
+kind = "read"
+path = "README.md"
+time = 1790850000000
+task = "2"
+hunks = 0
+subagent = true
+
+[[touch]]
+session = "s3"
+kind = "write"
+path = "src/resumed.rs"
+time = 1790852400000
+task = ""
+hunks = 0
+
+[[touch]]
+session = "s2"
+kind = "edit"
+path = "src/lib.rs"
+time = 1790931660000
+task = ""
+hunks = 1
+
+[[touch]]
+session = "s6"
+kind = "read"
+path = "wt/a.rs"
+time = 1791014400000
+task = ""
+hunks = 0
+
+[[touch]]
+session = "s7"
+kind = "edit"
+path = "wt/b.rs"
+time = 1791100980000
+task = ""
+hunks = 1
+
+[[touch]]
+session = "s7"
+kind = "read"
+path = "README.md"
+time = 1791101040000
+task = ""
+hunks = 0

@@ -1,0 +1,7 @@
+id = "T-2.9"
+kind = "work"
+title = "Slice nine"
+status = "ready"
+priority = 2
+order = 10
+parent = "T-2"

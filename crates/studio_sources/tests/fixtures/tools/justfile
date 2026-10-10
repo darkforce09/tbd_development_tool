@@ -1,0 +1,17 @@
+set shell := ["bash", "-c"]
+
+# Serve the site
+serve port='8080':
+    echo serving
+
+alias s := serve
+
+version := "1.0"
+
+# Release a build
+@release kind:
+    echo {{kind}}
+
+[private]
+helper:
+    true

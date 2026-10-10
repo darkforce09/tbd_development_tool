@@ -1,54 +1,105 @@
+pub mod analysis;
 pub mod builder;
 pub mod cache;
+pub mod classify;
 pub mod edit;
 pub mod extractor;
+pub mod fuzzy;
+pub mod git_head;
 pub mod project;
 pub mod search_index;
 pub mod sync;
 pub mod tree;
 
 pub use builder::{
-    build_files_graph, build_project_graph, build_skeleton_files_graph, folder_cluster_id, materialize_folder,
-    ProjectStats,
+    apply_folder_totals, build_files_graph, build_project_graph, build_skeleton_files_graph, folder_cluster_id,
+    heavy_folder_totals, materialize_folder, ProjectStats,
 };
 pub use cache::{
     clear_project_cache, load_project_cache, save_project_cache, user_cache_dir_for_project, CachedProjectData,
 };
+pub use classify::{classify, ClassInputs, FileClass, Rule, RuleKind, HEAVY_MARKERS, RULES};
 pub use edit::{apply_edit, atomic_write, content_hash, EditError, EditOrigin};
 pub use extractor::{
     extract_file, extract_project, EnumItem, ExtractedCrate, ExtractedFile, ExtractedProject, FieldInfo, FunctionItem,
     ImplItem, ItemVisibility, LinkItem, ParamInfo, StructItem, TraitItem, UseItem,
 };
 pub use project::{scan_project, CrateInfo, ProjectError, RustProject};
-pub use search_index::{SearchItem, SymbolSearchIndex};
+pub use search_index::{
+    file_segment, folder_symbol_segment, symbol_segment, Entry, EntryKind, FileListing, Group, Hit, Query, Scope,
+    SearchIndex, Segment,
+};
 pub use sync::{save_and_reparse, SaveReport};
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
+use std::sync::Arc;
 use studio_graph::Graph;
 
 #[derive(Debug, Clone)]
 pub enum LoaderMessage {
-    Progress { stage: String, files_done: usize, total_files: usize, percentage: f32 },
-    InitialLayoutReady { graph: Graph, stats: ProjectStats, search_index: SymbolSearchIndex },
-    Complete { graph: Graph, stats: ProjectStats, search_index: SymbolSearchIndex, from_cache: bool },
+    Progress {
+        stage: String,
+        files_done: usize,
+        total_files: usize,
+        percentage: f32,
+    },
+    InitialLayoutReady {
+        graph: Graph,
+        stats: ProjectStats,
+        /// Files in slot 0; slot 1 (symbols) is empty until `Complete`.
+        search_index: SearchIndex,
+    },
+    Complete {
+        graph: Graph,
+        stats: ProjectStats,
+        /// Files in slot 0, symbols in slot 1, slot 2 free for the viewer.
+        search_index: SearchIndex,
+        from_cache: bool,
+    },
+    /// What each collapsed heavy folder holds (cluster id, totals), counted after `Complete` so a
+    /// huge build folder never delays the map. Apply with [`apply_folder_totals`].
+    FolderTotals(Vec<(String, studio_graph::FolderTotals)>),
     Error(String),
 }
 
-/// Scans a collapsed folder and parses its text files, for [`materialize_folder`]. Runs off the UI
-/// thread; heavy folders nested inside stay collapsed, but git-ignore status is not re-applied
-/// (everything inside an ignored folder is ignored).
-pub fn load_folder_contents(folder: &Path) -> (tree::ProjectTree, Vec<extractor::ExtractedFile>) {
+/// A collapsed folder's contents, loaded off the UI thread.
+pub struct FolderContents {
+    pub tree: tree::ProjectTree,
+    pub parsed: Vec<extractor::ExtractedFile>,
+    /// Its files and nested heavy folders, to push into the [`SearchIndex`].
+    pub files: Arc<Segment>,
+    /// Its symbols, to push into the [`SearchIndex`].
+    pub symbols: Arc<Segment>,
+}
+
+/// Scans a collapsed folder (`prefix` is its project-relative `/` path) and parses its text files,
+/// for [`materialize_folder`], and builds its search segments. Runs off the UI thread; heavy folders
+/// nested inside stay collapsed, but git-ignore status is not re-applied (everything inside an
+/// ignored folder is ignored).
+pub fn load_folder_contents(folder: &Path, prefix: &str) -> FolderContents {
     use rayon::prelude::*;
     let tree = tree::scan_tree(folder, tree::ScanOptions { gitignored_heavy: false });
     let text: Vec<PathBuf> = tree.text_files().collect();
-    let parsed = text.par_iter().map(|p| extract_file(p, p.strip_prefix(folder).unwrap_or(p))).collect();
-    (tree, parsed)
+    let parsed: Vec<_> = text.par_iter().map(|p| extract_file(p, p.strip_prefix(folder).unwrap_or(p))).collect();
+    let files = Arc::new(file_segment(&FileListing::from_tree(&tree, prefix)));
+    let symbols = Arc::new(folder_symbol_segment(prefix, &parsed));
+    FolderContents { tree, parsed, files, symbols }
+}
+
+/// The search index of a graph loaded from the cache: the same file segment a fresh scan gives
+/// (rebuilt from the graph's cards and unloaded folders, minus files git ignores), and its symbols.
+fn cached_search_index(path: &Path, graph: &Graph) -> SearchIndex {
+    let root = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let (_, ignored) = tree::git_ignored(&root);
+    let files = file_segment(&FileListing::from_graph(graph, &ignored));
+    SearchIndex::loaded(Arc::new(files), Arc::new(symbol_segment(graph)))
 }
 
 /// Convenience function to scan, extract, and build a Graph for a Rust project at given path.
 pub fn load_rust_project(path: impl AsRef<Path>) -> Result<(Graph, ProjectStats), ProjectError> {
-    let scanned = scan_project(path)?;
+    let mut scanned = scan_project(path)?;
+    tree::measure_heavy_dirs(&mut scanned.tree);
     let extracted = extract_project(&scanned);
     let (graph, stats) = build_project_graph(&extracted);
     Ok((graph, stats))
@@ -86,7 +137,7 @@ pub fn spawn_load_project_opt(
                         percentage: 0.90,
                     });
 
-                    let search_index = SymbolSearchIndex::build(&graph);
+                    let search_index = cached_search_index(&path, &graph);
 
                     let _ = tx.send(LoaderMessage::Complete { graph, stats, search_index, from_cache: true });
                     return;
@@ -115,7 +166,8 @@ pub fn spawn_load_project_opt(
 
         // Tier 1 instant layout: immediately emit skeleton files & clusters (< 100ms)
         let (skeleton_graph, skeleton_stats) = builder::build_skeleton_files_graph(&scanned);
-        let search_index = SymbolSearchIndex::build(&skeleton_graph);
+        let files = Arc::new(file_segment(&FileListing::from_tree(&scanned.tree, "")));
+        let search_index = SearchIndex::loaded(files.clone(), Arc::default());
         let _ =
             tx.send(LoaderMessage::InitialLayoutReady { graph: skeleton_graph, stats: skeleton_stats, search_index });
 
@@ -143,13 +195,13 @@ pub fn spawn_load_project_opt(
         let (graph, stats) = build_project_graph(&extracted);
 
         let _ = tx.send(LoaderMessage::Progress {
-            stage: "Building in-memory Trigram search index...".to_string(),
+            stage: "Building the search index...".to_string(),
             files_done: total_files,
             total_files,
             percentage: 0.95,
         });
 
-        let search_index = SymbolSearchIndex::build(&graph);
+        let search_index = SearchIndex::loaded(files, Arc::new(symbol_segment(&graph)));
 
         // Send Complete immediately so UI displays rich nodes & wires with zero lag
         let _ = tx.send(LoaderMessage::Complete {
@@ -159,13 +211,16 @@ pub fn spawn_load_project_opt(
             from_cache: false,
         });
 
-        // Save to user rkyv cache asynchronously in background thread
-        let save_root = path.clone();
-        std::thread::spawn(move || {
-            if let Err(e) = cache::save_project_cache(&save_root, &graph, &stats) {
-                eprintln!("Failed to save project cache: {}", e);
-            }
-        });
+        // Then count what the collapsed heavy folders hold, and cache the graph with the totals.
+        let mut tree = scanned.tree;
+        tree::measure_heavy_dirs(&mut tree);
+        let totals = heavy_folder_totals(&tree);
+        let mut graph = graph;
+        apply_folder_totals(&mut graph, &totals);
+        let _ = tx.send(LoaderMessage::FolderTotals(totals));
+        if let Err(e) = cache::save_project_cache(&path, &graph, &stats) {
+            eprintln!("Failed to save project cache: {}", e);
+        }
     })
 }
 
@@ -179,14 +234,59 @@ mod tests {
         let (graph, stats) = load_rust_project(manifest_dir).expect("Failed to load studio_parser crate");
 
         assert!(!graph.nodes.is_empty(), "Graph should contain nodes");
-        assert_eq!(stats.crate_count, 1);
+        // Exactly one package is rooted at the crate folder: studio_parser itself.
+        let scanned = scan_project(manifest_dir).expect("scan studio_parser");
+        let root = manifest_dir.canonicalize().unwrap();
+        let rooted: Vec<_> = scanned.crates.iter().filter(|c| c.is_package() && c.root_path == root).collect();
+        assert_eq!(rooted.len(), 1, "one package at the crate folder");
+        assert_eq!(rooted[0].manifest_path.as_deref(), Some(root.join("Cargo.toml").as_path()));
+        // The others are the test fixtures' packages: every `Cargo.toml` under `tests/fixtures/` with a `[package]`
+        // table (a virtual workspace root is not a package).
+        let fixture_packages = walkdir::WalkDir::new(manifest_dir.join("tests/fixtures"))
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name() == "Cargo.toml")
+            .filter(|e| {
+                std::fs::read_to_string(e.path())
+                    .ok()
+                    .and_then(|t| t.parse::<toml::Table>().ok())
+                    .is_some_and(|t| t.contains_key("package"))
+            })
+            .count();
+        assert_eq!(stats.crate_count, 1 + fixture_packages);
         assert!(stats.file_count >= 5, "Should find at least 5 files");
         assert!(stats.node_count > 20, "Should extract nodes");
         assert!(stats.wire_count > 10, "Should connect wires");
+    }
 
-        let index = SymbolSearchIndex::build(&graph);
-        let results = index.search("parse", 10);
-        assert!(!results.is_empty(), "Search should find symbols");
+    #[test]
+    fn the_loader_index_finds_files_by_name_and_path_and_symbols_by_name() {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel();
+        spawn_load_project_opt(manifest_dir, true, tx).join().expect("loader thread");
+        let index = rx
+            .try_iter()
+            .find_map(|m| match m {
+                LoaderMessage::Complete { search_index, .. } => Some(search_index),
+                _ => None,
+            })
+            .expect("complete message");
+        assert_eq!(index.segments().len(), 3, "files, symbols and a free slot");
+        assert!(index.segments()[search_index::SOURCES_SLOT].is_empty());
+
+        let first = |q: &str| {
+            let groups = index.search(&Query::parse(q), |_| 8);
+            let hit = &groups.first().unwrap_or_else(|| panic!("{q}: no hits")).hits[0];
+            let e = index.entry(hit);
+            (e.kind, e.name.clone(), e.path.clone().unwrap_or_default())
+        };
+        assert_eq!(first("search_index"), (EntryKind::File, "search_index.rs".into(), "src/search_index.rs".into()));
+        assert_eq!(first("src/fuzzy"), (EntryKind::File, "fuzzy.rs".into(), "src/fuzzy.rs".into()));
+        assert_eq!(
+            first("@load_folder_contents"),
+            (EntryKind::Symbol, "load_folder_contents".into(), "src/lib.rs".into())
+        );
+        assert!(index.search(&Query::parse("qqqqzzzz"), |_| 8).is_empty());
     }
 
     #[test]
@@ -312,6 +412,85 @@ mod tests {
     }
 
     #[test]
+    fn a_save_rewires_calls_by_name_and_never_mints_a_proven_wire() {
+        use studio_graph::{EdgeKind, EvidenceTier};
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/b.rs"), "pub fn beta() {}\n").unwrap();
+        let main = dir.path().join("src/main.rs");
+        std::fs::write(&main, "mod b;\nuse b::beta;\nfn main() {\n    beta();\n}\n").unwrap();
+
+        let (mut graph, _) = load_rust_project(dir.path()).unwrap();
+        let card = graph.nodes.values().find(|n| n.title == "main.rs").unwrap().id;
+        let tiers = |g: &Graph, kind: EdgeKind| -> Vec<EvidenceTier> {
+            g.edges.iter().filter(|e| e.to_node == card && e.kind == kind).map(|e| e.provenance.tier).collect()
+        };
+        assert_eq!(tiers(&graph, EdgeKind::Call), vec![EvidenceTier::Proven], "R1 resolves beta()");
+        assert_eq!(tiers(&graph, EdgeKind::Import), vec![EvidenceTier::Proven], "and the import");
+
+        save_and_reparse(&main, "mod b;\nuse b::beta;\nfn main() {\n    beta();\n    b::beta();\n}\n", &mut graph)
+            .unwrap();
+        assert_eq!(tiers(&graph, EdgeKind::Call), vec![EvidenceTier::Unresolved], "rewired by name on save");
+        assert_eq!(
+            tiers(&graph, EdgeKind::Import),
+            vec![EvidenceTier::Unresolved],
+            "a file wire whose name still matches stays, but a save cannot keep it Proven"
+        );
+    }
+
+    #[test]
+    fn a_save_that_deletes_a_use_keeps_no_proven_wire() {
+        use studio_graph::EvidenceTier;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/b.rs"), "pub fn beta() {}\n").unwrap();
+        std::fs::write(dir.path().join("src/c.rs"), "pub fn gamma() {}\n").unwrap();
+        let main = dir.path().join("src/main.rs");
+        std::fs::write(
+            &main,
+            "mod b;\nmod c;\nuse b::beta;\nuse c::gamma;\nfn main() {\n    beta();\n    gamma();\n}\n",
+        )
+        .unwrap();
+
+        let (mut graph, _) = load_rust_project(dir.path()).unwrap();
+        let card = graph.nodes.values().find(|n| n.title == "main.rs").unwrap().id;
+        let title = |g: &Graph, id: studio_graph::NodeId| g.nodes[&id].title.clone();
+        let wires = |g: &Graph| -> Vec<(String, EvidenceTier)> {
+            let mut w: Vec<(String, EvidenceTier)> = g
+                .edges
+                .iter()
+                .filter(|e| e.to_node == card && e.to_port == g.nodes[&card].inputs[0].id)
+                .map(|e| (title(g, e.from_node), e.provenance.tier))
+                .collect();
+            w.sort();
+            w
+        };
+        assert_eq!(
+            wires(&graph),
+            [("b.rs".to_string(), EvidenceTier::Proven), ("c.rs".to_string(), EvidenceTier::Proven)],
+            "R1 proves both imports"
+        );
+
+        // `b` is still used by name; nothing names `c` any more.
+        save_and_reparse(&main, "mod b;\nuse b::beta;\nfn main() {\n    beta();\n}\n", &mut graph).unwrap();
+        assert_eq!(wires(&graph), [("b.rs".to_string(), EvidenceTier::Unresolved)]);
+        assert!(
+            graph.edges.iter().all(|e| e.to_node != card || e.provenance.tier != EvidenceTier::Proven),
+            "no Proven wire into the saved card"
+        );
+    }
+
+    #[test]
     fn test_files_view_shows_every_file_and_folder() {
         let dir = tempfile::tempdir().unwrap();
         let r = dir.path();
@@ -324,6 +503,8 @@ mod tests {
         write("src/lib/util.py", b"def helper():\n    pass\n");
         write("assets/logo.png", b"\x89PNG\r\n\x1a\n\0\0");
         write("assets/blob.bin", b"abc\0def");
+        // npm 7+ writes this marker into every node_modules it fills: that, not the name, makes it heavy.
+        write("node_modules/.package-lock.json", b"{}");
         write("node_modules/pkg/index.js", b"export function dep() {}\n");
         write("node_modules/pkg/package.json", b"{}");
         std::fs::create_dir_all(r.join("empty")).unwrap();
@@ -339,7 +520,16 @@ mod tests {
             let cluster = graph.clusters.iter().find(|c| c.id == id).unwrap_or_else(|| panic!("no cluster {id}"));
             let parent = d.parent.map(|p| folder_cluster_id(&scanned.dirs[p].rel));
             assert_eq!(cluster.parent_id, parent, "{id}");
-            assert!(cluster.size[0] > 1.0 && cluster.size[1] > 1.0, "{id} must be visible");
+            // The project opens at its top level: the root open, every other folder closed.
+            let expected = match (d.parent, cluster.lazy.is_some()) {
+                (_, true) => studio_graph::FolderDetail::Minimised,
+                (None, false) => studio_graph::FolderDetail::Open,
+                (Some(_), false) => studio_graph::FolderDetail::NodeView,
+            };
+            assert_eq!(cluster.detail, expected, "{id}");
+            if !graph.hidden_cluster_ids.contains(&id) {
+                assert!(cluster.size[0] > 1.0 && cluster.size[1] > 1.0, "{id} must be visible");
+            }
         }
         for f in &scanned.files {
             let node = graph
@@ -359,20 +549,37 @@ mod tests {
         // node_modules is a collapsed placeholder with totals and no cards yet.
         let nm = graph.clusters.iter().find(|c| c.id == "dir:node_modules").unwrap().clone();
         assert!(nm.is_collapsed());
-        assert_eq!(nm.lazy.as_ref().map(|l| l.file_count), Some(2));
+        assert_eq!(nm.lazy.as_ref().and_then(|l| l.totals).map(|t| t.file_count), Some(3));
         assert!(nm.node_ids.is_empty() && nm.child_cluster_ids.is_empty());
         assert!(graph.clusters.iter().find(|c| c.id == "dir:empty").unwrap().subtitle.as_deref() == Some("empty"));
 
         // Expanding it loads its files, parsed, under the right folders.
-        let (subtree, parsed) = load_folder_contents(Path::new(&nm.lazy.unwrap().abs_path));
-        let added = materialize_folder(&mut graph, "dir:node_modules", &subtree, &parsed).unwrap();
-        assert_eq!(added, 2);
+        let loaded = load_folder_contents(Path::new(&nm.lazy.unwrap().abs_path), "node_modules");
+        let added = materialize_folder(&mut graph, "dir:node_modules", &loaded.tree, &loaded.parsed).unwrap();
+        assert_eq!(added, 3);
         let nm = graph.clusters.iter().find(|c| c.id == "dir:node_modules").unwrap();
         assert!(!nm.is_collapsed() && nm.lazy.is_none());
         let pkg = graph.clusters.iter().find(|c| c.id == "dir:node_modules/pkg").expect("nested folder");
         assert_eq!(pkg.parent_id.as_deref(), Some("dir:node_modules"));
         assert_eq!(pkg.node_ids.len(), 2);
         assert!(!card_in(&graph, "index.js").member_nodes.is_empty());
+
+        // The folder brings its own search segments, with project-relative paths, and each symbol
+        // key finds its member on the card the load made.
+        let paths: Vec<_> = loaded.files.entries().iter().map(|e| e.path.clone().unwrap()).collect();
+        assert_eq!(
+            paths,
+            ["node_modules/.package-lock.json", "node_modules/pkg/index.js", "node_modules/pkg/package.json"]
+        );
+        assert!(!loaded.symbols.is_empty());
+        for sym in loaded.symbols.entries() {
+            let card = graph
+                .nodes
+                .values()
+                .find(|n| builder::common::node_rel_path(n).as_deref() == sym.path.as_deref())
+                .expect("symbol's card");
+            assert_eq!(card.member_nodes[search_index::member_index(sym.key)].name, sym.name);
+        }
     }
 
     #[test]
@@ -388,7 +595,7 @@ mod tests {
         while let Ok(msg) = rx.try_recv() {
             match msg {
                 LoaderMessage::Progress { .. } => got_progress = true,
-                LoaderMessage::InitialLayoutReady { .. } => {}
+                LoaderMessage::InitialLayoutReady { .. } | LoaderMessage::FolderTotals(_) => {}
                 LoaderMessage::Complete { graph, stats, .. } => {
                     got_complete = true;
                     assert!(!graph.nodes.is_empty());
@@ -411,6 +618,7 @@ mod tests {
 
         let mut got_initial_layout = false;
         let mut got_complete = false;
+        let mut got_totals = false;
 
         while let Ok(msg) = rx.try_recv() {
             match msg {
@@ -420,6 +628,7 @@ mod tests {
                     assert!(stats.file_count >= 5);
                 }
                 LoaderMessage::Complete { .. } => got_complete = true,
+                LoaderMessage::FolderTotals(_) => got_totals = true,
                 LoaderMessage::Progress { .. } => {}
                 LoaderMessage::Error(e) => panic!("Loader error: {}", e),
             }
@@ -427,6 +636,7 @@ mod tests {
 
         assert!(got_initial_layout, "Should have received initial layout message");
         assert!(got_complete, "Should have received completion message");
+        assert!(got_totals, "heavy folder totals follow the complete graph");
     }
 
     #[test]
@@ -615,5 +825,148 @@ Link back: [Hub](../README.md)
         assert_eq!(updated_node.source_code.as_deref(), Some(updated_md));
         assert!(updated_node.member_nodes.iter().any(|m| m.name == "Updated Spec"));
         assert!(updated_node.member_nodes.iter().any(|m| m.name == "New Heading"));
+    }
+
+    #[test]
+    fn members_know_their_last_line_in_every_language() {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |rel: &str, text: &str| std::fs::write(dir.path().join(rel), text).unwrap();
+        // A function body with a `{` in a string, which a brace count would get wrong.
+        write("lib.rs", "/// Docs.\npub fn run() {\n    let s = \"{\";\n    go(s);\n}\n\npub struct One;\n");
+        write("app.py", "def a():\n    x = 1\n    return x\n\n\nclass B:\n    pass\n");
+        write("Thing.c", "class Thing\n{\n    void Run()\n    {\n        Go();\n    }\n}\n");
+        write("notes.md", "# Title\n\n```rust\nfn x() {}\n```\n");
+        let (graph, _) = load_rust_project(dir.path()).unwrap();
+        let member = |file: &str, name: &str| {
+            let card = graph.nodes.values().find(|n| n.title == file).unwrap_or_else(|| panic!("{file}"));
+            let m = card.member_nodes.iter().find(|m| m.name == name).unwrap_or_else(|| panic!("{file}: {name}"));
+            (m.line_number, m.line_end)
+        };
+        assert_eq!(member("lib.rs", "run"), (2, 5));
+        assert_eq!(member("lib.rs", "One"), (7, 7));
+        assert_eq!(member("app.py", "a"), (1, 3));
+        assert_eq!(member("app.py", "B"), (6, 7));
+        assert_eq!(member("notes.md", "Title"), (1, 1));
+        assert_eq!(member("notes.md", "block:rust"), (3, 5));
+    }
+
+    #[test]
+    fn documentation_links_and_resolved_rust_paths_are_proven_and_name_matches_are_not() {
+        use studio_graph::{Basis, EdgeKind, EvidenceTier};
+        let dir = tempfile::tempdir().unwrap();
+        let write = |rel: &str, text: &str| {
+            let p = dir.path().join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        };
+        write("Cargo.toml", "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
+        write("README.md", "See [the store](src/store.rs).\n");
+        write("src/store.rs", "pub fn open() {}\npub fn flush() {}\n");
+        write("src/main.rs", "mod store;\nuse store::open;\nfn main() {\n    open();\n    let w = Vec::<u8>::new();\n    w.flush();\n}\n");
+        let (graph, _) = load_rust_project(dir.path()).unwrap();
+        let member_of = |port: studio_graph::PortId| {
+            graph
+                .nodes
+                .values()
+                .flat_map(|n| n.member_nodes.iter().map(move |m| (n, m)))
+                .find(|(_, m)| m.in_port_id == Some(port) || m.out_port_id == Some(port))
+                .map(|(n, m)| format!("{}#{}", n.title, m.name))
+        };
+        let side = |node, port| member_of(port).unwrap_or_else(|| graph.nodes[&node].title.clone());
+        let mut wires: Vec<(String, String, EdgeKind, EvidenceTier, Basis)> = graph
+            .edges
+            .iter()
+            .map(|e| {
+                let p = e.provenance;
+                (side(e.from_node, e.from_port), side(e.to_node, e.to_port), e.kind, p.tier, p.basis)
+            })
+            .collect();
+        wires.sort_by_key(|w| format!("{w:?}"));
+        let (proven, unresolved) = (EvidenceTier::Proven, EvidenceTier::Unresolved);
+        let mut expected = vec![
+            // The link names a file that exists.
+            ("README.md".into(), "store.rs".into(), EdgeKind::Documentation, proven, Basis::DocLink),
+            ("README.md".into(), "store.rs".into(), EdgeKind::Documentation, proven, Basis::DocLink),
+            // `use store::open` and `open()` resolve through `mod store;` (R1).
+            ("store.rs".into(), "main.rs".into(), EdgeKind::Import, proven, Basis::PathResolution),
+            ("store.rs#open".into(), "main.rs#main".into(), EdgeKind::Call, proven, Basis::PathResolution),
+            // `w.flush()` is a method call: only its name matches `store::flush`.
+            ("store.rs#flush".into(), "main.rs#main".into(), EdgeKind::Call, unresolved, Basis::NameMatch),
+        ];
+        // The link row's wire and the file's wire both start at README.md.
+        expected[0].0 = "README.md#the store".into();
+        expected.sort_by_key(|w| format!("{w:?}"));
+        assert_eq!(wires, expected);
+    }
+
+    #[test]
+    fn tests_are_counted_the_way_the_test_runner_finds_them() {
+        let rust = r##"
+            // #[test] in a comment is not a test
+            const TEXT: &str = "#[test] in a string is not a test";
+            #[test]
+            fn plain() {}
+            #[tokio::test(flavor = "multi_thread")]
+            async fn async_one() {}
+            #[cfg(test)]
+            mod tests {
+                #[test]
+                fn nested() {
+                    #[test]
+                    fn inside_a_function() {}
+                }
+                #[test_case(1)]
+                #[test_case(2)]
+                fn cases(_: u8) {}
+            }
+            proptest! {
+                #[test]
+                fn property(x in 0..10u8) {}
+            }
+            macro_rules! make_test {
+                ($name:ident) => {
+                    #[test]
+                    fn $name() {}
+                };
+            }
+            fn not_a_test() {}
+        "##;
+        let file = extractor::parse::extract_source(Path::new("lib.rs"), Path::new("lib.rs"), rust);
+        assert_eq!(file.tests, 7);
+
+        let py = "def test_one():\n    pass\n\ndef helper():\n    pass\n\nclass TestThing:\n    def test_two(self):\n        pass\n";
+        assert_eq!(
+            extractor::parse::extract_source(Path::new("test_thing.py"), Path::new("test_thing.py"), py).tests,
+            2
+        );
+        assert_eq!(
+            extractor::parse::extract_source(Path::new("thing.py"), Path::new("thing.py"), py).tests,
+            0,
+            "not a test file"
+        );
+        let go = "package x\nimport \"testing\"\nfunc TestOne(t *testing.T) {}\nfunc Testable() {}\nfunc helper() {}\n";
+        assert_eq!(extractor::parse::extract_source(Path::new("x_test.go"), Path::new("x_test.go"), go).tests, 1);
+    }
+
+    #[test]
+    fn a_folder_says_what_it_holds_and_what_it_is_for() {
+        assert_eq!(
+            builder::first_sentence("# Title\n\n[![ci](badge.svg)](x)\n\nThe API for game servers. It does more.\n"),
+            Some("The API for game servers.".to_string())
+        );
+        assert_eq!(builder::first_sentence("# Only a heading\n"), None);
+
+        let dir = tempfile::tempdir().unwrap();
+        let write = |rel: &str, text: &str| {
+            let p = dir.path().join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        };
+        write("api/README.md", "# api\n\nServes the website. Also more.\n");
+        write("api/src/lib.rs", "#[test]\nfn a() {}\n#[test]\nfn b() {}\n");
+        let (graph, _) = load_rust_project(dir.path()).unwrap();
+        let api = graph.clusters.iter().find(|c| c.id == folder_cluster_id(Path::new("api"))).unwrap();
+        assert_eq!(api.about.as_deref(), Some("Serves the website."));
+        assert_eq!(api.subtitle.as_deref(), Some("2 files · 2 tests · 1 code, 1 docs — Serves the website."));
     }
 }

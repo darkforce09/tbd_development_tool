@@ -83,21 +83,21 @@ Phases run roughly in order. A later phase can start early only when it does not
 Goal: remove everything that is mock, duplicated or in the way, so later work builds on what is real.
 
 - [x] One canvas: remove the Codebase Maps / Architecture Map / Flows & Traces tabs. Flows & Traces showed hard-coded mock data.
-- [x] Remove the right Inspector panel and the Split Editor. Editing returns on the canvas in Phase 6.
+- [x] Remove the right Inspector panel and the Split Editor. Editing returns on the Desk in Phase 6.
 - [x] Filters sidebar hidden when the app opens.
 - [x] Remove the STUDIO brand label and the bottom status bar.
 - [x] Project stats move into the F3 debug panel, alongside frame timing, process, GPU and canvas telemetry. The old "Architecture Graph Valid" title is dropped because nothing was validated.
 - [x] Remove the view dropdown (Files & Folders / All Items / Public API / Modules) from the UI.
 - [x] Remove the Items, Public API and Modules graph builders from `studio_parser`, and granularity from the cache key.
-- [x] Remove the Ingress / Compute / State / Egress filter categories and the Spotlight buttons that created such nodes. They came from the abandoned lanes idea and are not derived from code.
-- [ ] Remove those archetypes from the graph model, the mock pipeline graph and `bench_scale` (needs a cache version bump; fold into Phase 1).
+- [x] Remove the Ingress / Compute / State / Egress filter categories and the buttons in the old Search window that created such nodes. They came from the abandoned lanes idea and are not derived from code.
+- [x] Remove those archetypes from the graph model, the mock pipeline graph and `bench_scale`, in the same cache version bump (Districts Step 1).
 - [x] Remove the Repo, Showcase and Force Reparse buttons. With no project open, the canvas shows an Open folder prompt.
 - [x] Wire toggles move into a View menu (Wires, Member wires) built so new toggles are one line each.
-- [x] Remove the Spotlight "create node" buttons; it is now Search. They added nodes that no code backs.
-- [x] Integrated title bar: no OS decorations; search, open and the View menu on the left, the project name in the centre, window buttons on the right. The window edges resize it.
-- [x] Filters button removed; the sidebar opens from an arrow tab under the title bar (Eden editor style).
+- [x] Remove the "create node" buttons from the old Search window. They added nodes that no code backs. The window was later replaced by the ⌘K palette (S8).
+- [x] Integrated title bar: no OS decorations; the project and where you are on the left (project › district › folders), what Studio is doing in the middle with the worktree and sessions pills, search and the View menu on the right. Studio draws its own window buttons on the right; macOS keeps its native ones on the left. The window edges resize it.
+- [x] Filters button and the filters sidebar removed (Districts Step 1); wire toggles live in the View menu.
 - [x] Messages and errors: the debug panel shows the last message and any load error, and a failed load puts a warning on the title.
-- [ ] Keyboard shortcut help, which went away with the bottom bar.
+- [x] Keyboard shortcut help, which went away with the bottom bar. The **Keyboard shortcuts** command opens a sheet built from the one shortcut table every key is read through, so the sheet cannot drift from the keys (S8).
 - [x] Visual language standard: direction (providers left), ports, layout laws, gates, folder detail levels, colours. See [VISUAL_LANGUAGE.md](VISUAL_LANGUAGE.md).
 - [x] Wire kinds on every edge, Markdown links as documentation wires into a documentation port, provider-to-consumer direction, and keep every wire into an input (no fan-in loss).
 - [x] Left-to-right layout engine: lifting wires through folder gates, cycle boxes, layering, crossing reduction, coordinates.
@@ -105,6 +105,12 @@ Goal: remove everything that is mock, duplicated or in the way, so later work bu
 - [x] Route documentation wires: through documentation gates and each folder's documentation strip, never over cards or folders (L2, L3).
 - [x] Rendering of routes, gates, documentation ports and cycle boxes; folder detail levels (minimised, node view, open) switched from the folder header.
 - [x] Geometry-only relayout when a card expands or a folder changes level: columns and order are kept, only the folders around the change are measured again.
+- [x] One level at a time: a project opens at its top level (folders closed); a closed folder stands in for its files (one gate per visible source, one bundled wire with a count, thicker for more); double-click opens a folder in place and fits it; a breadcrumb in the title bar goes back up.
+- [x] Hubs (L6): an item feeding at least half its folder's connected items, and at least 8, shows "used by N" instead of its wires.
+- [x] Documentation as "docs N" chips; documentation wires off by default.
+- [x] Click to trace: selecting a card highlights everything upstream and downstream and dims the rest.
+- [x] Quieter wires, faint folder fills, and folder names drawn at a readable size when zoomed out.
+- [ ] Skip laying out documentation wires while they are hidden, so their strips take no space.
 
 Exit: every control on screen does something real, and nothing shows mock data for a real project.
 
@@ -122,25 +128,53 @@ Goal: a graph model that can hold correct data from any language.
 
 Exit: all extractors run through the adapter interface, fixture tests run in CI, and the real-repo counts are recorded.
 
-### Phase 2: Organization
+### Phase 2: Districts
 
-Goal: open any repo and see a structure that is the same for every project, so you know where to look before reading code. This comes before wire work because messy wires are a symptom of missing organization.
+Goal: open any repo and see a structure that is the same for every project, so you know where to look before reading code. Every project gets the same five districts in the same places: Pipeline north, Files west, Code in the centre with the Desk below it, Run east, Changes south (see [VISUAL_LANGUAGE.md](VISUAL_LANGUAGE.md#districts)). Wave 1 builds every district real and read-only: nothing runs that changes the project, and nothing is written but caches. What each district reads, and how, is in [DATA_SOURCES.md](DATA_SOURCES.md).
 
-- Fixed canvas regions, assigned by deterministic file classification:
-  - code
-  - tests
-  - tooling and scripts
-  - docs
-  - schemas and contracts
-  - assets (images, models, textures, audio)
-  - configuration and settings
-  - build output, caches and logs
-  - CI
-  - tickets (Phase 8)
-- Classification rules are a documented table: extensions, well-known names, package-manager metadata and `.gitignore`.
-- The code region is arranged by the package graph: Cargo workspaces, CMake targets, npm workspaces, Python packages, Enfusion addons. Packages are laid out in dependency layers so flow reads in one direction.
-- Size so one huge folder does not take half the screen: aggregate cards and detail by zoom level.
-- Enforce Script: addon and script-module structure as the code region's packages.
+- [x] **Step 1. Safe input and data foundations** (f48a2de). Typing in search never changes the canvas; wires cannot be drawn, cut or deleted. The `studio_sources` crate (hub, read-only command runner, caches); an evidence tier and basis on every edge; HEAD found in pure Rust (worktrees, packed refs); heavy folders sized after the first layout; parts by innermost package; the mock archetypes dropped.
+- [x] **Step 2. World, camera, compass, title bar** (a729c67). Five labelled districts around the Code map; camera flights that any wheel or drag stops; the compass; project › district › folders in the title bar; `Home`, `=`, `-`, `0`.
+- [x] **Step 3. Desk, code view, packages and part facts** (23c4196). The Desk below Code: a navigator and read-only code and Markdown cards. Packages from `cargo metadata`, with cargo's own target rules when cargo cannot be asked. Map cards show files, tests and the README's first sentence.
+- [x] **Step 4. Run district and the Dock** (1d7ac7f). Tools found by reading files (Cargo binaries and examples, aliases, clap subcommands, npm scripts, make, just, workflows); the Dock at the bottom: Build · Test · Trace, pinned tools, All tools · Add a tool. Clicks fly; nothing runs.
+- [x] **Step 5. Files district** (43c1972). The disk as git and `du` see it: tracked files, ignore rules with their lines, LFS, sizes, the size map, and read-only settings cards that open their line on the Desk.
+- [x] **Step 6. Changes district and agents** (59ce287). One row per worktree with its commits, changes and agent sessions; the branch strip; the tickets column; plan cards on the Desk with the session's edits lit; the worktree and sessions pills; the last commit per folder on the map.
+- [x] **Step 7. Pipeline district** (4a292c1). One lane per flow, every link labelled with its tier:
+  - [x] Axum route tables evaluated from the code: `route`, `nest`, `merge`, `let` reassignment, and `if` marking a route conditional; handlers resolved by path. Route tables are read only from library and binary module trees, never tests.
+  - [x] `@route` and `@contract` tags in comments of every language; route templates unify `:x` and `{x}`.
+  - [x] Contracts resolved by exact file name and JSON pointer; several matching files make a Possible set, a missing pointer stays Unresolved.
+  - [x] Flows walked from entry points (routes, program `main`s, command-line commands) over links at Possible set or better, with language crossings recorded.
+  - [x] One lane per flow, steps left to right, every link labelled with its tier; clicking a step opens its code on the Desk. Groups collapse; the district grows north to fit and the map never moves.
+  - [x] Rust `use` and path-call wires on the Code map are Proven when the path resolves to exactly one item; the rest stay Unresolved. Wire line styles per tier (solid, long dash, dotted, short dash).
+  - [x] Exit: on TBD-Reforger the fleet-command report routes link the Enforce sender to their Rust handlers as Proven; fixture precision is 100%.
+- [x] **Step 8. ⌘K palette** (9d18e1c). One search over files, symbols, commands, tools and settings with a deterministic ranking; `>` for commands, `@` for symbols; the Keyboard shortcuts sheet.
+- [x] **Wave 1 close** (W1C):
+  - [x] File classification from one documented table: [CLASSIFICATION.md](CLASSIFICATION.md), checked against the code by a test. Map cards show their largest file classes.
+  - [x] Heavy folders by markers and gitignore only; no folder is heavy for its name.
+  - [x] Files tree marks: ignored, heavy (with its reason), LFS, generated, vendored, hidden.
+  - [x] Crate-to-crate dependency wires from the manifests (Proven, basis manifest), path dependencies only.
+  - [x] A district whose source has nothing says why ("No Cargo packages here", "The pipeline could not be read: …") instead of reading forever; without Cargo, Run still lists npm, make, just and workflows.
+  - [x] A project folder with no git still shows its agent sessions, in one "project folder · no git" row.
+  - [x] SHA-256 commit ids.
+  - [x] A GPU that fails to start falls back to OpenGL and prints the `WGPU_BACKEND=gl` hint.
+  - [x] Fixture repos with `expected.toml` for disk, git, packages, settings and tools.
+  - [x] [DATA_SOURCES.md](DATA_SOURCES.md); this roadmap; Desk rules in [VISUAL_LANGUAGE.md](VISUAL_LANGUAGE.md#desk); README controls.
+  - [x] Files by class in the Files district, with `.gitattributes` overrides.
+  - [x] `bench_scale` stages with real district content, the Desk with 8 cards, district view builds, `--sources` and `--world-report`.
+  - [x] Full gate on the three test repositories.
+
+Carried from Wave 1 (stage in brackets):
+
+- [ ] The clap command reader finds enums through the path resolver instead of by bare name over the dependency closure. [S9]
+- [ ] Command-to-code links through the path resolver. [S9]
+- [ ] A `Cargo.toml` inside a heavy folder loaded later gets its dependency wires (they are made on a full build only). [S11]
+- [ ] Dependency wires in their own colour (slate like imports for now); dev-dependencies as their own style. [S11]
+- [ ] The Changes district grows south when its rows need more room. [S11]
+
+Still open from the first plan for this phase:
+
+- [ ] The code region arranged by the package graph for CMake targets, npm workspaces, Python packages and Enfusion addons (Cargo packages already lay out left to right by their dependency wires).
+- [ ] Size so one huge folder does not take half the screen: aggregate cards and detail by zoom level.
+- [ ] Enforce Script: addon and script-module structure as the code region's packages.
 
 UX exit: on TBD-Reforger and AnyPS5, with zero setup, a newcomer finds "the mission creator UI" and "the shader recompiler" in under a minute.
 
@@ -172,45 +206,67 @@ Goal: show which way data moves, not just that two things are connected.
 
 Exit: pipelines are generated automatically on both real repos, and each one can be checked against the source by clicking through.
 
+Open from the Pipeline district (done items are under [Districts](#phase-2-districts) Step 7):
+
+- [ ] Enforce string folding: check a sender's `@route` tag against the URL its code builds (constants from other classes, concatenation, `if`/`else`). [S11]
+- [ ] Per-process swimlanes for a selected flow, with runtime traces. [S11]
+- [ ] Resolve a saved file's wires again by path on save; until then, saving never makes a wire Proven by name. [S10]
+
 ### Phase 5: Wire presentation
 
 Goal: wires that are readable at any zoom. Routing and the basic look are set in Phase 0 by the [visual language](VISUAL_LANGUAGE.md); this phase builds on it.
 
-- Focus and context: emphasize the wires of the selection and its neighbours.
-- Toggles per wire kind and tier.
+- Toggles per evidence tier (S2).
 - Line styles and colour-blind variants.
+- Tune the hub threshold and bundle thickness from real use.
 
-### Phase 6: On-canvas editing and inspection
+### Phase 6: The Desk: editing and inspection
 
-Goal: read and edit everything in place, with no side panel.
+Goal: read and edit everything in place, with no side panel. Reading happens on the Desk, below the Code map (Districts Step 3); editing returns there.
 
-- Edit code directly in the card, keeping the S10 save rules (the logic in `studio_parser::save`).
-- Preview images, hex dumps, symlink targets and large-file heads on cards. This restores what the Inspector had.
-- Previews for 3D models (glTF, OBJ; Enfusion `.xob` needs an export path).
-- Asset usage: which code, prefabs or configs reference each asset, including Enfusion `{GUID}` resource references, and which assets nothing references.
+- [x] Read-only code cards with highlighting, Markdown cards whose links open files at their lines, and a navigator that reaches any file of a part in at most 4 clicks.
+- [x] Binary and too-large files get their own card instead of their text.
+- [ ] Edit code directly on Desk cards, keeping the S10 save rules (the logic in `studio_parser::save`). [S10]
+- [ ] Watch files and update open cards when they change on disk. [S10]
+- [ ] Preview images, hex dumps, symlink targets and large-file heads on cards. This restores what the Inspector had.
+- [ ] Previews for 3D models (glTF, OBJ; Enfusion `.xob` needs an export path).
+- [ ] Asset usage: which code, prefabs or configs reference each asset, including Enfusion `{GUID}` resource references, and which assets nothing references.
 
-### Phase 7: Integrated tooling
+### Phase 7: Run and the Dock
 
-Goal: run and understand the project without a terminal.
+Goal: run and understand the project without a terminal. The Run district and the Dock (Districts Step 4) list what the project defines; the Files district shows its settings.
 
-- Test and compile results on the nodes they belong to: cargo test JSON, ctest, pytest JUnit, compiler diagnostics.
-- Tool panels detected from the project: Cargo bins, `package.json` scripts, justfiles, Makefiles and CMake targets, shown with buttons and output.
-- Settings panels over real files (S6): gitignore, gitattributes, editorconfig, MCP config.
-- Logs as a viewable region instead of raw text.
+- [x] Tool panels detected from the project, read without running anything: Cargo binaries and examples, `.cargo/config.toml` aliases, clap subcommands, `package.json` scripts, Makefile targets, justfile recipes and CI workflows. Each opens where it is defined.
+- [x] The Dock: Build · Test · Trace, pinned tools, All tools · Add a tool, with the exact command in each tooltip.
+- [x] Settings shown over the real files (S6), read-only: Cargo workspace, toolchain, `.cargo/config`, editorconfig, clippy and rustfmt, `.gitignore` groups, `.gitattributes`, JSON Schema shapes.
+- [ ] Build, Test and tools run from the Dock; the console streams their output with origin chips. [S9]
+- [ ] Test and compile results on the nodes they belong to: cargo test JSON, ctest, pytest JUnit, compiler diagnostics. [S9]
+- [ ] CMake targets as tools.
+- [ ] Settings cards write back with formatting kept. [S10]
+- [ ] MCP config as a settings card.
+- [ ] Logs as a viewable region instead of raw text.
 
 ### Phase 8: Git and collaboration
 
-- Working tree overlay: changed nodes highlighted, unchanged ones dimmed.
-- Branches and worktrees.
-- Pull request overlay: which functions open PRs touch, to avoid duplicate work.
-- Tickets placed on the canvas and linked to code.
-- Docs linked to symbols, not paths, with a "possibly stale" flag when the linked code changes.
+The Changes district (Districts Step 6) holds what git knows.
+
+- [x] Branches and worktrees: one row per worktree, with its commits, changed files and ahead/behind.
+- [x] The last commit that touched each folder, on its map card.
+- [x] Tickets placed in the Changes district and linked to branches by name (Unresolved) and to commits git confirms (Proven).
+- [ ] Working tree overlay: changed nodes highlighted on the map, unchanged ones dimmed.
+- [ ] Git actions behind an explicit confirmation. [S11]
+- [ ] Pull request overlay: which functions open PRs touch, to avoid duplicate work.
+- [ ] Docs linked to symbols, not paths, with a "possibly stale" flag when the linked code changes.
 
 ### Phase 9: AI integration
 
-- An MCP server exposing the graph, so agents query real structure.
-- Agent plan overlay: what the agent will touch, highlighted on the canvas, with the ability to add or remove nodes from the plan.
-- Live highlighting of agent activity.
+Agents' sessions are read from their logs (Districts Step 6); they are Observed facts about what an agent did, never graph data.
+
+- [x] Sessions mapped to the project by their working folder, in every worktree, shown by slug and start time only.
+- [x] Agent plan cards on the Desk: the plan, and the session's edits lit on the open files and on the map.
+- [ ] Live highlighting of agent activity, and session replay. [S11]
+- [ ] Add or remove nodes from an agent's plan.
+- [ ] An MCP server exposing the graph, so agents query real structure.
 - AI never writes graph data (S1).
 
 ### Phase 10: Live UI editing, per framework

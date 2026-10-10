@@ -39,6 +39,8 @@ pub struct FunctionItem {
     pub calls: Vec<String>,
     pub docs: String,
     pub line: usize,
+    /// Last line of the item, 1-based.
+    pub line_end: usize,
     pub source_code: String,
 }
 
@@ -57,6 +59,8 @@ pub struct StructItem {
     pub derives: Vec<String>,
     pub docs: String,
     pub line: usize,
+    /// Last line of the item, 1-based.
+    pub line_end: usize,
     pub source_code: String,
 }
 
@@ -67,6 +71,8 @@ pub struct EnumItem {
     pub variants: Vec<String>,
     pub docs: String,
     pub line: usize,
+    /// Last line of the item, 1-based.
+    pub line_end: usize,
     pub source_code: String,
 }
 
@@ -77,6 +83,8 @@ pub struct TraitItem {
     pub methods: Vec<String>,
     pub docs: String,
     pub line: usize,
+    /// Last line of the item, 1-based.
+    pub line_end: usize,
     pub source_code: String,
 }
 
@@ -103,6 +111,8 @@ pub struct LinkItem {
     /// the project root when it starts with `/`.
     pub target: String,
     pub line: usize,
+    /// Last line of the item, 1-based.
+    pub line_end: usize,
     pub source_code: String,
 }
 
@@ -118,6 +128,9 @@ pub struct ExtractedFile {
     pub impls: Vec<ImplItem>,
     pub uses: Vec<UseItem>,
     pub links: Vec<LinkItem>,
+    /// Tests the file defines, as the test runner counts them: `#[test]`-style attributes at any
+    /// depth in Rust, `test_*` functions in Python test files, `Test*` functions in Go test files.
+    pub tests: usize,
     pub parse_error: Option<String>,
     pub language: super::lang::SourceLang,
 }
@@ -144,6 +157,7 @@ impl ExtractedFile {
             impls: Vec::new(),
             uses: Vec::new(),
             links: Vec::new(),
+            tests: 0,
             parse_error,
             language,
         }
@@ -154,7 +168,16 @@ impl ExtractedFile {
 pub struct ExtractedCrate {
     pub name: String,
     pub root_path: PathBuf,
+    /// The package manifest; `None` for the files outside every package.
+    pub manifest_path: Option<PathBuf>,
     pub files: Vec<ExtractedFile>,
+}
+
+impl ExtractedCrate {
+    /// Whether this is a real package rather than the files outside every package.
+    pub fn is_package(&self) -> bool {
+        self.manifest_path.is_some()
+    }
 }
 
 #[derive(Debug, Clone)]

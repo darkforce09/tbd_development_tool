@@ -14,6 +14,9 @@ pub struct GroupClusterProps<'a> {
     pub zoom: f32,
     /// Paint the frame (background, borders). False when the GPU already drew it.
     pub frame: bool,
+    /// Paint the name, totals and count at their zoomed size. False when the name is drawn as a
+    /// map label instead (see [`paint_folder_map_label`]).
+    pub text: bool,
 }
 
 pub struct GroupClusterLayout {
@@ -72,11 +75,12 @@ fn detail_control_width(buttons: &[Rect; 3]) -> f32 {
     }
 }
 
-/// Fill and border colours of a folder: its tint, a little stronger for deeper folders so they
-/// stand out from their parent.
+/// Fill and border colours of a folder: a faint tint, a little stronger for deeper folders so
+/// they stand out from their parent. The border carries the colour; the fill stays quiet so the
+/// names and wires on top read clearly.
 pub fn cluster_tint(color_index: usize, depth: usize) -> (Color32, Color32) {
     let (base_fill, base_stroke) = CLUSTER_TINTS[color_index % CLUSTER_TINTS.len()];
-    let boost = (depth.min(255) as u8).saturating_mul(15);
+    let boost = (depth.min(255) as u8).saturating_mul(6);
     let fill = Color32::from_rgba_premultiplied(
         base_fill.r().saturating_add(boost / 2),
         base_fill.g().saturating_add(boost / 2),
@@ -116,6 +120,9 @@ pub fn paint_group_cluster(painter: &Painter, props: GroupClusterProps<'_>) -> G
 
         let detail_buttons = paint_detail_control(painter, pill_rect, props.detail, z);
         let reserved = detail_control_width(&detail_buttons);
+        if !props.text {
+            return GroupClusterLayout { detail_buttons };
+        }
 
         // Folder icon + label
         let font_size = (11.5 * z).max(6.0);
@@ -197,6 +204,9 @@ pub fn paint_group_cluster(painter: &Painter, props: GroupClusterProps<'_>) -> G
     let control_row = Rect::from_min_size(header_rect.min, Vec2::new(header_width, (32.0 * z).max(18.0)));
     let detail_buttons = paint_detail_control(painter, control_row, props.detail, z);
     let reserved = detail_control_width(&detail_buttons);
+    if !props.text {
+        return GroupClusterLayout { detail_buttons };
+    }
 
     // Folder Icon + Label
     let label_pos = if has_subtitle {
@@ -243,4 +253,35 @@ pub fn paint_group_cluster(painter: &Painter, props: GroupClusterProps<'_>) -> G
     );
 
     GroupClusterLayout { detail_buttons }
+}
+
+/// Screen size below which a folder's zoomed name is too small to read; the map label takes
+/// over.
+pub const FOLDER_TEXT_MIN_PX: f32 = 10.0;
+
+/// A folder's name at a constant, readable screen size, like a label on a map: larger for
+/// folders higher in the tree, centred on a closed folder and at the top left of an open one,
+/// shortened to fit the folder's width. Nothing is drawn when even a short name would not fit.
+pub fn paint_folder_map_label(painter: &Painter, rect: Rect, label: &str, depth: usize, closed: bool) {
+    let size = match depth {
+        0 => 18.0,
+        1 => 15.0,
+        _ => 13.0,
+    };
+    let chars = ((rect.width() - 16.0) / (size * 0.55)).floor() as usize;
+    if chars < 4 || rect.height() < size * 0.9 {
+        return;
+    }
+    let text = crate::truncate_with_ellipsis(label, chars);
+    let font = FontId::new(size, FontFamily::Proportional);
+    let (pos, align) = if closed {
+        (rect.center(), egui::Align2::CENTER_CENTER)
+    } else {
+        (rect.min + Vec2::new(8.0, 6.0), egui::Align2::LEFT_TOP)
+    };
+    // A dark halo keeps the name readable over wires.
+    for offset in [Vec2::new(1.0, 1.0), Vec2::new(-1.0, -1.0), Vec2::new(1.0, -1.0), Vec2::new(-1.0, 1.0)] {
+        painter.text(pos + offset, align, &text, font.clone(), Color32::from_black_alpha(200));
+    }
+    painter.text(pos, align, text, font, TEXT_PRIMARY);
 }

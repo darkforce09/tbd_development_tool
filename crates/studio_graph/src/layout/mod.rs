@@ -21,7 +21,7 @@ use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
 
 use crate::model::tree_layout::{COLLAPSED_FOLDER_SIZE, EMPTY_FOLDER_SIZE};
-use crate::model::{Graph, NodeId};
+use crate::model::{EdgeKind, Graph, NodeId};
 
 const PAD_X: f32 = 22.0;
 const PAD_TOP: f32 = 44.0;
@@ -47,6 +47,20 @@ const ROOT_ORIGIN: [f32; 2] = [100.0, 140.0];
 /// Width of a folder in node view.
 const NODE_VIEW_WIDTH: f32 = 280.0;
 const SWEEPS: usize = 4;
+/// Hub rule (docs/VISUAL_LANGUAGE.md): an item feeding at least this many of its siblings, and
+/// at least half of the connected ones, shows a badge instead of its wires.
+pub const HUB_MIN_CONSUMERS: usize = 8;
+/// Gate keys at or above this stand for a closed folder (`FOLDER_KEY_BASE + container`) rather
+/// than a card: outside a closed folder, all wires from its cards share its gates and lanes.
+const FOLDER_KEY_BASE: u64 = 1 << 62;
+
+fn folder_key(container: usize) -> NodeId {
+    NodeId(FOLDER_KEY_BASE + container as u64)
+}
+
+fn key_folder(key: NodeId) -> Option<usize> {
+    (key.0 >= FOLDER_KEY_BASE).then(|| (key.0 - FOLDER_KEY_BASE) as usize)
+}
 
 /// Results of the dataflow layout that the canvas draws besides cards and folders.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize)]
@@ -59,6 +73,61 @@ pub struct FlowLayout {
     /// One route per (documentation file, documented card) pair.
     #[serde(default)]
     pub doc_routes: Vec<WireRoute>,
+    /// Code wires grouped by what is visible at each end (a card, or the closed folder around
+    /// it): one drawn wire per bundle, as thick as the number of card pairs it stands for.
+    #[serde(default)]
+    pub bundles: Vec<WireBundle>,
+    /// Items whose wires are shown as a "used by N" badge instead (the hub rule).
+    #[serde(default)]
+    pub hubs: Vec<Hub>,
+}
+
+/// One end of a bundle as it is seen: a card, or the outermost closed folder hiding it.
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize,
+)]
+#[rkyv(derive(Debug, PartialEq, Eq))]
+pub enum VisibleEnd {
+    Card(NodeId),
+    /// Folder cluster id.
+    Folder(String),
+}
+
+/// Code wires between the same two visible ends. Every route in it has the same path.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize)]
+#[rkyv(derive(Debug))]
+pub struct WireBundle {
+    pub from: VisibleEnd,
+    pub to: VisibleEnd,
+    /// Card pairs the bundle stands for.
+    pub pairs: u32,
+    /// Wires per kind, indexed by `EdgeKind as usize`.
+    pub kinds: [u32; EdgeKind::COUNT],
+    /// Index of the route drawn for the whole bundle.
+    pub route: u32,
+}
+
+impl WireBundle {
+    /// The kind the bundle carries most (ties go to the earlier kind), for its colour.
+    pub fn main_kind(&self) -> crate::model::EdgeKind {
+        let kinds = EdgeKind::ALL;
+        let best = (0..kinds.len()).max_by_key(|&i| (self.kinds[kinds[i] as usize], std::cmp::Reverse(i))).unwrap_or(0);
+        kinds[best]
+    }
+}
+
+/// An item that feeds at least half of its connected siblings (and at least
+/// [`HUB_MIN_CONSUMERS`]): its wires are not laid out or drawn, it shows "used by N".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize)]
+#[rkyv(derive(Debug))]
+pub struct Hub {
+    /// Folder cluster id or cycle box id the item sits in.
+    pub container: String,
+    pub item: VisibleEnd,
+    /// Siblings it feeds.
+    pub used_by: u32,
+    /// The card pairs whose wires it hides.
+    pub pairs: Vec<(NodeId, NodeId)>,
 }
 
 /// The path of the code wires from one card to another: horizontal and vertical segments in
@@ -71,6 +140,9 @@ pub struct WireRoute {
     pub provider: NodeId,
     pub consumer: NodeId,
     pub points: Vec<[f32; 2]>,
+    /// Index into [`FlowLayout::bundles`]; `u32::MAX` for documentation routes.
+    #[serde(default)]
+    pub bundle: u32,
 }
 
 #[derive(
@@ -118,8 +190,9 @@ pub struct Gate {
     pub side: GateSide,
     #[serde(default)]
     pub kind: GateKind,
-    /// The providing card whose wires pass through this gate.
-    pub provider: NodeId,
+    /// Where the wires through this gate come from: a card, or a closed folder standing in for
+    /// all its cards.
+    pub source: VisibleEnd,
     /// World position on the container edge.
     pub position: [f32; 2],
 }
@@ -247,13 +320,32 @@ impl Graph {
     /// Lays out the folder tree left to right by code flow. See the module docs.
     pub fn layout_dataflow(&mut self) {
         let mut tree = Tree::build(self);
-        let pairs = code_flow_pairs(self, &tree);
+        let all_pairs = code_flow_pairs(self, &tree);
         let doc_pairs = documentation_pairs(self, &tree);
-        tree.box_cycles(&pairs);
+        tree.box_cycles(&all_pairs);
+        let hubs = tree.find_hubs(&all_pairs);
+        let pairs: Vec<(NodeId, NodeId)> =
+            all_pairs.iter().copied().filter(|p| !hubs.hidden_pairs.contains(p)).collect();
         let links = tree.lift(&pairs);
         let doc_links = tree.lift(&doc_pairs);
         let outer = outer_gate_keys(tree.containers.len(), &links, &doc_links);
         let n = tree.containers.len();
+        // Opening or closing a folder lays everything out again; keep each unchanged container's
+        // columns and order from the last layout, so nothing else moves around.
+        let carried: Vec<Option<Frozen>> = match self.layout_cache.take() {
+            Some(old) => {
+                let by_key: HashMap<&str, usize> =
+                    old.tree.containers.iter().enumerate().map(|(i, c)| (c.key.as_str(), i)).collect();
+                tree.containers
+                    .iter()
+                    .map(|c| {
+                        let o = *by_key.get(c.key.as_str())?;
+                        (old.tree.containers[o].items == c.items).then(|| old.frozen[o].clone())
+                    })
+                    .collect()
+            }
+            None => vec![None; n],
+        };
         let mut cache = LayoutCache {
             fingerprint: fingerprint(self),
             tree,
@@ -262,6 +354,9 @@ impl Graph {
             links,
             doc_links,
             outer,
+            hubs,
+            carried,
+            pair_kinds: pair_kinds(self),
             frozen: vec![Frozen::default(); n],
             placed: vec![Placed::default(); n],
         };
@@ -277,6 +372,8 @@ impl Graph {
     pub fn relayout_geometry(&mut self, cards: &[NodeId]) -> bool {
         let Some(mut cache) = self.layout_cache.take() else { return false };
         if cache.fingerprint != fingerprint(self) {
+            // The full layout that follows carries the columns and order over from it.
+            self.layout_cache = Some(cache);
             return false;
         }
         let tree = &mut cache.tree;
@@ -318,6 +415,11 @@ impl Graph {
         flow.routes = cache.tree.compose_routes(&cache.pairs, &cache.placed, &origins, &hidden, |p| &p.routes);
         flow.doc_routes =
             cache.tree.compose_routes(&cache.doc_pairs, &cache.placed, &origins, &hidden, |p| &p.doc_routes);
+        for r in &mut flow.doc_routes {
+            r.bundle = u32::MAX;
+        }
+        flow.bundles = cache.tree.bundle(self, &mut flow.routes, &cache.pair_kinds);
+        flow.hubs = cache.hubs.public.clone();
         self.layout_stats = cache
             .placed
             .iter()
@@ -348,6 +450,11 @@ pub(crate) struct LayoutCache {
     links: Vec<BTreeSet<(From, To)>>,
     doc_links: Vec<BTreeSet<(From, To)>>,
     outer: Vec<GateKeys>,
+    hubs: Hubs,
+    /// Columns and order from the previous layout, for containers whose items did not change.
+    carried: Vec<Option<Frozen>>,
+    /// Wires per kind for every code card pair.
+    pair_kinds: HashMap<(NodeId, NodeId), [u32; EdgeKind::COUNT]>,
     frozen: Vec<Frozen>,
     placed: Vec<Placed>,
 }
@@ -366,14 +473,17 @@ impl LayoutCache {
         order.sort_by_key(|&c| std::cmp::Reverse(self.tree.depth(c)));
         for c in order {
             let frozen = reuse.then(|| &self.frozen[c]);
+            let carried = self.carried[c].as_ref();
             let (placed, frozen) = self.tree.measure_one(
                 graph,
                 c,
                 &self.links[c],
+                &self.hubs.order_only[c],
                 &self.doc_links[c],
                 &self.outer[c],
                 &self.placed,
                 frozen,
+                carried,
             );
             self.placed[c] = placed;
             self.frozen[c] = frozen;
@@ -381,7 +491,8 @@ impl LayoutCache {
     }
 }
 
-/// Changes when cards, wires or folders are added or removed.
+/// Changes when cards, wires or folders are added or removed, or a folder opens or closes:
+/// which folders are closed decides which gates their wires share.
 fn fingerprint(graph: &Graph) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -390,7 +501,30 @@ fn fingerprint(graph: &Graph) -> u64 {
     for e in &graph.edges {
         (e.id, e.from_node, e.to_node, e.kind as u8).hash(&mut h);
     }
+    for c in &graph.clusters {
+        c.is_collapsed().hash(&mut h);
+    }
     h.finish()
+}
+
+/// Wires per kind for every (provider, consumer) card pair.
+fn pair_kinds(graph: &Graph) -> HashMap<(NodeId, NodeId), [u32; EdgeKind::COUNT]> {
+    let mut kinds: HashMap<(NodeId, NodeId), [u32; EdgeKind::COUNT]> = HashMap::new();
+    for e in graph.edges.iter().filter(|e| e.kind.is_code_flow()) {
+        kinds.entry((e.from_node, e.to_node)).or_default()[e.kind as usize] += 1;
+    }
+    kinds
+}
+
+/// Hubs found by the hub rule, and what they change in the layout.
+#[derive(Clone, Default)]
+struct Hubs {
+    public: Vec<Hub>,
+    /// Card pairs whose wires a hub hides: not lifted, laid out or routed.
+    hidden_pairs: BTreeSet<(NodeId, NodeId)>,
+    /// Per container, the hidden sibling wires that still order the columns, so a hub stays left
+    /// of what it feeds.
+    order_only: Vec<BTreeSet<(Item, Item)>>,
 }
 
 /// The gates each container needs, seen from outside: every provider its parent wires into or out
@@ -419,6 +553,8 @@ struct Frozen {
     item_layers: Vec<usize>,
     order: Vec<Vec<usize>>,
     nodes: usize,
+    /// The items of each column in order, without lanes.
+    item_order: Vec<Vec<Item>>,
 }
 
 /// Distinct (provider, consumer) card pairs joined by code-flow wires, in a stable order.
@@ -578,6 +714,10 @@ impl Tree {
     /// The wire pieces a card pair is made of, in order from provider to consumer: out of each
     /// container below the lowest common one, across that one, then into each container down to
     /// the consumer.
+    ///
+    /// Outside a closed folder its cards' wires are keyed by the folder, so they share one gate
+    /// and one lane per container; inside it (hidden, laid out ahead for when it opens) they keep
+    /// their card keys.
     fn pieces(&self, u: NodeId, v: NodeId) -> Vec<(usize, From, To)> {
         let (ui, uc) = (Item::Card(u), self.chain(u));
         let (vi, vc) = (Item::Card(v), self.chain(v));
@@ -586,16 +726,123 @@ impl Tree {
         if a == b {
             return Vec::new();
         }
+        // The key of `u` in the container at chain position `p`: the outermost closed folder
+        // below it, if any.
+        let key_at =
+            |p: usize| uc[..p].iter().rposition(|&c| self.containers[c].collapsed).map_or(u, |i| folder_key(uc[i]));
+        let lca_pos = uc.iter().position(|&c| c == lca).unwrap_or(uc.len());
         let mut pieces = Vec::new();
-        for &c in uc.iter().take_while(|&&c| c != lca) {
-            pieces.push((c, From::Item(self.item_in(ui, &uc, c), u), To::Gate(u)));
+        for (p, &c) in uc.iter().enumerate().take_while(|&(_, &c)| c != lca) {
+            let k = key_at(p);
+            pieces.push((c, From::Item(self.item_in(ui, &uc, c), k), To::Gate(k)));
         }
-        pieces.push((lca, From::Item(a, u), To::Item(b, u)));
+        let k = key_at(lca_pos);
+        pieces.push((lca, From::Item(a, k), To::Item(b, k)));
         let inward: Vec<usize> = vc.iter().copied().take_while(|&c| c != lca).collect();
         for &c in inward.iter().rev() {
-            pieces.push((c, From::Gate(u), To::Item(self.item_in(vi, &vc, c), u)));
+            pieces.push((c, From::Gate(k), To::Item(self.item_in(vi, &vc, c), k)));
         }
         pieces
+    }
+
+    /// How a card is seen: itself, or the outermost closed folder hiding it.
+    fn visible(&self, card: NodeId) -> Result<NodeId, usize> {
+        let chain = self.chain(card);
+        match chain.iter().rposition(|&c| self.containers[c].collapsed) {
+            Some(i) => Err(chain[i]),
+            None => Ok(card),
+        }
+    }
+
+    fn container_id(&self, graph: &Graph, c: usize) -> String {
+        match self.containers[c].kind {
+            Kind::Folder(i) => graph.clusters[i].id.clone(),
+            Kind::Cycle => self.containers[c].key.clone(),
+        }
+    }
+
+    /// Applies the hub rule in every container: an item feeding at least half of the container's
+    /// connected items, and at least [`HUB_MIN_CONSUMERS`], is a hub.
+    fn find_hubs(&self, pairs: &[(NodeId, NodeId)]) -> Hubs {
+        // Per container: each item's consumers, every connected item, and the pairs per item.
+        let mut feeds: BTreeMap<usize, BTreeMap<Item, BTreeSet<Item>>> = BTreeMap::new();
+        let mut connected: BTreeMap<usize, BTreeSet<Item>> = BTreeMap::new();
+        // (container, item) → the card pairs it feeds, with the consuming item.
+        type PairsOf = BTreeMap<(usize, Item), Vec<(NodeId, NodeId, Item)>>;
+        let mut pairs_of: PairsOf = BTreeMap::new();
+        for &(u, v) in pairs {
+            let (uc, vc) = (self.chain(u), self.chain(v));
+            let Some(lca) = lowest_common(&uc, &vc) else { continue };
+            let (a, b) = (self.item_in(Item::Card(u), &uc, lca), self.item_in(Item::Card(v), &vc, lca));
+            if a == b {
+                continue;
+            }
+            feeds.entry(lca).or_default().entry(a).or_default().insert(b);
+            connected.entry(lca).or_default().extend([a, b]);
+            pairs_of.entry((lca, a)).or_default().push((u, v, b));
+        }
+        let mut hubs = Hubs { order_only: vec![BTreeSet::new(); self.containers.len()], ..Default::default() };
+        for (c, items) in feeds {
+            let others = connected[&c].len().saturating_sub(1);
+            for (a, consumers) in items {
+                if consumers.len() < HUB_MIN_CONSUMERS || consumers.len() * 2 < others {
+                    continue;
+                }
+                let hidden = &pairs_of[&(c, a)];
+                for &(u, v, b) in hidden {
+                    hubs.hidden_pairs.insert((u, v));
+                    hubs.order_only[c].insert((a, b));
+                }
+                // A container's key is its folder's cluster id, or the cycle box id.
+                hubs.public.push(Hub {
+                    container: self.containers[c].key.clone(),
+                    item: match a {
+                        Item::Card(n) => VisibleEnd::Card(n),
+                        Item::Sub(s) => VisibleEnd::Folder(self.containers[s].key.clone()),
+                    },
+                    used_by: consumers.len() as u32,
+                    pairs: hidden.iter().map(|&(u, v, _)| (u, v)).collect(),
+                });
+            }
+        }
+        hubs
+    }
+
+    /// Groups the code routes by what is visible at each end and records each route's bundle.
+    fn bundle(
+        &self,
+        graph: &Graph,
+        routes: &mut [WireRoute],
+        pair_kinds: &HashMap<(NodeId, NodeId), [u32; EdgeKind::COUNT]>,
+    ) -> Vec<WireBundle> {
+        let end = |card: NodeId| match self.visible(card) {
+            Ok(n) => VisibleEnd::Card(n),
+            Err(c) => VisibleEnd::Folder(self.container_id(graph, c)),
+        };
+        let mut index: HashMap<(VisibleEnd, VisibleEnd), u32> = HashMap::new();
+        let mut bundles: Vec<WireBundle> = Vec::new();
+        for (i, r) in routes.iter_mut().enumerate() {
+            let key = (end(r.provider), end(r.consumer));
+            let b = *index.entry(key.clone()).or_insert_with(|| {
+                bundles.push(WireBundle {
+                    from: key.0,
+                    to: key.1,
+                    pairs: 0,
+                    kinds: [0; EdgeKind::COUNT],
+                    route: i as u32,
+                });
+                (bundles.len() - 1) as u32
+            });
+            let bundle = &mut bundles[b as usize];
+            bundle.pairs += 1;
+            if let Some(k) = pair_kinds.get(&(r.provider, r.consumer)) {
+                for (total, n) in bundle.kinds.iter_mut().zip(k) {
+                    *total += n;
+                }
+            }
+            r.bundle = b;
+        }
+        bundles
     }
 
     /// Lifts every card pair into the containers it passes through. Returns, per container, the
@@ -640,7 +887,7 @@ impl Tree {
                     }
                 }
             }
-            Some(WireRoute { provider: u, consumer: v, points: simplify(points) })
+            Some(WireRoute { provider: u, consumer: v, points: simplify(points), bundle: 0 })
         };
         // Pairs are independent; the result keeps their order.
         pairs.par_iter().filter_map(compose).collect()
@@ -661,10 +908,12 @@ impl Tree {
         graph: &Graph,
         c: usize,
         links: &BTreeSet<(From, To)>,
+        order_only: &BTreeSet<(Item, Item)>,
         doc_links: &BTreeSet<(From, To)>,
         outer: &GateKeys,
         placed: &[Placed],
         frozen: Option<&Frozen>,
+        carried: Option<&Frozen>,
     ) -> (Placed, Frozen) {
         let container = &self.containers[c];
         let is_cycle = container.kind == Kind::Cycle;
@@ -685,18 +934,45 @@ impl Tree {
             }
         };
         // Columns and order: kept from the last layout when asked, found afresh otherwise.
-        let mut lay =
-            ColumnLayout::new(&container.items, links, &size_of, &port_y, is_cycle, frozen.map(|f| &f.item_layers[..]));
+        let mut lay = ColumnLayout::new(
+            &container.items,
+            links,
+            order_only,
+            &size_of,
+            &port_y,
+            is_cycle,
+            frozen.or(carried).map(|f| &f.item_layers[..]),
+        );
         match frozen {
             Some(f) if f.nodes == lay.nodes.len() && f.order.iter().map(Vec::len).sum::<usize>() == lay.nodes.len() => {
                 lay.layers = f.order.clone();
             }
-            _ => lay.order(),
+            _ => {
+                lay.order();
+                // A full layout after a folder opened or closed: the wire lanes may differ, but
+                // the items keep the order they had.
+                if let Some(prev) = carried {
+                    lay.keep_item_order(&prev.item_order);
+                }
+            }
         }
-        let kept = Frozen { item_layers: lay.item_layer.clone(), order: lay.layers.clone(), nodes: lay.nodes.len() };
+        let item_order = lay.layers.iter().map(|l| l.iter().filter_map(|&n| lay.nodes[n].item).collect()).collect();
+        let kept = Frozen {
+            item_layers: lay.item_layer.clone(),
+            order: lay.layers.clone(),
+            nodes: lay.nodes.len(),
+            item_order,
+        };
 
         if container.node_view {
-            return (node_view(graph, outer), kept);
+            let name = |k: &NodeId| match key_folder(*k) {
+                Some(f) => match self.containers[f].kind {
+                    Kind::Folder(i) => graph.clusters[i].label.clone(),
+                    Kind::Cycle => "loop".to_string(),
+                },
+                None => graph.nodes.get(k).map_or_else(String::new, |n| n.title.clone()),
+            };
+            return (node_view(outer, &name), kept);
         }
         if container.collapsed {
             // Minimised: one input and one output gate. Every code wire meets in the middle of its
@@ -886,7 +1162,11 @@ impl Tree {
         for (gates, side, kind) in sides {
             let x = if side == GateSide::Input { origin[0] } else { origin[0] + p.size[0] };
             for (&k, &y) in gates {
-                flow.gates.push(Gate { container: id.clone(), side, kind, provider: k, position: [x, origin[1] + y] });
+                let source = match key_folder(k) {
+                    Some(f) => VisibleEnd::Folder(self.container_id(graph, f)),
+                    None => VisibleEnd::Card(k),
+                };
+                flow.gates.push(Gate { container: id.clone(), side, kind, source, position: [x, origin[1] + y] });
             }
         }
         if container.collapsed {
@@ -936,11 +1216,10 @@ impl Tree {
 /// A folder in node view (L5 level 2): every gate listed like the pins of a node, documentation
 /// gates first, each side in alphabetical order of the file whose wires it carries. The inside is
 /// hidden.
-fn node_view(graph: &Graph, outer: &GateKeys) -> Placed {
-    let name = |k: &NodeId| graph.nodes.get(k).map_or("", |n| n.title.as_str());
+fn node_view(outer: &GateKeys, name: &dyn Fn(&NodeId) -> String) -> Placed {
     let sorted = |keys: &BTreeSet<NodeId>| {
         let mut keys: Vec<NodeId> = keys.iter().copied().collect();
-        keys.sort_by(|a, b| name(a).cmp(name(b)).then(a.cmp(b)));
+        keys.sort_by_cached_key(|k| (name(k), *k));
         keys
     };
     let (doc_in, code_in) = (sorted(&outer.doc_in), sorted(&outer.code_in));
@@ -1045,9 +1324,11 @@ struct ColumnLayout {
 }
 
 impl ColumnLayout {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         items: &[Item],
         links: &BTreeSet<(From, To)>,
+        order_only: &BTreeSet<(Item, Item)>,
         size_of: &dyn Fn(Item) -> [f32; 2],
         port_y: &dyn Fn(Item, NodeId, bool) -> f32,
         is_cycle: bool,
@@ -1073,6 +1354,16 @@ impl ColumnLayout {
                     if i != j {
                         adj[i].push(j);
                     }
+                }
+            }
+        }
+        // Wires hidden behind a hub badge still order the columns.
+        for (a, b) in order_only {
+            if let (Some(&i), Some(&j)) = (pos.get(a), pos.get(b)) {
+                if i != j {
+                    adj[i].push(j);
+                    connected[i] = true;
+                    connected[j] = true;
                 }
             }
         }
@@ -1557,6 +1848,20 @@ impl ColumnLayout {
 }
 
 impl ColumnLayout {
+    /// Puts each column's items back in the given order, leaving the wire lanes where they are.
+    /// Items not in `order` keep their place after the ones that are.
+    fn keep_item_order(&mut self, order: &[Vec<Item>]) {
+        for (layer, wanted) in self.layers.iter_mut().zip(order) {
+            let rank = |it: &Item| wanted.iter().position(|w| w == it).unwrap_or(usize::MAX);
+            let slots: Vec<usize> = (0..layer.len()).filter(|&i| self.nodes[layer[i]].item.is_some()).collect();
+            let mut items: Vec<usize> = slots.iter().map(|&i| layer[i]).collect();
+            items.sort_by_key(|&n| rank(&self.nodes[n].item.unwrap()));
+            for (slot, node) in slots.into_iter().zip(items) {
+                layer[slot] = node;
+            }
+        }
+    }
+
     /// Shape of the columns, for the layout report.
     fn stats(&self) -> ContainerStats {
         let layers = self.layers.len();

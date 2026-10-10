@@ -59,7 +59,6 @@ pub fn can_connect(
     // Check type compatibility (exact match or convertible)
     let compatible = match (&out_type, &in_type) {
         (a, b) if a == b => true,
-        (DataType::Flow, DataType::Flow) => true,
         (DataType::RustFlow, DataType::RustFlow) => true,
         (DataType::RustFlow, _) | (_, DataType::RustFlow) => true,
         (DataType::RustType(t1), DataType::RustType(t2)) => {
@@ -90,12 +89,12 @@ pub fn can_connect(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mock::create_showcase_graph;
+    use crate::mock::create_sample_graph;
     use crate::model::NodeArchetype;
 
     #[test]
-    fn test_showcase_graph_integrity() {
-        let graph = create_showcase_graph();
+    fn test_sample_graph_integrity() {
+        let graph = create_sample_graph();
         assert_eq!(graph.nodes.len(), 5);
         assert_eq!(graph.edges.len(), 4);
     }
@@ -105,20 +104,20 @@ mod tests {
         let mut graph = Graph::new();
         let n1 = graph.add_node(
             "Node 1",
-            NodeArchetype::Ingress,
+            NodeArchetype::File,
             "",
             None,
             vec![],
-            vec![("AudioOut".to_string(), DataType::Audio)],
+            vec![("out".to_string(), DataType::RustFlow)],
             [0.0, 0.0],
         );
         let n2 = graph.add_node(
             "Node 2",
-            NodeArchetype::Compute,
+            NodeArchetype::File,
             "",
             None,
-            vec![("AudioIn".to_string(), DataType::Audio)],
-            vec![("VisionOut".to_string(), DataType::Vision)],
+            vec![("in".to_string(), DataType::RustFlow)],
+            vec![("out".to_string(), DataType::RustFlow)],
             [100.0, 0.0],
         );
 
@@ -150,22 +149,22 @@ mod tests {
             "",
             None,
             vec![],
-            vec![("out".to_string(), DataType::Flow)],
+            vec![("out".to_string(), DataType::RustFlow)],
             [0.0, 0.0],
         );
         let n2 = graph.add_node(
             "Node B",
-            NodeArchetype::Compute,
+            NodeArchetype::Struct,
             "",
             None,
-            vec![("in".to_string(), DataType::Flow)],
+            vec![("in".to_string(), DataType::RustFlow)],
             vec![],
             [50.0, 50.0],
         );
 
         assert_eq!(graph.isolated_nodes_count(), 2);
         assert_eq!(graph.archetype_count(NodeArchetype::Function), 1);
-        assert_eq!(graph.archetype_count(NodeArchetype::Compute), 1);
+        assert_eq!(graph.archetype_count(NodeArchetype::Struct), 1);
 
         let p1 = graph.nodes[&n1].outputs[0].id;
         let p2 = graph.nodes[&n2].inputs[0].id;

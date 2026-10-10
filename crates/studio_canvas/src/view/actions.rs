@@ -1,10 +1,10 @@
-use egui::{Pos2, Rect};
 use studio_graph::{FolderDetail, Graph, NodeArchetype};
 
 use super::layout::calculate_file_node_size;
-use super::types::{CanvasAction, CanvasState, ContextMenuAction, RenderEvents, ZoomAction};
+use super::types::{CanvasAction, CanvasState, ContextMenuAction, RenderEvents};
+use crate::camera::{CameraTarget, Stop};
 
-pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph: &mut Graph, rect: Rect) {
+pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph: &mut Graph) {
     if let Some((cid, detail)) = events.folder_detail {
         let unloaded = graph.clusters.iter().any(|c| c.id == cid && c.is_collapsed() && c.lazy.is_some());
         if unloaded && detail != FolderDetail::Minimised {
@@ -109,6 +109,9 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
     if let Some((node_id, action)) = events.context_menu_action {
         state.context_menu = None;
         match action {
+            ContextMenuAction::OpenOnDesk => {
+                state.action_request = Some(CanvasAction::OpenOnDesk(node_id));
+            }
             ContextMenuAction::ToggleExpand => {
                 state.action_request = Some(CanvasAction::ToggleCodeExpand(node_id));
             }
@@ -131,10 +134,8 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
                 if let Some(node) = graph.nodes.get(&node_id) {
                     let path = node.file_path.as_deref().unwrap_or(&node.title);
                     state.status_message = Some(format!("Copied: {}", path));
+                    state.copy_request = Some(path.to_string());
                 }
-            }
-            ContextMenuAction::Delete => {
-                state.action_request = Some(CanvasAction::DeleteNode(node_id));
             }
         }
     }
@@ -175,11 +176,8 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
     if let Some(action) = state.action_request.clone() {
         match action {
             CanvasAction::CenterNode(id) => {
-                if let Some(n) = graph.nodes.get(&id) {
-                    let center_world = Pos2::new(n.position[0] + n.size[0] * 0.5, n.position[1] + n.size[1] * 0.5);
-                    state.transform.center_on_world_pos(center_world, rect, None);
-                    state.action_request = None;
-                }
+                state.fly_to(CameraTarget::Node(id));
+                state.action_request = None;
             }
             CanvasAction::ToggleCodeExpand(id) => {
                 let new_bounds = if let Some(n) = graph.nodes.get_mut(&id) {
@@ -286,40 +284,23 @@ pub fn apply_render_events(events: RenderEvents, state: &mut CanvasState, graph:
                 }
                 state.action_request = None;
             }
-            CanvasAction::DeleteNode(id) => {
-                graph.remove_node(id);
-                state.selected_nodes.remove(&id);
-                state.mark_scene_dirty();
+            CanvasAction::OpenOnDesk(id) => {
+                if let Some(path) = graph.nodes.get(&id).and_then(|n| n.file_path.clone()) {
+                    state.desk.open(std::path::Path::new(&path), None);
+                    state.desk.navigator.reveal(graph, id);
+                    state.fly_to(CameraTarget::Stop(Stop::Desk));
+                }
                 state.action_request = None;
             }
             CanvasAction::FitGraph => {
-                state.zoom_to_fit(graph, rect);
+                state.fly_to(CameraTarget::Stop(Stop::Code));
                 state.action_request = None;
             }
             CanvasAction::ResetGraph => {
-                state.reset_view();
+                state.fly_to(CameraTarget::Stop(Stop::World));
                 state.action_request = None;
             }
             _ => {} // Other actions like InspectNode are handled by the parent viewer app
-        }
-    }
-
-    if let Some(za) = events.zoom_action {
-        match za {
-            ZoomAction::ZoomOut => {
-                state.transform.zoom =
-                    (state.transform.zoom * 0.85).clamp(state.transform.min_zoom, state.transform.max_zoom);
-            }
-            ZoomAction::ZoomIn => {
-                state.transform.zoom =
-                    (state.transform.zoom * 1.15).clamp(state.transform.min_zoom, state.transform.max_zoom);
-            }
-            ZoomAction::Fit => {
-                state.zoom_to_fit(graph, rect);
-            }
-            ZoomAction::Reset => {
-                state.reset_view();
-            }
         }
     }
 }

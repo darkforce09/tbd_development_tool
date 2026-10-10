@@ -1,0 +1,101 @@
+# Every tag the fixture holds and every contract resolution. Paths are relative to this folder.
+# owner = the name of the item the tag documents, or "file".
+
+[[route]]
+file = "mod/Scripts/Game/ThingReporter.c"
+line = 4
+methods = ["POST"]
+templates = ["/api/v1/things/{id}/done", "/api/v1/things/{id}/start"]
+owner = "SendReport"
+
+[[route]]
+file = "src/handlers.rs"
+line = 7
+methods = ["POST"]
+templates = ["/api/v1/things/:thingId/done"]
+owner = "done"
+
+[[route]]
+file = "tools/cleanup.py"
+line = 4
+methods = ["DELETE"]
+templates = ["/api/v1/things/{id}"]
+owner = "delete_thing"
+
+[[route]]
+file = "web/client.ts"
+line = 3
+methods = ["GET"]
+templates = ["/api/v1/things"]
+owner = "listThings"
+
+[[contract]]
+file = "mod/Scripts/Game/ThingReporter.c"
+line = 5
+file_ref = "things.schema.json"
+pointer = "/definitions/Done"
+partial = false
+owner = "SendReport"
+tier = "proven"
+target = "contracts/things.schema.json"
+target_line = 4
+
+[[contract]]
+file = "mod/Scripts/Game/ThingReporter.c"
+line = 11
+file_ref = "dup.schema.json"
+partial = false
+owner = "Ambiguous"
+tier = "possible"
+candidates = ["a/dup.schema.json", "b/dup.schema.json"]
+
+[[contract]]
+file = "mod/Scripts/Game/ThingReporter.c"
+line = 16
+file_ref = "things.schema.json"
+pointer = "/definitions/Missing"
+partial = false
+owner = "Broken"
+tier = "unresolved"
+reason = "pointer /definitions/Missing not found in contracts/things.schema.json"
+
+[[contract]]
+file = "src/handlers.rs"
+line = 2
+file_ref = "things.schema.json"
+pointer = "/definitions/Done"
+partial = false
+owner = "file"
+tier = "proven"
+target = "contracts/things.schema.json"
+target_line = 4
+
+[[contract]]
+file = "src/handlers.rs"
+line = 18
+file_ref = "contracts/things.schema.json"
+pointer = "/definitions/a~1b"
+partial = true
+owner = "Escaped"
+tier = "proven"
+target = "contracts/things.schema.json"
+target_line = 10
+
+# `#/` is the member with the empty key (RFC 6901), which the schema does not have; the document is `#`.
+[[contract]]
+file = "tools/cleanup.py"
+line = 10
+file_ref = "things.schema.json"
+pointer = "/"
+partial = false
+owner = "file"
+tier = "unresolved"
+reason = "pointer `/` names the empty key; whole document is `#`"
+
+[[malformed]]
+file = "src/handlers.rs"
+line = 15
+
+[[malformed]]
+file = "mod/Scripts/Game/ThingReporter.c"
+line = 22

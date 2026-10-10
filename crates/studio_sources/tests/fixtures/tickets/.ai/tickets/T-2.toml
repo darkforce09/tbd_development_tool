@@ -1,0 +1,7 @@
+id = "T-2"
+kind = "work"
+title = "Second, ready"
+status = "ready"
+priority = 2
+order = 10
+depends_on = ["T-1"]

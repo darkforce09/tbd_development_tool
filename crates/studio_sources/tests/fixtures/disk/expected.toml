@@ -1,0 +1,36 @@
+# What `read_git_disk` says about `tree/`, made a git repository by tests/disk_fixture.rs.
+# Files named `dot.x` are copied as `.x` (so this repository's git never reads them as its own).
+# After the commit the test modifies src/main.rs, deletes README.md, stages a new added.txt and
+# writes an untracked notes.txt.
+
+# 10 committed files plus the staged added.txt.
+tracked = 11
+lfs = ["assets/logo.bin"]
+# gen/handwritten.rs is `linguist-generated=false` (.gitattributes:5).
+generated = ["gen/schema.rs"]
+vendored = ["vendor/lib.js"]
+# Matches `*.log` but `!keep.log` takes it back: tracked, not ignored.
+not_ignored = ["keep.log"]
+
+[[ignored]]
+path = "build/"
+rule = ".gitignore:2"
+pattern = "build/"
+
+[[ignored]]
+path = "debug.log"
+rule = ".gitignore:3"
+pattern = "*.log"
+
+[[ignored]]
+path = "src/trace.log"
+rule = ".gitignore:3"
+pattern = "*.log"
+
+[status]
+modified = 1
+added = 1
+deleted = 1
+renamed = 0
+untracked = 1
+conflicted = 0
