@@ -1,25 +1,21 @@
-use egui::{Color32, Pos2, Rect, Vec2};
+use egui::{vec2, Color32, Pos2, Rect, Vec2};
 use std::collections::BTreeSet;
 use studio_graph::{DataType, EdgeId, EdgeKind, FolderDetail, Graph, NodeArchetype, NodeId};
 use studio_ui::color_tokens::*;
 
 use std::sync::Arc;
 
+use crate::camera::{self, Camera, CameraTarget, Stop, View};
 use crate::gpu::CardLayer;
 use crate::interaction::{HoverState, InteractionMode};
 use crate::scene::CanvasScene;
 use crate::spatial::SpatialHashGrid;
 use crate::transform::CanvasTransform;
+use crate::world::WorldLayout;
 
 /// Maps DataType to its designated UI accent color.
 pub fn data_type_color(data_type: &DataType) -> Color32 {
     match data_type {
-        DataType::Audio => TYPE_AUDIO,
-        DataType::Vision => TYPE_VISION,
-        DataType::Text => TYPE_TEXT,
-        DataType::State => TYPE_STATE,
-        DataType::Flow => TYPE_FLOW,
-        DataType::Composite => TYPE_COMPOSITE,
         DataType::RustFlow => TYPE_FLOW,
         DataType::Documentation => KIND_DOCUMENTATION,
         DataType::RustType(name) => {
@@ -71,10 +67,6 @@ pub(crate) fn hsv_to_rgb(h: f32, s: f32, v: f32) -> Color32 {
 /// Maps NodeArchetype to its designated UI accent color.
 pub fn archetype_color(archetype: NodeArchetype) -> Color32 {
     match archetype {
-        NodeArchetype::Ingress => ARCHETYPE_INGRESS,
-        NodeArchetype::Compute => ARCHETYPE_COMPUTE,
-        NodeArchetype::State => ARCHETYPE_STATE,
-        NodeArchetype::Egress => ARCHETYPE_EGRESS,
         NodeArchetype::Module => KIND_IMPORT,
         NodeArchetype::Function => KIND_CALL,
         NodeArchetype::Struct => KIND_TYPE_USE,
@@ -109,7 +101,8 @@ pub enum CanvasAction {
     ToggleCodeExpand(NodeId),
     ToggleMarkdownPreview(NodeId),
     SetNodeTab(NodeId, usize),
-    DeleteNode(NodeId),
+    /// Open a file card's file on the Desk and go there.
+    OpenOnDesk(NodeId),
     FitGraph,
     ResetGraph,
     /// Load a minimised folder whose contents are not in the graph yet (cluster id), then show it
@@ -176,8 +169,8 @@ pub struct CanvasState {
     pub hover: HoverState,
     pub selected_nodes: BTreeSet<NodeId>,
     pub status_message: Option<String>,
-    pub search_filter: String,
-    pub category_filter: BTreeSet<NodeArchetype>,
+    /// Text to put on the clipboard once the frame ends.
+    pub copy_request: Option<String>,
     pub active_flow_edges: Option<BTreeSet<EdgeId>>,
     /// Master switch for every wire; hidden wires are neither drawn nor hit-tested.
     pub show_wires: bool,
@@ -205,17 +198,26 @@ pub struct CanvasState {
     pub trace_nodes: Option<BTreeSet<NodeId>>,
     /// The selection `trace_nodes` was worked out for.
     trace_for: BTreeSet<NodeId>,
-    /// Where the camera goes once the canvas knows its size.
-    pub zoom_request: Option<ZoomTarget>,
-}
-
-/// A place to fit in view.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ZoomTarget {
-    /// The whole project.
-    All,
-    /// A folder (cluster id).
-    Folder(String),
+    /// Every move of the view that is not the user's own goes through the camera.
+    pub camera: Camera,
+    /// Where the districts are, rebuilt with the scene.
+    pub world: WorldLayout,
+    /// The stop the camera is at, or flying to.
+    pub stop: Stop,
+    /// The stop the current flight is heading for.
+    flight_stop: Option<Stop>,
+    /// The canvas rectangle of the last frame, for what is drawn over it.
+    pub last_rect: Rect,
+    /// The files open on the Desk.
+    pub desk: crate::desk::DeskState,
+    /// What the districts around the map show.
+    pub districts: crate::districts::DistrictViews,
+    /// The tool picked in the Run district.
+    pub run_selected: Option<usize>,
+    /// Folders open in the Files district's disk tree (cluster ids).
+    pub files_open: BTreeSet<String>,
+    /// The disk tree's rows, and what they were worked out from (scene revision, open folders).
+    pub files_rows: Option<(u64, Arc<Vec<crate::districts::files::TreeRow>>)>,
 }
 
 impl Default for CanvasState {
@@ -226,8 +228,7 @@ impl Default for CanvasState {
             hover: HoverState::default(),
             selected_nodes: BTreeSet::new(),
             status_message: None,
-            search_filter: String::new(),
-            category_filter: BTreeSet::new(),
+            copy_request: None,
             active_flow_edges: None,
             show_wires: true,
             show_subnode_wires_globally: true,
@@ -246,7 +247,16 @@ impl Default for CanvasState {
             focus: None,
             trace_nodes: None,
             trace_for: BTreeSet::new(),
-            zoom_request: None,
+            camera: Camera::default(),
+            world: WorldLayout::default(),
+            stop: Stop::World,
+            flight_stop: None,
+            last_rect: Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0)),
+            desk: Default::default(),
+            districts: Default::default(),
+            run_selected: None,
+            files_open: BTreeSet::new(),
+            files_rows: None,
         }
     }
 }
@@ -263,7 +273,7 @@ impl CanvasState {
             self.mark_scene_dirty();
         }
         self.focus = Some(cluster_id.to_string());
-        self.zoom_request = Some(ZoomTarget::Folder(cluster_id.to_string()));
+        self.camera.fly_to(CameraTarget::Folder(cluster_id.to_string()));
     }
 
     /// Goes back up to a folder (or, with `None`, the whole project): every folder open inside it
@@ -280,9 +290,9 @@ impl CanvasState {
         graph.set_folder_details(&changes);
         self.mark_scene_dirty();
         self.focus = cluster_id.map(str::to_string);
-        self.zoom_request = Some(match cluster_id {
-            Some(id) => ZoomTarget::Folder(id.to_string()),
-            None => ZoomTarget::All,
+        self.camera.fly_to(match cluster_id {
+            Some(id) => CameraTarget::Folder(id.to_string()),
+            None => CameraTarget::Stop(Stop::Code),
         });
     }
 
@@ -303,29 +313,124 @@ impl CanvasState {
         }
     }
 
-    /// Fits a world rectangle in the `screen` rectangle, with a margin.
-    pub fn zoom_to_rect(&mut self, world: Rect, screen: Rect) {
-        let padding = 60.0;
-        let scale_x = screen.width() / (world.width() + padding * 2.0).max(100.0);
-        let scale_y = screen.height() / (world.height() + padding * 2.0).max(100.0);
-        let zoom = scale_x.min(scale_y).clamp(self.transform.min_zoom, 2.0);
-        self.transform.zoom = zoom;
-        self.transform.pan =
-            Vec2::new(screen.center().x - world.center().x * zoom, screen.center().y - world.center().y * zoom);
+    /// The zoom as the user sees it: 100% where text is drawn at its natural size (in a
+    /// district's own units for the districts around the map).
+    pub fn zoom_percent(&self) -> f32 {
+        let local = if matches!(self.stop, Stop::Code | Stop::World) { 1.0 } else { self.world.scale };
+        self.transform.zoom * local * 100.0
     }
 
-    /// Carries out a pending [`ZoomTarget`].
-    pub fn apply_zoom_request(&mut self, graph: &Graph, screen: Rect) {
-        match self.zoom_request.take() {
-            Some(ZoomTarget::All) => self.zoom_to_fit(graph, screen),
-            Some(ZoomTarget::Folder(id)) => {
-                if let Some(c) = graph.clusters.iter().find(|c| c.id == id) {
-                    let world = Rect::from_min_size(Pos2::from(c.position), Vec2::new(c.size[0], c.size[1]));
-                    self.zoom_to_rect(world, screen);
+    /// Back to 100% about the middle of the view.
+    pub fn actual_size(&mut self) {
+        self.camera.cancel();
+        let one = if matches!(self.stop, Stop::Code | Stop::World) { 1.0 } else { self.world.local_zoom_one() };
+        self.transform.zoom_at_pointer(self.last_rect.center(), one / self.transform.zoom);
+    }
+
+    /// The Files district's disk tree, worked out again only when the map or the open folders
+    /// change.
+    pub fn files_tree(&mut self, graph: &Graph) -> Arc<Vec<crate::districts::files::TreeRow>> {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.scene.revision.hash(&mut hasher);
+        self.files_open.hash(&mut hasher);
+        let key = hasher.finish();
+        if let Some((k, rows)) = &self.files_rows {
+            if *k == key {
+                return rows.clone();
+            }
+        }
+        let rows = Arc::new(crate::districts::files::tree_rows(graph, &self.files_open));
+        self.files_rows = Some((key, rows.clone()));
+        rows
+    }
+
+    /// Flies the camera to `target`.
+    pub fn fly_to(&mut self, target: CameraTarget) {
+        self.camera.fly_to(target);
+    }
+
+    /// Moves the camera to `target` at once.
+    pub fn jump_to(&mut self, target: CameraTarget) {
+        self.camera.jump_to(target);
+    }
+
+    /// Moves the camera for this frame: starts the flight to a pending target (now that the canvas
+    /// knows its size), then follows the flight. Also works out which stop the camera is at.
+    pub fn tick_camera(&mut self, graph: &Graph, screen: Rect, now: f64, pixels_per_point: f32) {
+        let here = View { pan: self.transform.pan, zoom: self.transform.zoom };
+        if let Some((target, fly)) = self.camera.pending.take() {
+            if let Some((to, snap_anchor)) = self.resolve(&target, graph, screen) {
+                self.flight_stop = Some(match target {
+                    CameraTarget::Stop(stop) => stop,
+                    CameraTarget::Rect(r) => self.world.stop_for_view(r),
+                    CameraTarget::Folder(_) | CameraTarget::Node(_) => Stop::Code,
+                });
+                if fly {
+                    self.camera.flight = Some(camera::Flight::new(here, to, screen, now, snap_anchor));
+                } else {
+                    self.camera.flight =
+                        Some(camera::Flight::new(to, to, screen, now - camera::FLIGHT_SECONDS, snap_anchor));
                 }
             }
-            None => {}
         }
+        if let Some(flight) = self.camera.flight {
+            let (mut view, landed) = flight.at(now);
+            if landed {
+                if let Some(anchor) = flight.snap_anchor() {
+                    view = camera::snap(view, anchor, pixels_per_point);
+                }
+                self.camera.flight = None;
+                self.flight_stop = None;
+            }
+            self.transform.pan = view.pan;
+            self.transform.zoom = view.zoom.clamp(self.transform.min_zoom, self.transform.max_zoom);
+        }
+        self.stop = match self.flight_stop {
+            Some(stop) => stop,
+            None => self.world.stop_for_view(self.transform.screen_to_world_rect(screen)),
+        };
+    }
+
+    /// The view a target asks for, and the world point to snap to a pixel if it lands at 100%.
+    fn resolve(&self, target: &CameraTarget, graph: &Graph, screen: Rect) -> Option<(View, Option<Pos2>)> {
+        let zooms = |max: f32| (self.transform.min_zoom, max.min(self.transform.max_zoom));
+        let one = self.world.local_zoom_one();
+        let resolved = match target {
+            CameraTarget::Stop(Stop::World) => (camera::fit(self.world.bounds, screen, 48.0, zooms(1.0)), None),
+            CameraTarget::Stop(Stop::Code) => (camera::fit(self.world.code, screen, 48.0, zooms(1.0)), None),
+            CameraTarget::Stop(Stop::Desk) => {
+                // At 100%, so its text is crisp, with its top left corner in view.
+                let desk = self.world.desk;
+                let fits = desk.width() * one <= screen.width() - 96.0;
+                let view = if fits {
+                    camera::centre_on(desk.center(), one, screen)
+                } else {
+                    let pan = (screen.min + vec2(48.0, 48.0)).to_vec2() - desk.min.to_vec2() * one;
+                    View { pan, zoom: one }
+                };
+                (view, Some(desk.min))
+            }
+            CameraTarget::Stop(stop) => {
+                let r = self.world.rect(*stop);
+                let view = camera::fit(r, screen, 48.0, zooms(one));
+                (view, ((view.zoom - one).abs() < 1e-6).then_some(r.min))
+            }
+            CameraTarget::Folder(id) => {
+                let c = graph.clusters.iter().find(|c| &c.id == id)?;
+                let r = Rect::from_min_size(Pos2::from(c.position), Vec2::new(c.size[0], c.size[1]));
+                (camera::fit(r, screen, 60.0, zooms(2.0)), None)
+            }
+            CameraTarget::Node(id) => {
+                let n = graph.nodes.get(id)?;
+                let centre = Pos2::new(n.position[0] + n.size[0] * 0.5, n.position[1] + n.size[1] * 0.5);
+                // Keep the zoom unless the card would be too small to read.
+                let zoom = if self.transform.zoom < 0.35 { 0.8 } else { self.transform.zoom };
+                (camera::centre_on(centre, zoom, screen), None)
+            }
+            CameraTarget::Rect(r) => (camera::fit(*r, screen, 60.0, zooms(2.0)), None),
+        };
+        Some(resolved)
     }
 
     /// Marks the layout as changed: the spatial grid and the scene are rebuilt before the next
@@ -340,6 +445,12 @@ impl CanvasState {
         if self.scene_dirty || self.scene.member_wires != self.show_subnode_wires_globally || self.scene.revision == 0 {
             self.spatial_grid.build_from_graph(graph);
             self.scene = Arc::new(CanvasScene::build(graph, self.show_subnode_wires_globally));
+            let before = std::mem::replace(&mut self.world, WorldLayout::for_graph(graph));
+            // The map grew or shrank and moved the districts: the camera stays on the one it is
+            // at, so what is on screen does not move.
+            if self.world != before && !matches!(self.stop, Stop::Code | Stop::World) && !self.camera.is_flying() {
+                self.camera.jump_to(CameraTarget::Stop(self.stop));
+            }
             // The hover index is only needed once the pointer is over a wire: build it off the
             // UI thread.
             let scene = self.scene.clone();
@@ -351,10 +462,6 @@ impl CanvasState {
     /// Whether wires of this kind (`EdgeKind as u32`) are shown.
     pub fn wire_kind_visible(&self, kind: u32) -> bool {
         self.wire_kinds.mask() & (1 << kind) != 0
-    }
-
-    pub fn reset_view(&mut self) {
-        self.transform.reset();
     }
 
     pub fn zoom_to_fit(&mut self, graph: &Graph, screen_rect: Rect) {
@@ -405,14 +512,6 @@ impl CanvasState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ZoomAction {
-    ZoomIn,
-    ZoomOut,
-    Fit,
-    Reset,
-}
-
 #[derive(Default)]
 pub struct RenderEvents {
     /// A folder's detail-level button was clicked: (cluster id, level).
@@ -430,5 +529,4 @@ pub struct RenderEvents {
     pub member_fold_clicked: Option<(NodeId, String)>,
     pub context_menu_action: Option<(NodeId, ContextMenuAction)>,
     pub single_selected_action: Option<CanvasAction>,
-    pub zoom_action: Option<ZoomAction>,
 }

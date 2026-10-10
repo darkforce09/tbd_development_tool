@@ -1,20 +1,24 @@
+pub mod activity;
 pub mod debug_panel;
+pub mod desk_io;
+pub mod districts;
 pub mod folders;
-pub mod left_sidebar;
 pub mod modals;
+pub mod overlays;
 pub mod settings;
+pub mod shortcuts;
+pub mod sources;
 pub mod state;
-pub mod top_nav;
+pub mod title_bar;
 pub mod view_menu;
 pub mod window_frame;
 
 use eframe::{egui, App, Frame};
-use egui::{Key, Pos2};
-use std::collections::BTreeMap;
+use egui::Key;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
-use studio_canvas::{CanvasAction, CanvasState, CanvasView};
-use studio_graph::{Graph, NodeArchetype};
+use studio_canvas::{CameraTarget, CanvasAction, CanvasState, CanvasView, Stop};
+use studio_graph::Graph;
 use studio_parser::{LoaderMessage, ProjectStats, SymbolSearchIndex};
 
 /// The Studio desktop application: one infinite canvas for the whole project.
@@ -32,7 +36,6 @@ pub struct StudioApp {
     pub current_project_path: Option<PathBuf>,
     pub path_input: String,
     pub project_stats: Option<ProjectStats>,
-    pub pending_fit_view: bool,
     pub is_from_cache: bool,
     /// Why the last project load failed, shown on the project pill until the next load.
     pub load_error: Option<String>,
@@ -47,17 +50,22 @@ pub struct StudioApp {
 
     pub search_index: SymbolSearchIndex,
 
-    pub left_sidebar_open: bool,
-
-    // Search & Filter State
-    pub search_query: String,
-    pub category_filters: BTreeMap<NodeArchetype, bool>,
-
     // Collapsed folders being loaded in the background
     pub folder_loads: Vec<folders::FolderLoad>,
 
     pub spotlight_open: bool,
     pub spotlight_search: String,
+
+    /// What the title bar's activity line shows.
+    pub activity: activity::Activity,
+    /// Reads files for the Desk in the background.
+    pub desk_reader: desk_io::DeskReader,
+    /// The open project's sources besides its code.
+    pub sources: Option<sources::ProjectSources>,
+    /// For waking the UI from background work.
+    pub egui_ctx: egui::Context,
+    /// The "Add a tool" panel is open.
+    pub show_tool_sources: bool,
 }
 
 impl App for StudioApp {
@@ -66,6 +74,7 @@ impl App for StudioApp {
         ctx.request_repaint();
 
         // Drain asynchronous loader messages
+        let mut graph_replaced = false;
         if let Some(ref rx) = self.loader_rx {
             let mut should_clear_rx = false;
             loop {
@@ -93,13 +102,14 @@ impl App for StudioApp {
                         }
                         LoaderMessage::InitialLayoutReady { graph, stats, search_index } => {
                             self.graph = graph;
+                            graph_replaced = true;
                             // A project opens at its top level, with nothing selected.
                             self.canvas_state.focus = None;
                             self.canvas_state.selected_nodes.clear();
                             self.project_stats = Some(stats.clone());
                             self.search_index = search_index;
                             self.canvas_state.mark_scene_dirty();
-                            self.pending_fit_view = true;
+                            self.canvas_state.jump_to(CameraTarget::Stop(Stop::World));
                             self.is_loading = false;
                             self.canvas_state.status_message = Some(format!(
                                 "Opened '{}': {} files displayed, parsing in the background",
@@ -108,15 +118,23 @@ impl App for StudioApp {
                         }
                         LoaderMessage::Complete { graph, stats, search_index, from_cache } => {
                             self.graph = graph;
+                            graph_replaced = true;
                             self.project_stats = Some(stats.clone());
                             self.search_index = search_index;
                             self.is_from_cache = from_cache;
                             self.canvas_state.mark_scene_dirty();
                             if self.is_loading {
-                                self.pending_fit_view = true;
+                                self.canvas_state.jump_to(CameraTarget::Stop(Stop::World));
                             }
                             self.canvas_state.status_message = Some(format!("Loaded '{}'", stats.project_name));
                             self.is_loading = false;
+                            if from_cache {
+                                should_clear_rx = true;
+                                break;
+                            }
+                        }
+                        LoaderMessage::FolderTotals(totals) => {
+                            studio_parser::apply_folder_totals(&mut self.graph, &totals);
                             should_clear_rx = true;
                             break;
                         }
@@ -143,7 +161,12 @@ impl App for StudioApp {
             }
         }
 
+        if graph_replaced {
+            self.apply_sources();
+        }
         self.poll_folder_loads();
+        self.poll_desk_reads(ctx);
+        self.poll_sources();
 
         // FPS calculation
         let now = ctx.input(|i| i.time);
@@ -161,7 +184,7 @@ impl App for StudioApp {
         if ctx.input(|i| i.key_pressed(Key::F3)) {
             self.debug.open = !self.debug.open;
         }
-        if ctx.input(|i| i.modifiers.command && i.key_pressed(Key::K)) || ctx.input(|i| i.key_pressed(Key::Slash)) {
+        if shortcuts::search_shortcut(ctx) {
             self.spotlight_open = !self.spotlight_open;
             if self.spotlight_open {
                 self.spotlight_search.clear();
@@ -185,12 +208,6 @@ impl App for StudioApp {
                         }
                     }
                 }
-                CanvasAction::CenterNode(id) => {
-                    if let Some(n) = self.graph.nodes.get(&id) {
-                        let center_world = Pos2::new(n.position[0] + n.size[0] * 0.5, n.position[1] + n.size[1] * 0.5);
-                        self.canvas_state.transform.center_on_world_pos(center_world, ctx.content_rect(), None);
-                    }
-                }
                 CanvasAction::ExpandFolder(cluster_id, detail) => self.start_folder_load(cluster_id, detail),
                 CanvasAction::ToggleMemberWires(id) => {
                     if let Some(n) = self.graph.nodes.get_mut(&id) {
@@ -203,33 +220,26 @@ impl App for StudioApp {
             }
         }
 
-        // Synchronize search filter to canvas
-        self.canvas_state.search_filter = self.search_query.clone();
-        self.sync_category_filters();
-
-        self.render_top_nav(root);
-        self.render_left_sidebar(root);
+        self.render_title_bar(root);
 
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(studio_ui::color_tokens::CANVAS_BG)).show(
             root,
             |ui| {
-                if self.pending_fit_view {
-                    let screen_rect = ui.ctx().content_rect();
-                    self.canvas_state.zoom_to_fit(&self.graph, screen_rect);
-                    self.pending_fit_view = false;
-                }
-
                 let started = std::time::Instant::now();
                 CanvasView::new(&mut self.canvas_state, &mut self.graph).show(ui);
                 self.debug.canvas_ms = started.elapsed().as_secs_f32() * 1000.0;
             },
         );
 
+        self.render_compass(ctx);
+        self.render_dock(ctx);
         self.render_empty_state(ctx);
-        self.render_loading_hud(ctx);
         self.render_spotlight_modal(ctx);
         self.render_debug_panel(ctx);
-        window_frame::resize_edges(ctx);
+        // macOS keeps its native window frame, which resizes itself.
+        if !cfg!(target_os = "macos") {
+            window_frame::resize_edges(ctx);
+        }
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
