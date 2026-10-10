@@ -1,0 +1,427 @@
+# Exact expectations of tests/r1.rs. Paths are relative to this folder.
+#
+# `expect` forms: "item <Kind> <name> <file>:<line>", "external <path>",
+# "ambiguous <file>:<line>, <file>:<line>", "unresolved <Reason>" (Other reasons as "unresolved Other: <text>").
+# Every call site the index reads must be listed under [[call]], and every listed one must be read.
+
+[index]
+modules = 23
+files = 14
+
+[[crate]]
+package = "alpha"
+name = "alpha"
+kind = "Lib"
+root = "alpha/src/lib.rs"
+edition = 2021
+deps = []
+external = ["axum"]
+
+[[crate]]
+package = "beta"
+name = "beta"
+kind = "Lib"
+root = "beta/src/lib.rs"
+edition = 2021
+# `legacy_core` is the library name of package `legacy-lib` (not renamed); `twin` names two crates, so it is in
+# neither list.
+deps = ["alpha", "legacy_core", "unixonly"]
+external = []
+gated = ["twin", "unixonly"]
+
+[[crate]]
+package = "gamma-tool"
+name = "gamma_tool"
+kind = "Lib"
+root = "gamma_tool/src/lib.rs"
+edition = 2021
+deps = ["b"]
+external = []
+
+[[crate]]
+package = "gamma-tool"
+name = "extra"
+kind = "Bin"
+root = "gamma_tool/src/bin/extra.rs"
+edition = 2021
+deps = ["b", "gamma_tool"]
+external = []
+
+[[crate]]
+package = "gamma-tool"
+name = "gamma-tool"
+kind = "Bin"
+root = "gamma_tool/src/main.rs"
+edition = 2021
+deps = ["b", "gamma_tool"]
+external = []
+
+# No `edition` in the manifest: 2015.
+[[crate]]
+package = "legacy-lib"
+name = "legacy_core"
+kind = "Lib"
+root = "legacy/src/lib.rs"
+edition = 2015
+deps = []
+external = []
+
+# --- call sites -------------------------------------------------------------------------------
+
+# `Self::` inside an inherent impl.
+[[call]]
+at = "alpha/src/lib.rs:32"
+caller = "make"
+path = "Self::new"
+expect = "item Fn new alpha/src/lib.rs:27"
+
+# Re-export chain: prelude::thing -> `pub use crate::inner::thing` -> inner.rs.
+[[call]]
+at = "alpha/src/lib.rs:37"
+caller = "entry"
+path = "prelude::thing"
+expect = "item Fn thing alpha/src/inner.rs:3"
+
+[[call]]
+at = "alpha/src/lib.rs:38"
+caller = "entry"
+path = "self::inner::thing"
+expect = "item Fn thing alpha/src/inner.rs:3"
+
+[[call]]
+at = "alpha/src/lib.rs:39"
+caller = "entry"
+path = "crate::a::x"
+expect = "item Fn x alpha/src/a.rs:1"
+
+[[call]]
+at = "alpha/src/lib.rs:40"
+caller = "entry"
+path = "p::hidden"
+expect = "unresolved PathAttr"
+
+# Two cfg twins.
+[[call]]
+at = "alpha/src/lib.rs:41"
+caller = "entry"
+path = "h"
+expect = "unresolved Cfg"
+
+# Inherent associated function: the method's own span.
+[[call]]
+at = "alpha/src/lib.rs:43"
+caller = "entry"
+path = "Thing::new"
+expect = "item Fn new alpha/src/lib.rs:27"
+
+# Enum variant: the enum item.
+[[call]]
+at = "alpha/src/lib.rs:44"
+caller = "entry"
+path = "shapes::Shape::Circle"
+expect = "item Enum Shape alpha/src/shapes.rs:1"
+
+[[call]]
+at = "alpha/src/lib.rs:45"
+caller = "entry"
+path = "Vec::new"
+expect = "external std::vec::Vec::new"
+
+[[call]]
+at = "alpha/src/lib.rs:46"
+caller = "entry"
+path = "len"
+method = true
+expect = "unresolved Method"
+
+# A closure bound to a local.
+[[call]]
+at = "alpha/src/lib.rs:48"
+caller = "entry"
+path = "f"
+expect = "unresolved Other: local binding or block item"
+
+# The `#[cfg(test)] mod tests` is excluded.
+[[call]]
+at = "alpha/src/lib.rs:49"
+caller = "entry"
+path = "tests::helper"
+expect = "unresolved NotFound"
+
+[[call]]
+at = "alpha/src/lib.rs:50"
+caller = "entry"
+path = "Router::new"
+expect = "external axum::Router::new"
+
+# Inline module called from its parent, and `super::` from inside it.
+[[call]]
+at = "alpha/src/a.rs:8"
+caller = "run"
+path = "inner::f"
+expect = "item Fn f alpha/src/a.rs:12"
+
+[[call]]
+at = "alpha/src/a.rs:13"
+caller = "f"
+path = "super::g"
+expect = "item Fn g alpha/src/a.rs:5"
+
+# A statement-level macro (not a std expression macro) naming `x` may declare it in the body.
+[[call]]
+at = "alpha/src/a.rs:20"
+caller = "with_macro"
+path = "x"
+expect = "unresolved Macro"
+
+# `b/mod.rs`, `super::super::`.
+[[call]]
+at = "alpha/src/b/mod.rs:4"
+caller = "up"
+path = "super::super::helper"
+expect = "item Fn helper alpha/src/b/mod.rs:9"
+
+# `use crate::a::{self, b as c}`.
+[[call]]
+at = "alpha/src/c.rs:6"
+caller = "cee"
+path = "a::x"
+expect = "item Fn x alpha/src/a.rs:1"
+
+[[call]]
+at = "alpha/src/c.rs:7"
+caller = "cee"
+path = "c"
+expect = "item Fn b alpha/src/a.rs:3"
+
+[[call]]
+at = "alpha/src/c.rs:8"
+caller = "cee"
+path = "self::local"
+expect = "item Fn local alpha/src/c.rs:11"
+
+# `c.rs` + `c/d.rs`.
+[[call]]
+at = "alpha/src/c/d.rs:2"
+caller = "dd"
+path = "super::cee"
+expect = "item Fn cee alpha/src/c.rs:5"
+
+# Globs: one provider, two providers, an explicit import shadowing both.
+[[call]]
+at = "alpha/src/globs.rs:18"
+caller = "run"
+path = "only_one"
+expect = "item Fn only_one alpha/src/globs.rs:2"
+
+[[call]]
+at = "alpha/src/globs.rs:19"
+caller = "run"
+path = "shared"
+expect = "ambiguous alpha/src/globs.rs:3, alpha/src/globs.rs:8"
+
+[[call]]
+at = "alpha/src/globs.rs:20"
+caller = "run"
+path = "shadowed"
+expect = "item Fn shadowed alpha/src/globs.rs:9"
+
+# Leading `::` and a cross-crate re-export chain.
+[[call]]
+at = "beta/src/lib.rs:6"
+caller = "beta_run"
+path = "::alpha::a::x"
+expect = "item Fn x alpha/src/a.rs:1"
+
+[[call]]
+at = "beta/src/lib.rs:7"
+caller = "beta_run"
+path = "alpha::prelude::thing"
+expect = "item Fn thing alpha/src/inner.rs:3"
+
+# Through the rename `b = { package = "beta" }` and beta's `pub use alpha::Thing`.
+[[call]]
+at = "gamma_tool/src/lib.rs:4"
+caller = "tool"
+path = "b::Thing::new"
+expect = "item Fn new alpha/src/lib.rs:27"
+
+[[call]]
+at = "gamma_tool/src/lib.rs:5"
+caller = "tool"
+path = "b::beta_run"
+expect = "item Fn beta_run beta/src/lib.rs:5"
+
+# Dependencies by the library name; a name for two crates (cfg twins) and a unix-only dependency are cfg-gated; the
+# same crate in the plain and a target table stays unconditional.
+[[call]]
+at = "beta/src/lib.rs:11"
+caller = "beta_deps"
+path = "legacy_core::top"
+expect = "item Fn top legacy/src/lib.rs:17"
+
+[[call]]
+at = "beta/src/lib.rs:12"
+caller = "beta_deps"
+path = "legacy_lib::top"
+expect = "unresolved NotFound"
+
+[[call]]
+at = "beta/src/lib.rs:13"
+caller = "beta_deps"
+path = "twin::a::x"
+expect = "unresolved Cfg"
+
+[[call]]
+at = "beta/src/lib.rs:14"
+caller = "beta_deps"
+path = "unixonly::a::x"
+expect = "unresolved Cfg"
+
+[[call]]
+at = "beta/src/lib.rs:15"
+caller = "beta_deps"
+path = "alpha::a::x"
+expect = "item Fn x alpha/src/a.rs:1"
+
+# Edition 2015: `use helper::assist` and `::helper::assist` start at the crate root.
+[[call]]
+at = "legacy/src/lib.rs:11"
+caller = "run"
+path = "assist"
+expect = "item Fn assist legacy/src/lib.rs:4"
+
+[[call]]
+at = "legacy/src/lib.rs:12"
+caller = "run"
+path = "::helper::assist"
+expect = "item Fn assist legacy/src/lib.rs:4"
+
+[[call]]
+at = "legacy/src/lib.rs:13"
+caller = "run"
+path = "::std::mem::drop"
+expect = "external std::mem::drop"
+
+# A binary reaches its own package's library by the library's name.
+[[call]]
+at = "gamma_tool/src/main.rs:2"
+caller = "main"
+path = "gamma_tool::tool"
+expect = "item Fn tool gamma_tool/src/lib.rs:3"
+
+[[call]]
+at = "gamma_tool/src/bin/extra.rs:4"
+caller = "main"
+path = "run_tool"
+expect = "item Fn tool gamma_tool/src/lib.rs:3"
+
+[[call]]
+at = "gamma_tool/src/bin/extra.rs:5"
+caller = "main"
+path = "b::Thing::make"
+expect = "item Fn make alpha/src/lib.rs:31"
+
+# --- paths resolved with RustIndex::resolve from the scope of `file` ---------------------------
+
+[[path]]
+file = "alpha/src/lib.rs"
+path = "Router"
+expect = "external axum::Router"
+
+[[path]]
+file = "alpha/src/lib.rs"
+path = "m"
+expect = "unresolved Macro"
+
+[[path]]
+file = "alpha/src/lib.rs"
+path = "tests::helper"
+expect = "unresolved NotFound"
+
+[[path]]
+file = "alpha/src/lib.rs"
+path = "h"
+expect = "unresolved Cfg"
+
+[[path]]
+file = "alpha/src/lib.rs"
+path = "p"
+expect = "item Mod p alpha/src/lib.rs:13"
+
+[[path]]
+file = "alpha/src/lib.rs"
+path = "p::hidden"
+expect = "unresolved PathAttr"
+
+[[path]]
+file = "alpha/src/lib.rs"
+path = "a"
+expect = "item Mod a alpha/src/lib.rs:5"
+
+[[path]]
+file = "alpha/src/lib.rs"
+path = "crate::prelude::thing"
+expect = "item Fn thing alpha/src/inner.rs:3"
+
+[[path]]
+file = "alpha/src/lib.rs"
+path = "c::d::dd"
+expect = "item Fn dd alpha/src/c/d.rs:1"
+
+[[path]]
+file = "alpha/src/lib.rs"
+path = "b::helper"
+expect = "item Fn helper alpha/src/b/mod.rs:9"
+
+[[path]]
+file = "alpha/src/lib.rs"
+path = "shapes::Shape::Empty"
+expect = "item Enum Shape alpha/src/shapes.rs:1"
+
+# `Trait::method` resolves to the trait.
+[[path]]
+file = "alpha/src/lib.rs"
+path = "shapes::Area::area"
+expect = "item Trait Area alpha/src/shapes.rs:6"
+
+# An associated name no inherent impl defines (a trait might): needs types.
+[[path]]
+file = "alpha/src/lib.rs"
+path = "Thing::nope"
+expect = "unresolved Method"
+
+[[path]]
+file = "alpha/src/lib.rs"
+path = "Option"
+expect = "external std::option::Option"
+
+[[path]]
+file = "alpha/src/lib.rs"
+path = "Some"
+expect = "external std::option::Option::Some"
+
+[[path]]
+file = "alpha/src/globs.rs"
+path = "user::shared"
+expect = "ambiguous alpha/src/globs.rs:3, alpha/src/globs.rs:8"
+
+[[path]]
+file = "beta/src/lib.rs"
+path = "::alpha::inner::thing"
+expect = "item Fn thing alpha/src/inner.rs:3"
+
+[[path]]
+file = "beta/src/lib.rs"
+path = "Thing"
+expect = "item Struct Thing alpha/src/lib.rs:24"
+
+[[path]]
+file = "gamma_tool/src/lib.rs"
+path = "b::Thing"
+expect = "item Struct Thing alpha/src/lib.rs:24"
+
+[[path]]
+file = "gamma_tool/src/lib.rs"
+path = "alpha::inner::thing"
+expect = "unresolved NotFound"

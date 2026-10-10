@@ -1,0 +1,8 @@
+# The R1 fixture: a small virtual workspace the path resolver test reads (never built).
+[workspace]
+resolver = "2"
+members = ["alpha", "beta", "gamma_tool", "legacy"]
+
+[workspace.dependencies]
+alpha = { path = "alpha" }
+beta = { path = "beta" }

@@ -831,3 +831,386 @@ fn double_clicking_a_file_opens_it_on_the_desk_at_100_percent() {
     h.idle(3);
     assert!(matches!(h.state.desk.cards[0].content, crate::desk::CardContent::Code(_)));
 }
+
+#[test]
+fn painter_draws_a_proven_wire_whole_and_others_in_dashes() {
+    use super::render_wires::{wire_shapes, WirePath};
+    use studio_graph::EvidenceTier;
+    let stroke = egui::Stroke::new(2.0, egui::Color32::WHITE);
+    let clip = Rect::from_min_size(Pos2::ZERO, Vec2::splat(1000.0));
+    let segment = WirePath::Segment([Pos2::new(10.0, 50.0), Pos2::new(400.0, 50.0)]);
+    let curve = WirePath::Curve([
+        Pos2::new(10.0, 50.0),
+        Pos2::new(200.0, 50.0),
+        Pos2::new(200.0, 300.0),
+        Pos2::new(400.0, 300.0),
+    ]);
+    for path in [segment, curve] {
+        let shapes = |tier| {
+            let mut out = Vec::new();
+            wire_shapes(path, tier, stroke, clip, &mut out);
+            out.len()
+        };
+        assert_eq!(shapes(EvidenceTier::Proven), 1, "{path:?}");
+        for tier in [EvidenceTier::PossibleSet, EvidenceTier::Observed, EvidenceTier::Unresolved] {
+            assert!(shapes(tier) > 1, "{tier:?} {path:?}");
+        }
+        // Short dashes are more numerous than long ones.
+        assert!(shapes(EvidenceTier::Unresolved) > shapes(EvidenceTier::PossibleSet));
+    }
+}
+
+#[test]
+fn painter_dashes_only_what_is_on_screen_and_keeps_them_in_place() {
+    use super::render_wires::{wire_shapes, WirePath};
+    use studio_graph::EvidenceTier;
+    let stroke = egui::Stroke::new(2.0, egui::Color32::WHITE);
+    let clip = Rect::from_min_size(Pos2::ZERO, Vec2::splat(200.0));
+    // A wire starting far off screen: only dashes near the screen are made.
+    let dashes = |start: f32| {
+        let mut out = Vec::new();
+        wire_shapes(
+            WirePath::Segment([Pos2::new(start, 10.0), Pos2::new(150.0, 10.0)]),
+            EvidenceTier::Unresolved,
+            stroke,
+            clip,
+            &mut out,
+        );
+        out.iter()
+            .map(|s| match s {
+                egui::Shape::LineSegment { points, .. } => points[0].x,
+                other => panic!("{other:?}"),
+            })
+            .collect::<Vec<f32>>()
+    };
+    let far = dashes(-100_000.0);
+    assert!(!far.is_empty() && far.len() <= 16, "{}", far.len());
+    // Dash starts sit on the wire's own 12 px grid, wherever the clip cut it.
+    for x in &far {
+        let from_start = x + 100_000.0;
+        let off = from_start - (from_start / 12.0).round() * 12.0;
+        assert!(off.abs() < 0.05, "{x} is {off} px off the pattern");
+    }
+    // A wire missing the screen makes nothing.
+    let mut out = Vec::new();
+    wire_shapes(
+        WirePath::Segment([Pos2::new(-500.0, 900.0), Pos2::new(-10.0, 900.0)]),
+        EvidenceTier::Unresolved,
+        stroke,
+        clip,
+        &mut out,
+    );
+    assert!(out.is_empty());
+}
+
+/// A Pipeline with one open group of one flow (two Rust steps) and one closed group.
+fn pipeline_view() -> crate::districts::pipeline::PipelineView {
+    use crate::districts::pipeline::*;
+    let step = |title: &str, line| PipelineStep {
+        title: title.into(),
+        detail: String::new(),
+        language: "Rust".into(),
+        path: std::path::PathBuf::from(format!("src/{title}.rs")),
+        line,
+    };
+    let lane = PipelineLane {
+        name: "GET /a".into(),
+        crossing: false,
+        layers: vec![vec![step("route", 4)], vec![step("handler", 7)]],
+        links: vec![PipelineLink {
+            from: StepSlot { layer: 0, index: 0 },
+            to: StepSlot { layer: 1, index: 0 },
+            tier: studio_graph::EvidenceTier::Proven,
+            candidates: 1,
+            conditional: Some("dev".into()),
+            crossing: false,
+            label: String::new(),
+        }],
+        truncated: 0,
+    };
+    PipelineView {
+        groups: vec![
+            PipelineGroup {
+                key: "open".into(),
+                title: "Open".into(),
+                count: 1,
+                expanded: true,
+                lanes: vec![lane.clone()],
+            },
+            PipelineGroup {
+                key: "closed".into(),
+                title: "Closed".into(),
+                count: 3,
+                expanded: false,
+                lanes: vec![lane; 3],
+            },
+        ],
+    }
+}
+
+/// The harness at the Pipeline stop with [`pipeline_view`] arrived.
+fn harness_at_pipeline() -> Harness {
+    let mut h = Harness::new(false);
+    h.state.desk.root = Some(std::path::PathBuf::from("/p"));
+    h.state.districts.pipeline = Some(std::sync::Arc::new(pipeline_view()));
+    h.state.refresh_world();
+    h.state.jump_to(crate::camera::CameraTarget::Stop(crate::camera::Stop::Pipeline));
+    h.idle(3);
+    assert_eq!(h.state.stop, crate::camera::Stop::Pipeline);
+    h
+}
+
+/// Where a point of the Pipeline district, in its own units, is on screen.
+fn pipeline_point(h: &Harness, local: Pos2) -> Pos2 {
+    h.at(h.state.world.pipeline.min + local.to_vec2() * h.state.world.scale)
+}
+
+fn pipeline_layout(h: &Harness) -> crate::districts::pipeline::PipelineLayout {
+    let view = h.state.districts.pipeline.clone().unwrap();
+    let width = h.state.world.pipeline.width() / h.state.world.scale;
+    crate::districts::pipeline::layout(&view, width, &h.state.pipeline_open)
+}
+
+#[test]
+fn the_pipeline_stop_lands_at_100_percent_on_its_top_left() {
+    let h = harness_at_pipeline();
+    let one = h.state.world.local_zoom_one();
+    assert!((h.state.transform.zoom - one).abs() < 1e-6, "Pipeline reads at 100%");
+    let corner = h.at(h.state.world.pipeline.min);
+    assert_eq!(corner, Pos2::new(48.0, 48.0), "its top left corner, header first");
+    let first_card = pipeline_layout(&h).groups[0].lanes[0].cards[0].1;
+    assert!(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0)).contains(pipeline_point(&h, first_card.center())));
+}
+
+#[test]
+fn clicking_a_pipeline_step_opens_its_file_on_the_desk_at_its_line() {
+    let mut h = harness_at_pipeline();
+    let card = pipeline_layout(&h).groups[0].lanes[0].cards[1].1;
+    h.click(pipeline_point(&h, card.center()), egui::PointerButton::Primary);
+    assert_eq!(h.state.desk.cards.len(), 1);
+    assert_eq!(h.state.desk.cards[0].path, std::path::PathBuf::from("/p/src/handler.rs"));
+    assert_eq!(h.state.desk.cards[0].scroll_to, Some(7));
+    assert_eq!(h.state.stop, crate::camera::Stop::Desk, "on its way to the Desk");
+}
+
+#[test]
+fn opening_a_pipeline_group_grows_the_district_north_and_keeps_its_header_in_place() {
+    let mut h = harness_at_pipeline();
+    let (code, bottom) = (h.state.world.code, h.state.world.pipeline.bottom());
+    let (top, desk) = (h.state.world.pipeline.top(), h.state.world.desk);
+    let top_on_screen = h.at(h.state.world.pipeline.min);
+    let header = pipeline_layout(&h).groups[1].header;
+    let clicked = pipeline_point(&h, header.left_center() + Vec2::new(120.0, 0.0));
+    let zoom = h.state.transform.zoom;
+    h.click(clicked, egui::PointerButton::Primary);
+    assert!(h.state.pipeline_open.contains("closed"));
+    assert_eq!(pipeline_layout(&h).groups[1].lanes.len(), 3);
+    assert_eq!(h.state.world.code, code, "the map never moves");
+    assert_eq!(h.state.world.desk, desk);
+    assert_eq!(h.state.world.pipeline.bottom(), bottom);
+    assert!(h.state.world.pipeline.top() < top, "it grew north");
+    assert_eq!(h.at(h.state.world.pipeline.min), top_on_screen, "its top edge keeps its place on screen");
+    let header = pipeline_layout(&h).groups[1].header;
+    let header_now = pipeline_point(&h, header.left_center() + Vec2::new(120.0, 0.0));
+    assert!((header_now - clicked).length() < 1e-3, "the clicked header did not move: {header_now:?} vs {clicked:?}");
+    assert_eq!(h.state.transform.zoom, zoom);
+    assert!(!h.state.camera.is_flying());
+    assert!(h.state.desk.cards.is_empty(), "a header click opens nothing");
+
+    // And closed again, it is as it was, the header still under the pointer.
+    h.click(header_now, egui::PointerButton::Primary);
+    assert!(h.state.pipeline_open.is_empty());
+    assert_eq!(h.state.world.pipeline.top(), top);
+    assert_eq!(h.at(h.state.world.pipeline.min), top_on_screen);
+}
+
+#[test]
+fn an_empty_pipeline_is_drawn_without_trouble() {
+    let mut h = Harness::new(false);
+    h.state.districts.pipeline = Some(std::sync::Arc::new(Default::default()));
+    h.state.refresh_world();
+    h.state.jump_to(crate::camera::CameraTarget::Stop(crate::camera::Stop::Pipeline));
+    h.idle(3);
+    assert_eq!(h.state.stop, crate::camera::Stop::Pipeline);
+    assert_eq!(h.state.world.pipeline.height(), 900.0 * h.state.world.scale, "nothing to show keeps the fixed height");
+}
+
+#[test]
+fn clicking_the_pipeline_from_the_world_flies_there_and_opens_no_step() {
+    let mut h = harness_at_pipeline();
+    h.state.jump_to(crate::camera::CameraTarget::Stop(crate::camera::Stop::World));
+    h.idle(3);
+    assert_eq!(h.state.stop, crate::camera::Stop::World);
+    // Right on a step: the click that starts the flight is not also a click on the step.
+    let card = pipeline_layout(&h).groups[0].lanes[0].cards[1].1;
+    h.click(pipeline_point(&h, card.center()), egui::PointerButton::Primary);
+    assert!(h.state.camera.is_flying());
+    assert_eq!(h.state.stop, crate::camera::Stop::Pipeline);
+    h.idle(70);
+    assert!(!h.state.camera.is_flying());
+    assert_eq!(h.state.stop, crate::camera::Stop::Pipeline);
+    assert!(h.state.desk.cards.is_empty(), "the click only flew");
+}
+
+/// [`pipeline_view`] with its closed group open by default and more flows: taller than the
+/// fixed height, so it grows the district north when it arrives.
+fn taller_pipeline_view() -> crate::districts::pipeline::PipelineView {
+    let mut view = pipeline_view();
+    let lane = view.groups[1].lanes[0].clone();
+    view.groups[1].expanded = true;
+    view.groups[1].lanes = vec![lane; 8];
+    view.groups[1].count = 8;
+    view
+}
+
+#[test]
+fn pipeline_data_arriving_while_viewing_it_keeps_its_header_in_place() {
+    let mut h = harness_at_pipeline();
+    let top = h.state.world.pipeline.top();
+    let top_on_screen = h.at(h.state.world.pipeline.min);
+    assert_eq!(top_on_screen, Pos2::new(48.0, 48.0));
+    let header = pipeline_layout(&h).groups[0].header;
+    let header_on_screen = pipeline_point(&h, header.min);
+
+    h.state.districts.pipeline = Some(std::sync::Arc::new(taller_pipeline_view()));
+    h.state.refresh_world();
+    h.idle(3);
+    assert!(h.state.world.pipeline.top() < top, "it grew north");
+    assert_eq!(h.at(h.state.world.pipeline.min), top_on_screen, "its top edge keeps its place on screen");
+    assert!((pipeline_point(&h, pipeline_layout(&h).groups[0].header.min) - header_on_screen).length() < 1e-3);
+    assert!(!h.state.camera.is_flying(), "the camera did not fly");
+    assert_eq!(h.state.stop, crate::camera::Stop::Pipeline);
+}
+
+#[test]
+fn a_flight_to_the_pipeline_lands_on_its_new_top_left_when_it_grows_on_the_way() {
+    let mut h = Harness::new(false);
+    h.state.districts.pipeline = Some(std::sync::Arc::new(pipeline_view()));
+    h.state.refresh_world();
+    h.state.fly_to(crate::camera::CameraTarget::Stop(crate::camera::Stop::Pipeline));
+    h.idle(10);
+    assert!(h.state.camera.is_flying());
+    let top = h.state.world.pipeline.top();
+
+    h.state.districts.pipeline = Some(std::sync::Arc::new(taller_pipeline_view()));
+    h.state.refresh_world();
+    assert!(h.state.world.pipeline.top() < top, "it grew north on the way");
+    h.idle(80);
+    assert!(!h.state.camera.is_flying());
+    assert_eq!(h.state.stop, crate::camera::Stop::Pipeline);
+    assert!((h.state.transform.zoom - h.state.world.local_zoom_one()).abs() < 1e-6, "Pipeline reads at 100%");
+    assert_eq!(h.at(h.state.world.pipeline.min), Pos2::new(48.0, 48.0), "on its new top left corner");
+}
+
+#[test]
+fn the_pipeline_is_laid_out_on_arrival_and_toggle_never_per_frame() {
+    use crate::districts::pipeline::LAYOUTS_BUILT;
+    let built = || LAYOUTS_BUILT.with(|n| n.get());
+    let mut h = harness_at_pipeline();
+    let header = pipeline_layout(&h).groups[1].header;
+    let cached = h.state.pipeline_layout_cache.as_ref().map(|c| c.3.clone()).unwrap();
+    let before = built();
+    h.idle(10);
+    assert_eq!(built(), before, "idle frames reuse the layout");
+    assert!(std::sync::Arc::ptr_eq(&cached, &h.state.pipeline_layout_cache.as_ref().unwrap().3));
+
+    // A toggle lays it out again, once; so does a new view.
+    h.click(pipeline_point(&h, header.left_center() + Vec2::new(120.0, 0.0)), egui::PointerButton::Primary);
+    assert!(h.state.pipeline_open.contains("closed"));
+    assert!(!std::sync::Arc::ptr_eq(&cached, &h.state.pipeline_layout_cache.as_ref().unwrap().3));
+    let after_toggle = built();
+    assert_eq!(after_toggle, before + 1, "one layout for the toggle");
+    h.idle(10);
+    assert_eq!(built(), after_toggle);
+    h.state.districts.pipeline = Some(std::sync::Arc::new(taller_pipeline_view()));
+    h.state.refresh_world();
+    h.idle(10);
+    assert_eq!(built(), after_toggle + 1);
+}
+
+#[test]
+fn clicking_the_run_district_from_the_world_flies_there_and_picks_no_tile() {
+    use crate::districts::run::{tile_world_rect, RunView, ToolTile};
+    let mut h = Harness::new(false);
+    let tile = ToolTile {
+        name: "build".into(),
+        kind: "script",
+        icon: "",
+        invocation: "make build".into(),
+        description: None,
+        file: std::path::PathBuf::from("/p/Makefile"),
+        line: 1,
+        children: Vec::new(),
+    };
+    let view = RunView { tools: vec![tile], ..Default::default() };
+    h.state.districts.run = Some(std::sync::Arc::new(view.clone()));
+    h.state.jump_to(crate::camera::CameraTarget::Stop(crate::camera::Stop::World));
+    h.idle(3);
+    assert_eq!(h.state.stop, crate::camera::Stop::World);
+    // Right on the tile: the click that starts the flight is not also a click on the tile.
+    let r = tile_world_rect(&h.state.world, &view, 0).unwrap();
+    h.click(h.at(r.center()), egui::PointerButton::Primary);
+    assert!(h.state.camera.is_flying());
+    assert_eq!(h.state.stop, crate::camera::Stop::Run);
+    h.idle(70);
+    assert!(!h.state.camera.is_flying());
+    assert_eq!(h.state.run_selected, None, "the click only flew");
+
+    // There, the same tile picks it.
+    let r = tile_world_rect(&h.state.world, &view, 0).unwrap();
+    h.click(h.at(r.center()), egui::PointerButton::Primary);
+    assert_eq!(h.state.run_selected, Some(0));
+}
+
+#[test]
+fn clicking_the_files_district_from_the_map_flies_there_and_opens_no_folder() {
+    let mut h = Harness::new(false);
+    h.graph = folders_graph();
+    h.state.mark_scene_dirty();
+    h.state.districts.files = Some(std::sync::Arc::new(Default::default()));
+    h.idle(2);
+    // The tree's first row (folder "a"), in the district's units: tree at (36, 112), rows from
+    // 64 below its top, 22 tall and 330 wide.
+    let row = |h: &Harness| {
+        h.at(h.state.world.files.min + Vec2::new(36.0 + 14.0 + 165.0, 112.0 + 64.0 + 11.0) * h.state.world.scale)
+    };
+    // On the map, zoomed out just enough to read the tree's rows at its left.
+    let world = h.state.world;
+    h.state.transform.zoom = 0.36 * world.local_zoom_one();
+    let centre = Pos2::new(world.code_cell.left() + 10.0, world.code_cell.center().y);
+    h.state.transform.pan = Pos2::new(600.0, 400.0).to_vec2() - centre.to_vec2() * h.state.transform.zoom;
+    h.idle(2);
+    assert_eq!(h.state.stop, crate::camera::Stop::Code);
+    assert!(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0)).contains(row(&h)), "the row is on screen");
+    // Right on the row: the click that starts the flight is not also a click on the row.
+    h.click(row(&h), egui::PointerButton::Primary);
+    assert!(h.state.camera.is_flying());
+    assert_eq!(h.state.stop, crate::camera::Stop::Files);
+    h.idle(70);
+    assert!(!h.state.camera.is_flying());
+    assert!(h.state.files_open.is_empty(), "the click only flew");
+
+    // There, the same row opens the folder.
+    h.click(row(&h), egui::PointerButton::Primary);
+    assert!(h.state.files_open.contains("root/a"));
+}
+
+#[test]
+fn a_flight_stopped_by_a_drag_leaves_the_camera_where_it_is() {
+    let mut h = Harness::new(false);
+    h.state.fly_to(crate::camera::CameraTarget::Stop(crate::camera::Stop::Run));
+    h.idle(3);
+    assert_eq!(h.state.stop, crate::camera::Stop::Run, "on its way, the destination counts");
+    let p = Pos2::new(600.0, 400.0);
+    h.move_to(p);
+    h.button(p, egui::PointerButton::Secondary, true);
+    h.frame(vec![egui::Event::PointerMoved(p + Vec2::new(40.0, 0.0))]);
+    h.button(p + Vec2::new(40.0, 0.0), egui::PointerButton::Secondary, false);
+    h.idle(2);
+    assert!(!h.state.camera.is_flying());
+    let here = h.state.world.stop_for_view(
+        h.state.transform.screen_to_world_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 800.0))),
+    );
+    assert_eq!(h.state.stop, here, "the stop is where the camera is, not where it was going");
+    assert_ne!(here, crate::camera::Stop::Run, "stopped early, it is not at Run yet");
+}

@@ -4,6 +4,7 @@
 
 pub mod changes;
 pub mod files;
+pub mod pipeline;
 pub mod run;
 
 use std::sync::Arc;
@@ -14,4 +15,5 @@ pub struct DistrictViews {
     pub run: Option<Arc<run::RunView>>,
     pub files: Option<Arc<files::FilesView>>,
     pub changes: Option<Arc<changes::ChangesView>>,
+    pub pipeline: Option<Arc<pipeline::PipelineView>>,
 }

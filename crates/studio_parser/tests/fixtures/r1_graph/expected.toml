@@ -1,0 +1,36 @@
+# Exact expectations of tests/r1_graph.rs: the Code map of this workspace after R1.
+#
+# R1 counters are per reference (one `use` leaf or one call site R1 reads), see builder/rust_paths.rs.
+[counts]
+files = 17
+upgraded = 3      # upgraded.rs: the `use` and the call; cross.rs: the call into tools
+retargeted = 2    # retargeted.rs: the `use` and the call (alpha.rs, not beta.rs)
+added = 2         # globs.rs: the two glob imports (the name match never looks up `*`)
+dropped = 2       # report.rs: `use std::fmt` (was fmt.rs), `std::mem::swap` (was fmt.rs#swap)
+external = 2      # report.rs: `use std::collections::HashMap`, `HashMap::new()` (no name match either)
+unresolved = 3    # methods.rs: `v.flush()`; globs.rs: `run()` (two globs); twins.rs: `use` of fn + module `tidy`
+cfg_gated = 2     # gated.rs: gated fn; extra.rs: gated module
+proven_edges = 8
+
+# Every code wire of the map: "<tier> <kind> <provider> -> <consumer>"; a side is a project-relative file, or
+# file#member for a member row.
+[wires]
+all = [
+    "proven call app/src/alpha.rs#run -> app/src/retargeted.rs#retargeted",
+    "proven call app/src/store.rs#open -> app/src/upgraded.rs#upgraded",
+    "proven call tools/src/lib.rs -> app/src/cross.rs",
+    "proven call tools/src/lib.rs#helper -> app/src/cross.rs#cross",
+    "proven import app/src/alpha.rs -> app/src/globs.rs",
+    "proven import app/src/alpha.rs -> app/src/retargeted.rs",
+    "proven import app/src/beta.rs -> app/src/globs.rs",
+    "proven import app/src/store.rs -> app/src/upgraded.rs",
+    "unresolved call app/src/beta.rs#run -> app/src/globs.rs#globs",
+    "unresolved call app/src/store.rs -> app/src/extra.rs",
+    "unresolved call app/src/store.rs -> app/src/gated.rs",
+    "unresolved call app/src/store.rs -> app/src/methods.rs",
+    "unresolved call app/src/store.rs#flush -> app/src/gated.rs#gated",
+    "unresolved call app/src/store.rs#flush -> app/src/methods.rs#methods",
+    "unresolved call app/src/store.rs#open -> app/src/extra.rs#extra",
+    "unresolved import app/src/helpers/tidy.rs -> app/src/twins.rs",
+    "unresolved import app/src/store.rs -> app/src/twins.rs",
+]

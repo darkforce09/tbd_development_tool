@@ -179,3 +179,17 @@ pub fn with_alpha(color: Color32, alpha: u8) -> Color32 {
         alpha,
     )
 }
+
+// Evidence tiers (docs/VISUAL_LANGUAGE.md, Colours): accents of the chips that name a link's tier.
+// A wire keeps its kind's colour; its line style shows the tier.
+pub const TIER_PROVEN: Color32 = Color32::from_rgb(0xe4, 0xe4, 0xe7);
+pub const TIER_POSSIBLE: Color32 = Color32::from_rgb(0xfb, 0xbf, 0x24);
+pub const TIER_OBSERVED: Color32 = Color32::from_rgb(0x38, 0xbd, 0xf8);
+pub const TIER_UNRESOLVED: Color32 = Color32::from_rgb(0x71, 0x71, 0x7a);
+
+// Pipeline district (docs/VISUAL_LANGUAGE.md, Districts): the language marks on its step cards,
+// and the chip of a link that crosses from one language to another through a contract.
+pub const LANG_RUST: Color32 = Color32::from_rgb(0xe8, 0xa8, 0x7c);
+pub const LANG_ENFORCE: Color32 = Color32::from_rgb(0xbf, 0x5a, 0xf2);
+pub const LANG_JSON: Color32 = Color32::from_rgb(0x7d, 0x7a, 0xff);
+pub const CONTRACT_CHIP_TEXT: Color32 = Color32::from_rgb(0xb7, 0xb5, 0xff);

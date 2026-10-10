@@ -103,7 +103,16 @@ A wire takes the colour of the kind of thing it connects. Symbols listed on card
 | Asset | references an asset (planned) | | pink `#F472B6` |
 | | | enum | amber `#FBBF24` |
 
-All wires are solid lines for now. Line styles and colour-blind variants come later.
+**A wire's line style is its evidence: solid only when proven.** Colour says what a wire connects; the line says how sure Studio is that the link exists.
+
+| Evidence | Meaning | Line | Alpha | Chip (on hover) |
+|---|---|---|---|---|
+| Proven | resolved exactly (compiler rules, manifest, exact path, tag, route, pointer) | solid | normal | none |
+| Possible set | one of a known set of candidates | long dash, 14 px on / 8 px off | normal | "1 of n" |
+| Observed | seen happening in a run, trace or session log | round dots, every 7 px | normal | "observed" |
+| Unresolved | matched by name only | short dash, 6 px on / 6 px off | × 0.6 | "unresolved" |
+
+Dash sizes are in screen pixels and do not change with zoom. A dash pattern starts again at each corner of a routed wire. A wire drawn once for several links (a shared stretch, a bundle, a closed folder's wire) shows the strongest evidence among them. Colour-blind variants come later.
 
 ## Limits
 

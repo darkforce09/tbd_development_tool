@@ -81,6 +81,8 @@ pub enum SourceEvent {
     CommitFiles(String, Arc<Vec<crate::git::FileChange>>),
     /// Coding agents' sessions that worked in the project.
     Agents(Arc<crate::agents::AgentIndex>),
+    /// Routes, senders, handlers, contracts and the flows through them.
+    Pipeline(Arc<crate::pipeline::Pipeline>),
 }
 
 /// Why a job stopped without a result.

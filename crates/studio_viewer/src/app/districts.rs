@@ -6,14 +6,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use studio_canvas::{
-    BranchView, ChangesView, CommitBead, FileChangeView, FilesView, IgnoredView, PackageBrick, RunView, SessionChip,
-    SettingRow, SettingsCardView, ShippedView, TicketLinkView, TicketView, ToolTile, WorkflowRow, WorktreeRowView,
+    BranchView, ChangesView, CommitBead, FileChangeView, FilesView, IgnoredView, PackageBrick, PipelineGroup,
+    PipelineLane, PipelineLink, PipelineStep, PipelineView, RunView, SessionChip, SettingRow, SettingsCardView,
+    ShippedView, StepSlot, TicketLinkView, TicketView, ToolTile, WorkflowRow, WorktreeRowView,
 };
 use studio_graph::{human_bytes, EvidenceTier, Graph};
 use studio_sources::tickets::TICKETS_FOLDER;
 use studio_sources::{
-    next_tickets, ticket_ids_in, AgentIndex, Commit, FileChange, GitDisk, GitHistory, Packages, Session, Settings,
-    Shipped, SourceKind, SourceState, TargetKind, Ticket, TicketIndex, Tool, ToolKind, Tools, Worktree,
+    next_tickets, ticket_ids_in, AgentIndex, Commit, FileChange, GitDisk, GitHistory, Packages, Pipeline, Session,
+    Settings, Shipped, SourceKind, SourceState, TargetKind, Ticket, TicketIndex, Tool, ToolKind, Tools, Worktree,
 };
 
 /// The order tools are shown and pinned in: by kind, then by name.
@@ -484,6 +485,72 @@ pub fn changes_view(
     view
 }
 
+/// The Pipeline district's view: the groups in the source's order, each flow as a lane of its
+/// steps by layer and the links between them. A group's key is its kind and name, so what the
+/// user opened stays open when the pipeline is read again.
+pub fn pipeline_view(p: &Pipeline) -> PipelineView {
+    let step = |i: usize| {
+        p.steps.get(i).map(|s| PipelineStep {
+            title: s.title.clone(),
+            detail: s.detail.clone(),
+            language: s.language.clone(),
+            path: s.path.clone(),
+            line: s.line,
+        })
+    };
+    let lane = |flow: &studio_sources::Flow| {
+        let mut slots = BTreeMap::new();
+        let mut layers = Vec::with_capacity(flow.layers.len());
+        for (l, layer) in flow.layers.iter().enumerate() {
+            let mut steps = Vec::with_capacity(layer.len());
+            for &i in layer {
+                let Some(s) = step(i) else { continue };
+                slots.entry(i).or_insert(StepSlot { layer: l, index: steps.len() });
+                steps.push(s);
+            }
+            layers.push(steps);
+        }
+        let links = flow
+            .links
+            .iter()
+            .filter_map(|&i| p.links.get(i))
+            .filter_map(|link| {
+                Some(PipelineLink {
+                    from: *slots.get(&link.from)?,
+                    to: *slots.get(&link.to)?,
+                    tier: link.provenance.tier,
+                    candidates: link.provenance.candidates,
+                    conditional: link.conditional.clone(),
+                    crossing: link.crossing.is_some(),
+                    label: link.label.clone(),
+                })
+            })
+            .collect();
+        PipelineLane {
+            name: flow.name.clone(),
+            crossing: flow.crosses_languages,
+            layers,
+            links,
+            truncated: flow.truncated,
+        }
+    };
+    let groups = p
+        .groups
+        .iter()
+        .map(|g| {
+            let lanes: Vec<PipelineLane> = g.flows.iter().filter_map(|&i| p.flows.get(i)).map(lane).collect();
+            PipelineGroup {
+                key: format!("{:?}:{}", g.kind, g.name),
+                title: g.name.clone(),
+                count: lanes.len(),
+                expanded: g.expanded_by_default,
+                lanes,
+            }
+        })
+        .collect();
+    PipelineView { groups }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,6 +592,9 @@ mod tests {
             }],
             depends_on: Vec::new(),
             source: PackageSource::Cargo,
+            edition: String::new(),
+            proc_macro: false,
+            dependencies: Vec::new(),
         };
         let packages = Packages {
             packages: vec![package("api", "/p/api"), package("inner", "/p/api/inner")],
@@ -546,6 +616,117 @@ mod tests {
             [("api".to_string(), 3), ("inner".to_string(), 2)],
             "innermost package, files outside left out"
         );
+    }
+
+    #[test]
+    fn the_pipeline_view_keeps_the_order_and_places_each_step_by_layer() {
+        use studio_graph::{Basis, EvidenceTier, Provenance};
+        use studio_sources::{Flow, FlowGroup, FlowGroupKind, Link, LinkKind, Step, StepKind};
+        let step = |kind, title: &str, language: &str, path: &str, line| Step {
+            kind,
+            title: title.into(),
+            detail: format!("{path}:{line}"),
+            language: language.into(),
+            path: PathBuf::from(path),
+            line,
+            line_end: None,
+        };
+        let link = |from, to, kind, provenance, crossing: Option<(&str, &str)>, label: &str| Link {
+            from,
+            to,
+            kind,
+            provenance,
+            conditional: None,
+            crossing: crossing.map(|(a, b)| (a.to_string(), b.to_string())),
+            label: label.into(),
+            evidence: Vec::new(),
+        };
+        let pipeline = Pipeline {
+            steps: vec![
+                step(StepKind::Sender, "SendReport", "Enforce", "mod/Exec.c", 116),
+                step(StepKind::Route, "POST /api/v1/x/{id}/result", "Rust", "api/routes.rs", 76),
+                step(StepKind::Handler, "finish", "Rust", "api/handlers.rs", 81),
+                step(StepKind::Main, "main", "Rust", "tools/src/main.rs", 3),
+                step(StepKind::Function, "helper", "Rust", "api/other.rs", 9),
+            ],
+            links: vec![
+                link(
+                    0,
+                    1,
+                    LinkKind::Requests,
+                    Provenance::proven(Basis::RouteTable),
+                    Some(("Enforce", "Rust")),
+                    "x.schema.json#/a",
+                ),
+                link(1, 2, LinkKind::Serves, Provenance::possible(Basis::RouteTable, 2), None, ""),
+                // Into a step the flow does not hold: left out.
+                link(2, 4, LinkKind::Calls, Provenance::default(), None, ""),
+            ],
+            flows: vec![
+                Flow {
+                    name: "POST /api/v1/x/{id}/result".into(),
+                    entry: 1,
+                    group: 0,
+                    layers: vec![vec![0, 1], vec![2]],
+                    links: vec![0, 1, 2],
+                    truncated: 0,
+                    crosses_languages: true,
+                },
+                Flow {
+                    name: "tools".into(),
+                    entry: 3,
+                    group: 1,
+                    layers: vec![vec![3]],
+                    links: vec![],
+                    truncated: 4,
+                    crosses_languages: false,
+                },
+            ],
+            groups: vec![
+                FlowGroup {
+                    kind: FlowGroupKind::CrossLanguage,
+                    name: "Cross-language".into(),
+                    flows: vec![0],
+                    expanded_by_default: true,
+                },
+                FlowGroup {
+                    kind: FlowGroupKind::Mains,
+                    name: "Programs".into(),
+                    flows: vec![1],
+                    expanded_by_default: false,
+                },
+            ],
+            stats: Default::default(),
+        };
+        let view = pipeline_view(&pipeline);
+        let summary: Vec<(&str, &str, usize, bool)> =
+            view.groups.iter().map(|g| (g.key.as_str(), g.title.as_str(), g.count, g.expanded)).collect();
+        assert_eq!(
+            summary,
+            [("CrossLanguage:Cross-language", "Cross-language", 1, true), ("Mains:Programs", "Programs", 1, false)]
+        );
+        let lane = &view.groups[0].lanes[0];
+        assert!(lane.crossing);
+        let titles: Vec<Vec<&str>> = lane.layers.iter().map(|l| l.iter().map(|s| s.title.as_str()).collect()).collect();
+        assert_eq!(titles, [vec!["SendReport", "POST /api/v1/x/{id}/result"], vec!["finish"]]);
+        assert_eq!((lane.layers[0][0].language.as_str(), lane.layers[0][0].line), ("Enforce", 116));
+        assert_eq!(lane.layers[1][0].path, PathBuf::from("api/handlers.rs"));
+        assert_eq!(lane.links.len(), 2, "the link to a step outside the flow is left out");
+        let sender_to_route = &lane.links[0];
+        assert_eq!(
+            (sender_to_route.from, sender_to_route.to),
+            (StepSlot { layer: 0, index: 0 }, StepSlot { layer: 0, index: 1 })
+        );
+        assert_eq!(sender_to_route.tier, EvidenceTier::Proven);
+        assert!(sender_to_route.crossing);
+        assert_eq!(sender_to_route.label, "x.schema.json#/a");
+        let route_to_handler = &lane.links[1];
+        assert_eq!(route_to_handler.to, StepSlot { layer: 1, index: 0 });
+        assert_eq!((route_to_handler.tier, route_to_handler.candidates), (EvidenceTier::PossibleSet, 2));
+        assert!(!route_to_handler.crossing);
+        assert_eq!(view.groups[1].lanes[0].truncated, 4);
+        assert_eq!(pipeline_view(&pipeline), view, "the same every time");
+        assert!(pipeline_view(&Pipeline::default()).is_empty());
     }
 }
 

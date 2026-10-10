@@ -77,10 +77,15 @@ impl<'a> CanvasView<'a> {
             Stop::Files => Some("Reading the disk…".to_string()),
             Stop::Changes if districts.changes.is_some() => None,
             Stop::Changes => Some("Reading git…".to_string()),
+            Stop::Pipeline if districts.pipeline.is_some() => None,
+            Stop::Pipeline => Some("Reading routes, tags and entry points…".to_string()),
             _ => Some("Nothing read here yet".to_string()),
         });
         if let Some(files) = &districts.files {
             let rows = self.state.files_tree(self.graph);
+            // A click that starts a flight here (from another district) is not also a click on a
+            // row.
+            let gate = if self.state.camera.is_flying() { InputGate { clicked: false, ..gate } } else { gate };
             let action = crate::districts::files::paint_files(
                 &painter,
                 &world,
@@ -109,6 +114,9 @@ impl<'a> CanvasView<'a> {
         }
         if let Some(run) = &districts.run {
             let selected = self.state.run_selected;
+            // A click that starts a flight here (from another district) is not also a click on a
+            // tile.
+            let gate = if self.state.camera.is_flying() { InputGate { clicked: false, ..gate } } else { gate };
             let action =
                 crate::districts::run::paint_run(&painter, &world, &self.state.transform, rect, run, selected, &gate);
             match action {
@@ -159,6 +167,52 @@ impl<'a> CanvasView<'a> {
                 Some(ChangesAction::FlyToRow(row)) => {
                     let target = cd::row_world_rect(&world, changes, row);
                     self.state.fly_to(crate::camera::CameraTarget::Rect(target));
+                }
+                None => {}
+            }
+        }
+        // Laid out on arrival or a toggle, not per frame.
+        let pipeline_width = crate::world::WorldLayout::centre_width_local(world.code);
+        let pipeline_layout = self.state.pipeline_layout(pipeline_width);
+        if let (Some(pipeline), Some(layout)) = (&districts.pipeline, &pipeline_layout) {
+            use crate::districts::pipeline::{self as pipe, PipelineAction};
+            let open = &self.state.pipeline_open;
+            // A click that starts a flight here (from another district) is not also a click on a
+            // step.
+            let gate = if self.state.camera.is_flying() { InputGate { clicked: false, ..gate } } else { gate };
+            let action =
+                pipe::paint_pipeline(&painter, &world, &self.state.transform, rect, pipeline, layout, open, &gate);
+            match action {
+                Some(PipelineAction::Open(file, line)) => {
+                    // Steps carry project-relative paths.
+                    let path = match &self.state.desk.root {
+                        Some(root) if file.is_relative() => root.join(&file),
+                        _ => file,
+                    };
+                    self.state.desk.open(&path, Some(line));
+                    self.state.fly_to(crate::camera::CameraTarget::Stop(Stop::Desk));
+                }
+                Some(PipelineAction::Toggle(key)) => {
+                    if !self.state.pipeline_open.insert(key.clone()) {
+                        self.state.pipeline_open.remove(&key);
+                    }
+                    self.state.refresh_world();
+                    ui.ctx().request_repaint();
+                }
+                Some(PipelineAction::Reveal(group)) => {
+                    // A closed group opens, then comes into view at 100% from its top left.
+                    if let Some(g) = pipeline.groups.get(group).filter(|g| !pipe::is_expanded(g, open)) {
+                        if !self.state.pipeline_open.insert(g.key.clone()) {
+                            self.state.pipeline_open.remove(&g.key);
+                        }
+                        self.state.refresh_world();
+                    }
+                    let world = self.state.world;
+                    let layout = self.state.pipeline_layout(pipeline_width);
+                    if let Some(r) = layout.and_then(|l| pipe::group_world_rect(&world, &l, group)) {
+                        let target = pipe::reveal_rect(&world, r, rect);
+                        self.state.fly_to(crate::camera::CameraTarget::Rect(target));
+                    }
                 }
                 None => {}
             }

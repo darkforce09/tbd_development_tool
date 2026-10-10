@@ -3065,6 +3065,7 @@ dependencies = [
  "rkyv",
  "serde",
  "serde_json",
+ "studio_graph",
  "studio_parser",
  "syn 2.0.119",
  "tempfile",

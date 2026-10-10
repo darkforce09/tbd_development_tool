@@ -9,6 +9,7 @@ pub mod exec;
 pub mod git;
 pub mod hub;
 pub mod packages;
+pub mod pipeline;
 pub mod settings;
 pub mod store;
 pub mod tickets;
@@ -26,6 +27,10 @@ pub use git::{
 };
 pub use hub::{JobContext, JobError, SourceEvent, SourceHub, SourceKind, SourceState};
 pub use packages::{packages_job, read_packages, Package, PackageSource, Packages, Target, TargetKind};
+pub use pipeline::{
+    build_pipeline, pipeline_job, Flow, FlowGroup, FlowGroupKind, Link, LinkKind, Pipeline, PipelineStats, Step,
+    StepKind,
+};
 pub use settings::{
     read_settings, settings_job, Fact, FactSheet, IgnoreFile, IgnoreGroup, IgnoreRuleLine, SchemaShape, Settings,
 };

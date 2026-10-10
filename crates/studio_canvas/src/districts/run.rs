@@ -497,7 +497,7 @@ mod tests {
 
     #[test]
     fn the_dock_can_find_each_section_and_tile_in_the_world() {
-        let world = WorldLayout::compute(Rect::from_min_size(Pos2::ZERO, vec2(5600.0, 3600.0)));
+        let world = WorldLayout::compute(Rect::from_min_size(Pos2::ZERO, vec2(5600.0, 3600.0)), &Default::default());
         let v = view();
         let tools = section_world_rect(&world, &v, RunSection::Tools);
         assert!(world.run.contains_rect(tools));

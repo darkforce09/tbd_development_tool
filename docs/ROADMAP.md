@@ -178,6 +178,20 @@ Goal: show which way data moves, not just that two things are connected.
 
 Exit: pipelines are generated automatically on both real repos, and each one can be checked against the source by clicking through.
 
+Pipeline district (Step 7):
+
+- [x] Axum route tables evaluated from the code: `route`, `nest`, `merge`, `let` reassignment, and `if` marking a route conditional; handlers resolved by path. Route tables are read only from library and binary module trees, never tests.
+- [x] `@route` and `@contract` tags in comments of every language; route templates unify `:x` and `{x}`.
+- [x] Contracts resolved by exact file name and JSON pointer; several matching files make a Possible set, a missing pointer stays Unresolved.
+- [x] Flows walked from entry points (routes, program `main`s, command-line commands) over links at Possible set or better, with language crossings recorded.
+- [x] One lane per flow, steps left to right, every link labelled with its tier; clicking a step opens its code on the Desk. Groups collapse; the district grows north to fit and the map never moves.
+- [x] Rust `use` and path-call wires on the Code map are Proven when the path resolves to exactly one item; the rest stay Unresolved. Wire line styles per tier (solid, long dash, dotted, short dash).
+- [x] Exit: on TBD-Reforger the fleet-command report routes link the Enforce sender to their Rust handlers as Proven; fixture precision is 100%.
+- [ ] Enforce string folding: check a sender's `@route` tag against the URL its code builds (constants from other classes, concatenation, `if`/`else`). [S11]
+- [ ] Per-process swimlanes for a selected flow, with runtime traces. [S11]
+- [ ] Resolve a saved file's wires again by path on save; until then, saving never makes a wire Proven by name. [S10]
+- [ ] The clap command reader finds enums through the path resolver instead of by name over the dependency closure. [W1C]
+
 ### Phase 5: Wire presentation
 
 Goal: wires that are readable at any zoom. Routing and the basic look are set in Phase 0 by the [visual language](VISUAL_LANGUAGE.md); this phase builds on it.

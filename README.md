@@ -50,6 +50,8 @@ To use a specific graphics backend, set `WGPU_BACKEND` (`vulkan`, `metal`, `dx12
 | Close / deselect | <kbd>Esc</kbd> |
 | Open a file on the Desk | double-click its card, pick it in the Desk's navigator, or **Open on the Desk** in its context menu |
 | See a tool's commands | click its tile in the Run district; click a command to open where it is defined |
+| Follow a flow | in the Pipeline district, click a step to open its file on the Desk at its line |
+| Open or close a group of flows | click its header in the Pipeline district, or its pill at the top to open it and go there |
 | Build, Test, Trace and pinned tools | the Dock at the bottom; hover an icon for exactly what it runs |
 | Open a folder | double-click it: it opens in place and fills the view |
 | Go back up | click a folder or the district in the breadcrumb in the title bar |
@@ -61,6 +63,8 @@ To use a specific graphics backend, set `WGPU_BACKEND` (`vulkan`, `metal`, `dx12
 | Resize the window | drag a window edge or corner |
 
 The Run district lists the tools a project defines, found by reading its files: Cargo binaries and examples, `.cargo/config.toml` aliases, the subcommands of clap command-line tools (nested, including enums from other crates), `package.json` scripts, Makefile targets, justfile recipes and GitHub Actions workflows. Nothing is run to find them.
+
+The Pipeline district shows how the project runs: one lane per entry point (each route of an axum route table, each program's `main`, each command of a command-line tool), with its steps left to right by how far they are from the entry. Steps and links come only from facts: route tables read from the code, `@route` and `@contract` tags in comments of any language (`// @route POST /api/v1/items/{id}`, `// @contract item.schema.json#/definitions/Item`), contracts found by file name and JSON pointer, and Rust calls resolved by path. A link's line style is its evidence: proven links are solid, links to one of a few candidates are long dashes with a "1 of n" chip, observed links are dotted, and unresolved links are short, dimmer dashes. Every link has a chip naming its tier; a route that only exists under a condition (such as `if dev`) says "conditional", and a link from one language to another names the contract it goes through. Flows that cross languages come first and are open; the other groups (endpoints by router file, programs, commands, entry points with no resolved links) start closed. A lane shows at most three steps per column and seven columns, then "+k more". A project with no routes, tags or programs says "No entry points found". The Code map draws its wires in the same line styles.
 
 Nothing on the canvas changes what the map says: wires come from the code, so they cannot be drawn, cut or deleted by hand, and cards stay where the layout puts them.
 

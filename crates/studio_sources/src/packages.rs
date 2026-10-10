@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use studio_parser::analysis::crate_graph::normalize;
+
 use crate::exec::{Command, Runner};
 
 /// What a package builds.
@@ -53,6 +55,32 @@ pub enum PackageSource {
     Manifest,
 }
 
+/// Which table a dependency is declared in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DependencyKind {
+    /// `[dependencies]`: what the library and binaries compile against.
+    Normal,
+    /// `[dev-dependencies]`.
+    Dev,
+    /// `[build-dependencies]`.
+    Build,
+}
+
+/// One dependency entry of a package, as cargo sees it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Dependency {
+    /// The depended-on package's name.
+    pub name: String,
+    /// The key the manifest binds it to when it renames it (`key = { package = "name" }`), as written.
+    pub rename: Option<String>,
+    pub kind: DependencyKind,
+    /// The absolute folder of a path dependency (also through `workspace = true`).
+    pub path: Option<PathBuf>,
+    /// The platform of a `[target.'…'.dependencies]` entry.
+    pub target: Option<String>,
+    pub optional: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Package {
     pub name: String,
@@ -63,6 +91,12 @@ pub struct Package {
     /// Packages of this project it depends on (by name), from path and workspace dependencies.
     pub depends_on: Vec<String>,
     pub source: PackageSource,
+    /// The Rust edition ("2021"), empty when the manifest names none.
+    pub edition: String,
+    /// The library is a procedural macro crate (`proc-macro = true`).
+    pub proc_macro: bool,
+    /// Every dependency entry, renames included, sorted.
+    pub dependencies: Vec<Dependency>,
 }
 
 /// Every package found, and why cargo could not be asked where it was not.
@@ -126,6 +160,17 @@ pub fn read_packages(runner: &Runner, manifests: &[PathBuf]) -> Packages {
     out
 }
 
+/// Reads every `Cargo.toml` in `manifests` from the manifest alone, with cargo's rules, never asking cargo (the
+/// fallback [`read_packages`] uses where cargo cannot be asked).
+pub fn read_manifests(manifests: &[PathBuf]) -> Packages {
+    let mut out =
+        Packages { packages: manifests.iter().filter_map(|m| read_manifest(m)).collect(), ..Default::default() };
+    resolve_workspace_dependencies(&mut out.packages, manifests);
+    out.packages.sort_by(|a, b| a.name.cmp(&b.name).then(a.manifest.cmp(&b.manifest)));
+    out.packages.dedup_by(|a, b| a.manifest == b.manifest);
+    out
+}
+
 /// Packages from `cargo metadata --format-version 1` output.
 fn parse_metadata(stdout: &[u8]) -> Result<Vec<Package>, String> {
     let json: Value = serde_json::from_slice(stdout).map_err(|e| format!("unreadable cargo metadata: {e}"))?;
@@ -136,9 +181,11 @@ fn parse_metadata(stdout: &[u8]) -> Result<Vec<Package>, String> {
         let manifest = PathBuf::from(text("manifest_path"));
         let root = manifest.parent().map(Path::to_path_buf).unwrap_or_default();
         let mut targets = Vec::new();
+        let mut proc_macro = false;
         for t in p.get("targets").and_then(Value::as_array).into_iter().flatten() {
             let kinds: Vec<&str> =
                 t.get("kind").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
+            proc_macro |= kinds.contains(&"proc-macro");
             let kind = match kinds.first().copied() {
                 Some("bin") => TargetKind::Bin,
                 Some("example") => TargetKind::Example,
@@ -160,6 +207,28 @@ fn parse_metadata(stdout: &[u8]) -> Result<Vec<Package>, String> {
             .filter(|d| d.get("path").is_some_and(|v| !v.is_null()))
             .filter_map(|d| d.get("name").and_then(Value::as_str).map(str::to_string))
             .collect();
+        let mut dependencies: Vec<Dependency> = p
+            .get("dependencies")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(|d| {
+                let text = |key: &str| d.get(key).and_then(Value::as_str).map(str::to_string);
+                Dependency {
+                    name: text("name").unwrap_or_default(),
+                    rename: text("rename"),
+                    kind: match d.get("kind").and_then(Value::as_str) {
+                        Some("dev") => DependencyKind::Dev,
+                        Some("build") => DependencyKind::Build,
+                        _ => DependencyKind::Normal,
+                    },
+                    path: text("path").map(PathBuf::from),
+                    target: text("target"),
+                    optional: d.get("optional").and_then(Value::as_bool).unwrap_or(false),
+                }
+            })
+            .collect();
+        dependencies.sort();
         out.push(Package {
             name: text("name"),
             version: text("version"),
@@ -168,6 +237,9 @@ fn parse_metadata(stdout: &[u8]) -> Result<Vec<Package>, String> {
             targets,
             depends_on,
             source: PackageSource::Cargo,
+            edition: text("edition"),
+            proc_macro,
+            dependencies,
         });
     }
     Ok(out)
@@ -243,6 +315,24 @@ fn read_manifest(manifest: &Path) -> Option<Package> {
         }
     }
 
+    let workspace = workspace_of(manifest, &toml);
+    let ws_package = |key: &str| {
+        let (_, ws) = workspace.as_ref()?;
+        ws.get("package")?.get(key)?.as_str().map(str::to_string)
+    };
+    let edition = match package.get("edition") {
+        Some(toml::Value::String(e)) => e.clone(),
+        Some(v) if v.get("workspace").and_then(|w| w.as_bool()) == Some(true) => {
+            ws_package("edition").unwrap_or_default()
+        }
+        _ => String::new(),
+    };
+    let proc_macro = lib
+        .and_then(|l| l.get("proc-macro").or_else(|| l.get("proc_macro")))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let dependencies = manifest_dependencies(&toml, &root, workspace.as_ref());
+
     let mut depends_on = Vec::new();
     for table in ["dependencies", "dev-dependencies", "build-dependencies"] {
         for (dep, spec) in toml.get(table).and_then(|t| t.as_table()).into_iter().flatten() {
@@ -262,7 +352,88 @@ fn read_manifest(manifest: &Path) -> Option<Package> {
         targets: targets.into_iter().map(|((kind, name), src)| Target { kind, name, src }).collect(),
         depends_on,
         source: PackageSource::Manifest,
+        edition,
+        proc_macro,
+        dependencies,
     })
+}
+
+/// The workspace a manifest belongs to: its own `[workspace]`, `package.workspace = "…"`, or the nearest folder
+/// above with a `Cargo.toml` that has one. Returns the root folder and the parsed root manifest.
+fn workspace_of(manifest: &Path, toml: &toml::Value) -> Option<(PathBuf, toml::Value)> {
+    let dir = manifest.parent()?;
+    if toml.get("workspace").is_some() {
+        return Some((dir.to_path_buf(), toml.clone()));
+    }
+    if let Some(explicit) = toml.get("package").and_then(|p| p.get("workspace")).and_then(|w| w.as_str()) {
+        let root = dir.join(explicit);
+        let t = read_toml(&root.join("Cargo.toml"))?;
+        return Some((root, t));
+    }
+    let mut cur = dir.parent();
+    while let Some(d) = cur {
+        if let Some(t) = read_toml(&d.join("Cargo.toml")).filter(|t| t.get("workspace").is_some()) {
+            return Some((d.to_path_buf(), t));
+        }
+        cur = d.parent();
+    }
+    None
+}
+
+/// Every dependency entry of a manifest, with renames (`package = …`) and `workspace = true` entries looked up in
+/// the workspace's `[workspace.dependencies]`, sorted.
+fn manifest_dependencies(
+    toml: &toml::Value,
+    root: &Path,
+    workspace: Option<&(PathBuf, toml::Value)>,
+) -> Vec<Dependency> {
+    let kinds = [
+        ("dependencies", DependencyKind::Normal),
+        ("dev-dependencies", DependencyKind::Dev),
+        ("build-dependencies", DependencyKind::Build),
+    ];
+    let mut tables: Vec<(&toml::Value, DependencyKind, Option<String>)> = Vec::new();
+    for (key, kind) in kinds {
+        if let Some(t) = toml.get(key) {
+            tables.push((t, kind, None));
+        }
+    }
+    for (platform, spec) in toml.get("target").and_then(|t| t.as_table()).into_iter().flatten() {
+        for (key, kind) in kinds {
+            if let Some(t) = spec.get(key) {
+                tables.push((t, kind, Some(platform.clone())));
+            }
+        }
+    }
+    let ws_deps = workspace.and_then(|(dir, ws)| Some((dir, ws.get("workspace")?.get("dependencies")?)));
+    let mut out = Vec::new();
+    for (table, kind, target) in tables {
+        for (key, spec) in table.as_table().into_iter().flatten() {
+            let text = |v: &toml::Value, k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
+            let mut package = text(spec, "package");
+            let mut path = text(spec, "path").map(|p| normalize(&root.join(p)));
+            let mut optional = spec.get("optional").and_then(|o| o.as_bool()) == Some(true);
+            if spec.get("workspace").and_then(|w| w.as_bool()) == Some(true) {
+                if let Some(entry) = ws_deps.and_then(|(dir, deps)| Some((dir, deps.get(key)?))) {
+                    let (dir, entry) = entry;
+                    package = package.or_else(|| text(entry, "package"));
+                    path = text(entry, "path").map(|p| normalize(&dir.join(p)));
+                    optional |= entry.get("optional").and_then(|o| o.as_bool()) == Some(true);
+                }
+            }
+            let rename = package.as_ref().map(|_| key.clone());
+            out.push(Dependency {
+                name: package.unwrap_or_else(|| key.clone()),
+                rename,
+                kind,
+                path,
+                target: target.clone(),
+                optional,
+            });
+        }
+    }
+    out.sort();
+    out
 }
 
 /// Keeps only dependencies that are packages of this project (`workspace = true` entries can name

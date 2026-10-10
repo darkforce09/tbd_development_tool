@@ -7,6 +7,7 @@ description = "Everything Studio reads about a project besides its source code: 
 
 [dependencies]
 studio_parser.workspace = true
+studio_graph.workspace = true
 rkyv.workspace = true
 serde_json.workspace = true
 toml.workspace = true

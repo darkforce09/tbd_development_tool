@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use bytemuck::{Pod, Zeroable};
 use egui::{Color32, Pos2, Rect};
 use rustc_hash::{FxHashMap, FxHashSet};
-use studio_graph::{Edge, EdgeId, FolderDetail, GateKind, GateSide, Graph, NodeId, VisibleEnd};
+use studio_graph::{Edge, EdgeId, EvidenceTier, FolderDetail, GateKind, GateSide, Graph, NodeId, VisibleEnd};
 use studio_ui::{cluster_tint, color_tokens::*, with_alpha};
 
 use crate::view::{archetype_color, edge_kind_color, port_world_position, routed_wire_points_into};
@@ -32,6 +32,39 @@ pub const WIRE_WEIGHT_MASK: u32 = 0x7 << WIRE_WEIGHT_SHIFT;
 /// Weight bits for a segment carrying `pairs` card pairs.
 pub fn wire_weight(pairs: u32) -> u32 {
     (31 - pairs.max(1).leading_zeros()).min(7) << WIRE_WEIGHT_SHIFT
+}
+
+/// Bits 10-11: the evidence tier, `EvidenceTier as u32` (0 proven, 1 possible set, 2 observed,
+/// 3 unresolved). The shader and the painter draw it as the line style: solid, long dash, dots,
+/// short dash at lower alpha (docs/VISUAL_LANGUAGE.md, Colours).
+pub const WIRE_TIER_SHIFT: u32 = 10;
+pub const WIRE_TIER_MASK: u32 = 0x3 << WIRE_TIER_SHIFT;
+
+/// Tier bits for a wire with evidence `tier`.
+pub fn wire_tier(tier: EvidenceTier) -> u32 {
+    (tier as u32) << WIRE_TIER_SHIFT
+}
+
+/// The tier a wire drawn once for several edges shows: the strongest among them (proven, then
+/// possible set, then observed, then unresolved). `EvidenceTier` is ordered strongest first.
+pub fn strongest_tier(a: EvidenceTier, b: EvidenceTier) -> EvidenceTier {
+    a.min(b)
+}
+
+/// Raises the tier bits of `flags` to `tier` if it is stronger than the tier they hold.
+fn strengthen(flags: &mut u32, tier: EvidenceTier) {
+    let held = tier_of_flags(*flags);
+    *flags = (*flags & !WIRE_TIER_MASK) | wire_tier(strongest_tier(held, tier));
+}
+
+/// The tier held in wire flags.
+pub fn tier_of_flags(flags: u32) -> EvidenceTier {
+    match (flags & WIRE_TIER_MASK) >> WIRE_TIER_SHIFT {
+        0 => EvidenceTier::Proven,
+        1 => EvidenceTier::PossibleSet,
+        2 => EvidenceTier::Observed,
+        _ => EvidenceTier::Unresolved,
+    }
 }
 
 /// Below this zoom, cards are drawn as plain rects by the GPU card layer.
@@ -64,6 +97,11 @@ impl WireInstance {
 
     pub fn is_curve(&self) -> bool {
         self.flags & WIRE_CURVE != 0
+    }
+
+    /// The evidence tier the wire is drawn with.
+    pub fn tier(&self) -> EvidenceTier {
+        tier_of_flags(self.flags)
     }
 }
 
@@ -182,8 +220,9 @@ pub struct CanvasScene {
 }
 
 /// A route segment while building: tile, quantized ends (tenths of a world unit), kind, the order
-/// of the edge it came from, and the card pairs it carries.
-type SegmentKey = ((i32, i32), [i32; 4], u8, u32, u32);
+/// of the edge it came from, the card pairs it carries, and the strongest evidence tier
+/// (`EvidenceTier as u8`) among the wires sharing it.
+type SegmentKey = ((i32, i32), [i32; 4], u8, u32, u32, u8);
 
 /// Index into `hit` cells: curves are marked with the top bit.
 const HIT_CURVE: u32 = 1 << 31;
@@ -257,17 +296,31 @@ impl CanvasScene {
         // carries.
         let mut routed: Vec<(&Edge, studio_graph::EdgeKind, u32)> = Vec::new();
         let mut curves: Vec<(WireInstance, EdgeId)> = Vec::new();
-        let mut hidden_bundles: FxHashSet<u32> = FxHashSet::default();
-        let mut drawn_pairs: FxHashSet<(NodeId, NodeId, u32)> = FxHashSet::default();
-        let mut bundled_pairs: FxHashSet<(NodeId, NodeId)> = FxHashSet::default();
+        // A wire drawn once for several edges (a bundle, the copies of one pair and kind between
+        // closed cards, a pair's bundled member wires) shows the strongest tier among them, so
+        // the instance count does not depend on tiers. `routed_tier` runs parallel to `routed`;
+        // the maps remember which wire each skipped edge is drawn by.
+        enum Drawn {
+            Routed(usize),
+            Curve(usize),
+        }
+        let mut routed_tier: Vec<EvidenceTier> = Vec::new();
+        let mut hidden_bundles: FxHashMap<u32, usize> = FxHashMap::default();
+        let mut drawn_pairs: FxHashMap<(NodeId, NodeId, u32), usize> = FxHashMap::default();
+        let mut bundled_pairs: FxHashMap<(NodeId, NodeId), Drawn> = FxHashMap::default();
         for (edge, plan) in graph.edges.iter().zip(plans) {
             let pair = (edge.from_node, edge.to_node);
+            let tier = edge.provenance.tier;
             match plan {
                 Plan::Skip => {}
                 Plan::Hidden => {
                     // One wire per bundle, in the colour of the kind it carries most.
                     let Some(route) = graph.route_of(edge) else { continue };
-                    if hidden_bundles.insert(route.bundle) {
+                    if let Some(&i) = hidden_bundles.get(&route.bundle) {
+                        routed_tier[i] = strongest_tier(routed_tier[i], tier);
+                    } else {
+                        hidden_bundles.insert(route.bundle, routed.len());
+                        routed_tier.push(tier);
                         match graph.bundle_of(edge) {
                             Some(b) => {
                                 routed.push((edge, b.main_kind(), b.pairs));
@@ -285,17 +338,40 @@ impl CanvasScene {
                         }
                     }
                 }
-                Plan::Wire { bundle, .. } if bundle && !bundled_pairs.insert(pair) => {}
-                Plan::Wire { routed: true, dedup, .. } => {
-                    if !dedup || drawn_pairs.insert((pair.0, pair.1, edge.kind as u32)) {
-                        routed.push((edge, edge.kind, 1));
+                Plan::Wire { bundle, .. } if bundle && bundled_pairs.contains_key(&pair) => {
+                    match bundled_pairs[&pair] {
+                        Drawn::Routed(i) => routed_tier[i] = strongest_tier(routed_tier[i], tier),
+                        Drawn::Curve(i) => strengthen(&mut curves[i].0.flags, tier),
                     }
                 }
-                Plan::Wire { routed: false, .. } => {
+                Plan::Wire { bundle, routed: true, dedup } => {
+                    let key = (pair.0, pair.1, edge.kind as u32);
+                    let i = match drawn_pairs.get(&key) {
+                        Some(&i) if dedup => {
+                            routed_tier[i] = strongest_tier(routed_tier[i], tier);
+                            i
+                        }
+                        _ => {
+                            if dedup {
+                                drawn_pairs.insert(key, routed.len());
+                            }
+                            routed.push((edge, edge.kind, 1));
+                            routed_tier.push(tier);
+                            routed.len() - 1
+                        }
+                    };
+                    if bundle {
+                        bundled_pairs.insert(pair, Drawn::Routed(i));
+                    }
+                }
+                Plan::Wire { bundle, routed: false, .. } => {
                     let (p0, p1) = curve_ends(graph, edge);
                     let color = edge_kind_color(edge.kind).to_srgba_unmultiplied();
-                    let flags = edge.kind as u32 | WIRE_CURVE;
+                    let flags = edge.kind as u32 | WIRE_CURVE | wire_tier(tier);
                     curves.push((WireInstance { p0: p0.into(), p1: p1.into(), color, flags }, edge.id));
+                    if bundle {
+                        bundled_pairs.insert(pair, Drawn::Curve(curves.len() - 1));
+                    }
                     if edge.step_number.is_some() || edge.label.is_some() {
                         self.labeled.push(edge.id);
                     }
@@ -327,18 +403,23 @@ impl CanvasScene {
                     let mut out: Vec<SegmentKey> = Vec::new();
                     for &order in group {
                         let (edge, kind, pairs) = routed[order as usize];
+                        let tier = routed_tier[order as usize] as u8;
                         routed_wire_points_into(graph, edge, points);
                         for w in points.windows(2).filter(|w| (w[0] - w[1]).length_sq() >= 1e-6) {
                             let (a, b) = if (w[0].x, w[0].y) <= (w[1].x, w[1].y) { (w[0], w[1]) } else { (w[1], w[0]) };
                             let ends = [q(a.x), q(a.y), q(b.x), q(b.y)];
                             // A stretch shared by several wires carries all their pairs.
+                            // ... and shows the strongest tier among them.
                             match seen.get(&ends) {
-                                Some(&i) => out[i].4 += pairs,
+                                Some(&i) => {
+                                    out[i].4 += pairs;
+                                    out[i].5 = out[i].5.min(tier);
+                                }
                                 None => {
                                     let mid = a.lerp(b, 0.5);
                                     let tile = ((mid.x / TILE).floor() as i32, (mid.y / TILE).floor() as i32);
                                     seen.insert(ends, out.len());
-                                    out.push((tile, ends, kind as u8, order, pairs));
+                                    out.push((tile, ends, kind as u8, order, pairs, tier));
                                 }
                             }
                         }
@@ -349,24 +430,29 @@ impl CanvasScene {
             .flatten_iter()
             .collect();
         keys.par_sort_unstable_by_key(|k| (k.0, k.1, k.2, k.3));
-        // Copies of one segment sit side by side: keep the first, adding up what they carry.
+        // Copies of one segment sit side by side: keep the first, adding up what they carry. The
+        // merge key stays (tile, ends, kind), so tiers never add instances: the segment takes the
+        // strongest tier among its copies (a lower `EvidenceTier as u8` is stronger).
         let mut merged: Vec<SegmentKey> = Vec::with_capacity(keys.len());
         for k in keys {
             match merged.last_mut() {
-                Some(m) if (m.0, m.1, m.2) == (k.0, k.1, k.2) => m.4 += k.4,
+                Some(m) if (m.0, m.1, m.2) == (k.0, k.1, k.2) => {
+                    m.4 += k.4;
+                    m.5 = m.5.min(k.5);
+                }
                 _ => merged.push(k),
             }
         }
 
         self.segments.reserve(merged.len());
         self.segment_owner.reserve(merged.len());
-        for (tile, ends, kind, order, pairs) in merged {
+        for (tile, ends, kind, order, pairs, tier) in merged {
             let (edge, main_kind, _) = routed[order as usize];
             let instance = WireInstance {
                 p0: [ends[0] as f32 / 10.0, ends[1] as f32 / 10.0],
                 p1: [ends[2] as f32 / 10.0, ends[3] as f32 / 10.0],
                 color: edge_kind_color(main_kind).to_srgba_unmultiplied(),
-                flags: kind as u32 | wire_weight(pairs),
+                flags: kind as u32 | wire_weight(pairs) | (tier as u32) << WIRE_TIER_SHIFT,
             };
             let bounds = wire_bounds(&instance);
             let i = self.segments.len() as u32;
@@ -680,7 +766,7 @@ pub fn build_overlay(graph: &Graph, edges: impl IntoIterator<Item = (EdgeId, u32
             continue;
         }
         let color = edge_kind_color(edge.kind).to_srgba_unmultiplied();
-        let flags = edge.kind as u32 | flag;
+        let flags = edge.kind as u32 | flag | wire_tier(edge.provenance.tier);
         if routed_wire_points_into(graph, edge, &mut points) {
             straight.extend(points.windows(2).map(|w| WireInstance { p0: w[0].into(), p1: w[1].into(), color, flags }));
         } else if !graph.is_node_in_collapsed_cluster(edge.from_node)

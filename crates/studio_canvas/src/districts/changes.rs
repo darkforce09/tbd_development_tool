@@ -1280,7 +1280,7 @@ mod tests {
                 }
             }
         }
-        let big = WorldLayout::compute(Rect::from_min_size(Pos2::ZERO, vec2(9000.0, 7000.0)));
+        let big = WorldLayout::compute(Rect::from_min_size(Pos2::ZERO, vec2(9000.0, 7000.0)), &Default::default());
         let v = view(3, 0);
         let r = row_world_rect(&big, &v, 2);
         assert!(big.changes.contains_rect(r));

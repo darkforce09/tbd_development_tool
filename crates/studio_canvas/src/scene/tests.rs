@@ -264,3 +264,199 @@ fn hubs_get_a_badge_and_no_wires_and_documentation_a_chip() {
     assert_eq!(docs.len(), 1);
     assert_eq!(docs[0].count, 1);
 }
+
+const TIERS: [EvidenceTier; 4] =
+    [EvidenceTier::Proven, EvidenceTier::PossibleSet, EvidenceTier::Observed, EvidenceTier::Unresolved];
+
+#[test]
+fn every_tier_round_trips_through_the_wire_flags() {
+    assert_eq!(WIRE_TIER_MASK & (WIRE_KIND_MASK | WIRE_CURVE | WIRE_HIGHLIGHT | WIRE_ACTIVE | WIRE_WEIGHT_MASK), 0);
+    for (i, &tier) in TIERS.iter().enumerate() {
+        assert_eq!(wire_tier(tier), (i as u32) << WIRE_TIER_SHIFT);
+        let flags = EdgeKind::Call as u32 | WIRE_CURVE | WIRE_HIGHLIGHT | wire_weight(9) | wire_tier(tier);
+        let w = WireInstance { flags, ..Default::default() };
+        assert_eq!(w.tier(), tier);
+        assert_eq!(w.kind_index(), EdgeKind::Call as u32);
+        assert!(w.is_curve());
+        assert_eq!(flags & WIRE_WEIGHT_MASK, wire_weight(9));
+    }
+    // Raising keeps the stronger tier and leaves the other bits alone.
+    let mut flags = EdgeKind::Import as u32 | wire_weight(4) | wire_tier(EvidenceTier::Unresolved);
+    strengthen(&mut flags, EvidenceTier::Observed);
+    assert_eq!(tier_of_flags(flags), EvidenceTier::Observed);
+    strengthen(&mut flags, EvidenceTier::Unresolved);
+    assert_eq!(tier_of_flags(flags), EvidenceTier::Observed);
+    strengthen(&mut flags, EvidenceTier::Proven);
+    assert_eq!(tier_of_flags(flags), EvidenceTier::Proven);
+    assert_eq!(flags & !WIRE_TIER_MASK, EdgeKind::Import as u32 | wire_weight(4));
+    for &a in &TIERS {
+        for &b in &TIERS {
+            assert_eq!(strongest_tier(a, b), TIERS[(a as usize).min(b as usize)]);
+        }
+    }
+}
+
+/// Owners and tiers of every instance in the scene, segments then curves.
+fn tiers_by_owner(scene: &CanvasScene) -> Vec<(EdgeId, EvidenceTier)> {
+    let segments = scene.segments.iter().zip(&scene.segment_owner);
+    let curves = scene.curves.iter().zip(&scene.curve_owner);
+    segments.chain(curves).map(|(w, &owner)| (owner, w.tier())).collect()
+}
+
+#[test]
+fn a_wire_drawn_once_for_two_edges_shows_the_stronger_tier() {
+    let (mut g, [lib, _, main, _]) = project();
+    let imports: Vec<usize> =
+        (0..g.edges.len()).filter(|&i| (g.edges[i].from_node, g.edges[i].to_node) == (lib, main)).collect();
+    assert_eq!(imports.len(), 2, "lib.rs imports main.rs twice");
+    let base = CanvasScene::build(&g, true);
+    assert!(tiers_by_owner(&base).iter().all(|&(_, t)| t == EvidenceTier::Unresolved), "edges are name matches");
+    // Both copies share every segment; the first copy owns them. Proving only the second one
+    // proves the wire, and adds no instance.
+    g.edges[imports[1]].provenance = studio_graph::Provenance::proven(studio_graph::Basis::PathResolution);
+    let scene = CanvasScene::build(&g, true);
+    assert_eq!((scene.segments.len(), scene.curves.len()), (base.segments.len(), base.curves.len()));
+    let first = g.edges[imports[0]].id;
+    let owned: Vec<EvidenceTier> =
+        tiers_by_owner(&scene).into_iter().filter(|&(o, _)| o == first).map(|(_, t)| t).collect();
+    assert!(!owned.is_empty());
+    assert!(owned.iter().all(|&t| t == EvidenceTier::Proven), "{owned:?}");
+    let second = g.edges[imports[1]].id;
+    assert!(tiers_by_owner(&scene).iter().all(|&(o, _)| o != second), "the second copy draws nothing of its own");
+    // A possible set beats unresolved, and loses to proven.
+    g.edges[imports[0]].provenance = studio_graph::Provenance::possible(studio_graph::Basis::Tag, 3);
+    let scene = CanvasScene::build(&g, true);
+    assert_eq!(scene.segments.len(), base.segments.len());
+    assert!(tiers_by_owner(&scene).iter().filter(|&&(o, _)| o == first).all(|&(_, t)| t == EvidenceTier::Proven));
+    g.edges[imports[1]].provenance = studio_graph::Provenance::default();
+    let scene = CanvasScene::build(&g, true);
+    assert!(tiers_by_owner(&scene).iter().filter(|&&(o, _)| o == first).all(|&(_, t)| t == EvidenceTier::PossibleSet));
+}
+
+/// root/{a, b}: lib.rs in `a` imports main.rs and other.rs in `b`. The route to main.rs is
+/// redrawn to leave lib.rs along exactly the first stretch of the route to other.rs.
+fn fan_out() -> (Graph, [NodeId; 3]) {
+    let mut g = Graph::new();
+    g.tree_layout = true;
+    g.flow_layout = true;
+    let mut root = GroupCluster::new("root", "root", "Folder", 0);
+    root.child_cluster_ids = vec!["root/a".into(), "root/b".into()];
+    let mut a = GroupCluster::new("root/a", "a", "Folder", 1);
+    a.parent_id = Some("root".into());
+    let mut b = GroupCluster::new("root/b", "b", "Folder", 2);
+    b.parent_id = Some("root".into());
+    g.clusters = vec![root, a, b];
+    let lib = card(&mut g, "lib.rs", 1);
+    let main = card(&mut g, "main.rs", 2);
+    let other = card(&mut g, "other.rs", 2);
+    wire(&mut g, lib, main, EdgeKind::Import);
+    wire(&mut g, lib, other, EdgeKind::Import);
+    g.rebuild_fast_indices();
+    g.layout_folder_tree();
+    let drawn = |g: &Graph, to: NodeId| {
+        let mut points = Vec::new();
+        assert!(routed_wire_points_into(g, g.edges.iter().find(|e| e.to_node == to).unwrap(), &mut points));
+        points
+    };
+    let (to_main, to_other) = (drawn(&g, main), drawn(&g, other));
+    let (start, split, end) = (to_other[0], to_other[1], to_main[to_main.len() - 1]);
+    assert!(split.x > start.x && end.x > split.x);
+    let route = g.route_index[&(lib, main)];
+    g.flow.as_mut().unwrap().routes[route].points = vec![start.into(), split.into(), [split.x, end.y], end.into()];
+    (g, [lib, main, other])
+}
+
+#[test]
+fn a_segment_shared_by_two_wires_shows_the_stronger_tier() {
+    let (mut g, [_, main, other]) = fan_out();
+    let to = |g: &Graph, n: NodeId| g.edges.iter().position(|e| e.to_node == n).unwrap();
+    let (to_main, to_other) = (to(&g, main), to(&g, other));
+    let points = |g: &Graph, i: usize| {
+        let mut points = Vec::new();
+        assert!(routed_wire_points_into(g, &g.edges[i], &mut points));
+        let q = |p: Pos2| ((p.x * 10.0).round() as i32, (p.y * 10.0).round() as i32);
+        points
+            .windows(2)
+            .map(|w| if q(w[0]) <= q(w[1]) { (q(w[0]), q(w[1])) } else { (q(w[1]), q(w[0])) })
+            .collect::<FxHashSet<_>>()
+    };
+    let shared: FxHashSet<_> = points(&g, to_main).intersection(&points(&g, to_other)).copied().collect();
+    assert!(!shared.is_empty(), "the two routes share a stretch");
+    let is_shared = |w: &WireInstance| {
+        let q = |v: f32| (v * 10.0).round() as i32;
+        shared.contains(&((q(w.p0[0]), q(w.p0[1])), (q(w.p1[0]), q(w.p1[1]))))
+    };
+    let base = CanvasScene::build(&g, true);
+    for (proven, unresolved) in [(to_main, to_other), (to_other, to_main)] {
+        for e in g.edges.iter_mut() {
+            e.provenance = studio_graph::Provenance::default();
+        }
+        g.edges[proven].provenance = studio_graph::Provenance::proven(studio_graph::Basis::PathResolution);
+        let scene = CanvasScene::build(&g, true);
+        assert_eq!(scene.segments.len(), base.segments.len(), "tiers never add instances");
+        for (w, owner) in scene.segments.iter().zip(&scene.segment_owner) {
+            let expected = if is_shared(w) || *owner == g.edges[proven].id {
+                EvidenceTier::Proven
+            } else {
+                assert_eq!(*owner, g.edges[unresolved].id);
+                EvidenceTier::Unresolved
+            };
+            assert_eq!(w.tier(), expected, "{w:?}");
+        }
+        assert!(scene.segments.iter().any(|w| w.tier() == EvidenceTier::Unresolved));
+    }
+}
+
+#[test]
+fn a_segment_shared_by_two_providers_shows_the_stronger_tier() {
+    // lib.rs and util.rs both import main.rs, and util.rs's route is redrawn to end along the
+    // last stretch of lib.rs's: two providers, so the copies meet in the sorted merge.
+    let (mut g, [lib, util, main, _]) = project();
+    for e in g.edges.iter_mut().filter(|e| e.from_node == util) {
+        e.kind = EdgeKind::Import;
+    }
+    let drawn = |g: &Graph, from: NodeId| {
+        let mut points = Vec::new();
+        let edge = g.edges.iter().find(|e| (e.from_node, e.to_node) == (from, main)).unwrap();
+        assert!(routed_wire_points_into(g, edge, &mut points));
+        points
+    };
+    let (from_lib, from_util) = (drawn(&g, lib), drawn(&g, util));
+    let n = from_lib.len();
+    let (corner, end) = (from_lib[n - 2], from_lib[n - 1]);
+    assert_eq!(corner.y, end.y);
+    let route = g.route_index[&(util, main)];
+    g.flow.as_mut().unwrap().routes[route].points =
+        vec![from_util[0].into(), [corner.x, from_util[0].y], corner.into(), end.into()];
+    let shared = |w: &WireInstance| Pos2::from(w.p0) == corner && Pos2::from(w.p1) == end;
+    let import = EdgeKind::Import as u32;
+    let base = CanvasScene::build(&g, true);
+    assert_eq!(base.segments.iter().filter(|w| shared(w)).count(), 1, "the shared stretch is drawn once");
+    let util_edge = g.edges.iter().position(|e| e.from_node == util).unwrap();
+    g.edges[util_edge].provenance = studio_graph::Provenance::observed();
+    let scene = CanvasScene::build(&g, true);
+    assert_eq!(scene.segments.len(), base.segments.len(), "tiers never add instances");
+    let owner = scene.segments.iter().position(shared).map(|i| scene.segment_owner[i]);
+    assert_ne!(owner, Some(g.edges[util_edge].id), "lib.rs's earlier edge owns the shared stretch");
+    for (w, owner) in scene.segments.iter().zip(&scene.segment_owner).filter(|(w, _)| w.kind_index() == import) {
+        let expected = if shared(w) || *owner == g.edges[util_edge].id {
+            EvidenceTier::Observed
+        } else {
+            EvidenceTier::Unresolved
+        };
+        assert_eq!(w.tier(), expected, "{w:?}");
+    }
+}
+
+#[test]
+fn highlighted_wires_keep_their_tier() {
+    let (mut g, _) = project();
+    for (e, &tier) in g.edges.iter_mut().zip(TIERS.iter().cycle()) {
+        e.provenance.tier = tier;
+    }
+    for e in &g.edges {
+        let (overlay, _) = build_overlay(&g, [(e.id, WIRE_HIGHLIGHT)]);
+        assert!(!overlay.is_empty());
+        assert!(overlay.iter().all(|w| w.tier() == e.provenance.tier && w.flags & WIRE_HIGHLIGHT != 0));
+    }
+}

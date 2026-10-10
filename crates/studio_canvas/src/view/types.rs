@@ -212,6 +212,9 @@ pub struct CanvasState {
     pub stop: Stop,
     /// The stop the current flight is heading for.
     flight_stop: Option<Stop>,
+    /// What the current flight was asked to reach, so a flight to a district that moves on the
+    /// way can be sent on to where it is now.
+    flight_target: Option<CameraTarget>,
     /// The canvas rectangle of the last frame, for what is drawn over it.
     pub last_rect: Rect,
     /// The files open on the Desk.
@@ -230,7 +233,20 @@ pub struct CanvasState {
     pub session_lit: Option<String>,
     /// The cards of the files that session touched, found once per change of session or map.
     pub session_lit_nodes: BTreeSet<NodeId>,
+    /// Pipeline groups the user opened or closed against their default (group keys).
+    pub pipeline_open: BTreeSet<String>,
+    /// The Pipeline district's layout, worked out once per view, open groups and width.
+    pub pipeline_layout_cache: Option<PipelineLayoutCache>,
 }
+
+/// A Pipeline layout and what it was worked out from: the view (kept, so a new view never
+/// matches by address), the open groups, and the width in local units as `f32` bits.
+pub type PipelineLayoutCache = (
+    Arc<crate::districts::pipeline::PipelineView>,
+    BTreeSet<String>,
+    u32,
+    Arc<crate::districts::pipeline::PipelineLayout>,
+);
 
 impl Default for CanvasState {
     fn default() -> Self {
@@ -263,6 +279,7 @@ impl Default for CanvasState {
             world: WorldLayout::default(),
             stop: Stop::World,
             flight_stop: None,
+            flight_target: None,
             last_rect: Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0)),
             desk: Default::default(),
             districts: Default::default(),
@@ -272,6 +289,8 @@ impl Default for CanvasState {
             changes_selected: Default::default(),
             session_lit: None,
             session_lit_nodes: BTreeSet::new(),
+            pipeline_open: BTreeSet::new(),
+            pipeline_layout_cache: None,
         }
     }
 }
@@ -376,6 +395,7 @@ impl CanvasState {
         let here = View { pan: self.transform.pan, zoom: self.transform.zoom };
         if let Some((target, fly)) = self.camera.pending.take() {
             if let Some((to, snap_anchor)) = self.resolve(&target, graph, screen) {
+                self.flight_target = Some(target.clone());
                 self.flight_stop = Some(match target {
                     CameraTarget::Stop(stop) => stop,
                     CameraTarget::Rect(r) => self.world.stop_for_view(r),
@@ -397,9 +417,15 @@ impl CanvasState {
                 }
                 self.camera.flight = None;
                 self.flight_stop = None;
+                self.flight_target = None;
             }
             self.transform.pan = view.pan;
             self.transform.zoom = view.zoom.clamp(self.transform.min_zoom, self.transform.max_zoom);
+        }
+        if self.camera.flight.is_none() {
+            // A flight the user stopped (a drag) heads nowhere any more.
+            self.flight_stop = None;
+            self.flight_target = None;
         }
         self.stop = match self.flight_stop {
             Some(stop) => stop,
@@ -414,6 +440,17 @@ impl CanvasState {
         let resolved = match target {
             CameraTarget::Stop(Stop::World) => (camera::fit(self.world.bounds, screen, 48.0, zooms(1.0)), None),
             CameraTarget::Stop(Stop::Code) => (camera::fit(self.world.code, screen, 48.0, zooms(1.0)), None),
+            CameraTarget::Stop(Stop::Pipeline) => {
+                // At 100% on its top left corner, so its header and first group read however
+                // tall it grew; centred across when it fits.
+                let r = self.world.pipeline;
+                let x = if r.width() * one <= screen.width() - 96.0 {
+                    screen.center().x - r.center().x * one
+                } else {
+                    screen.min.x + 48.0 - r.min.x * one
+                };
+                (View { pan: vec2(x, screen.min.y + 48.0 - r.min.y * one), zoom: one }, Some(r.min))
+            }
             CameraTarget::Stop(Stop::Desk) => {
                 // At 100%, so its text is crisp, with its top left corner in view.
                 let desk = self.world.desk;
@@ -460,17 +497,73 @@ impl CanvasState {
         if self.scene_dirty || self.scene.member_wires != self.show_subnode_wires_globally || self.scene.revision == 0 {
             self.spatial_grid.build_from_graph(graph);
             self.scene = Arc::new(CanvasScene::build(graph, self.show_subnode_wires_globally));
-            let before = std::mem::replace(&mut self.world, WorldLayout::for_graph(graph));
+            let world = WorldLayout::for_graph(graph, |width| self.district_extents(width));
+            let before = std::mem::replace(&mut self.world, world);
             // The map grew or shrank and moved the districts: the camera stays on the one it is
             // at, so what is on screen does not move.
             if self.world != before && !matches!(self.stop, Stop::Code | Stop::World) && !self.camera.is_flying() {
                 self.camera.jump_to(CameraTarget::Stop(self.stop));
+            } else if self.world != before {
+                self.retarget_flight(&before);
             }
             // The hover index is only needed once the pointer is over a wire: build it off the
             // UI thread.
             let scene = self.scene.clone();
             rayon::spawn(move || scene.build_hit_index());
             self.scene_dirty = false;
+        }
+    }
+
+    /// How tall the districts' content is, laid out in a centre column `width` local units wide.
+    pub fn district_extents(&mut self, width: f32) -> crate::world::DistrictExtents {
+        crate::world::DistrictExtents { pipeline: self.pipeline_layout(width).map(|l| l.height), changes: None }
+    }
+
+    /// The Pipeline district's layout in a centre column `width` local units wide (see
+    /// [`WorldLayout::centre_width_local`]); `None` until its view arrives. Worked out again only
+    /// when the view, the open groups or the width change, never per frame.
+    pub fn pipeline_layout(&mut self, width: f32) -> Option<Arc<crate::districts::pipeline::PipelineLayout>> {
+        let view = self.districts.pipeline.clone()?;
+        if let Some((v, open, w, layout)) = &self.pipeline_layout_cache {
+            if Arc::ptr_eq(v, &view) && *open == self.pipeline_open && *w == width.to_bits() {
+                return Some(layout.clone());
+            }
+        }
+        let layout = Arc::new(crate::districts::pipeline::layout(&view, width, &self.pipeline_open));
+        self.pipeline_layout_cache = Some((view, self.pipeline_open.clone(), width.to_bits(), layout.clone()));
+        Some(layout)
+    }
+
+    /// Lays the districts out again around the same map, after a district's content changed size
+    /// (its view arrived, a group opened). Run then, never per frame. The map and everything
+    /// anchored on it stay where they are. On Pipeline the camera keeps the district's top edge
+    /// in its place on screen, so its header and the row just clicked do not move; a flight to a
+    /// district that moved is sent on to where it is now.
+    pub fn refresh_world(&mut self) {
+        let code = self.world.code;
+        let extents = self.district_extents(WorldLayout::centre_width_local(code));
+        let before = std::mem::replace(&mut self.world, WorldLayout::compute(code, &extents));
+        if self.world == before {
+            return;
+        }
+        if self.camera.is_flying() {
+            self.retarget_flight(&before);
+        } else if self.stop == Stop::Pipeline {
+            // `screen = world * zoom + pan`: the top edge stays where it was on screen.
+            self.transform.pan.y -= (self.world.pipeline.min.y - before.pipeline.min.y) * self.transform.zoom;
+        }
+    }
+
+    /// Sends a flight under way to a district that moved (`before` is the old world) on to where
+    /// the district is now. The flight starts again from where the camera is.
+    fn retarget_flight(&mut self, before: &WorldLayout) {
+        if self.camera.flight.is_none() {
+            return;
+        }
+        if let Some(CameraTarget::Stop(stop)) = self.flight_target {
+            if before.rect(stop) != self.world.rect(stop) || before.scale != self.world.scale {
+                self.camera.fly_to(CameraTarget::Stop(stop));
+            }
         }
     }
 

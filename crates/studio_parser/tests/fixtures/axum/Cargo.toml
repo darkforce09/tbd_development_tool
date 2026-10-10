@@ -1,0 +1,4 @@
+# The axum route-table fixture: a small virtual workspace the evaluator test reads (never built; axum is external).
+[workspace]
+resolver = "2"
+members = ["web", "things"]

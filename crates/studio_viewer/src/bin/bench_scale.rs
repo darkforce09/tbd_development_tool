@@ -14,7 +14,12 @@ const USAGE: &str = "usage: bench_scale [PROJECT_DIR] [--ram-budget-gb GB] [--ta
   --ram-budget-gb  RAM ceiling checked by the benchmark (default: half of system RAM)
   --target-fps     frame rate the render simulation must sustain (default: 60)
   --real-only      only benchmark the project, skip the synthetic suites
-  --layout-report  print the shape of the project's layout: size, aspect, widest and tallest folders";
+  --layout-report  print the shape of the project's layout: size, aspect, widest and tallest folders
+  --cpu-wires      time canvas frames with wires painted by egui instead of the GPU";
+
+/// `--cpu-wires`: canvas frames paint wires with egui (the painter path) instead of preparing GPU
+/// instances.
+static CPU_WIRES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 struct BenchArgs {
     project: PathBuf,
@@ -39,6 +44,7 @@ fn parse_args() -> Result<BenchArgs, String> {
             "--target-fps" => budget.target_fps = number("--target-fps")?,
             "--real-only" => real_only = true,
             "--layout-report" => layout_report = true,
+            "--cpu-wires" => CPU_WIRES.store(true, std::sync::atomic::Ordering::Relaxed),
             "-h" | "--help" => return Err(String::new()),
             flag if flag.starts_with('-') => return Err(format!("unknown option {flag}")),
             path if project.is_none() => project = Some(PathBuf::from(path)),
@@ -166,7 +172,22 @@ fn benchmark_real_project(tracker: &mut TimelineTracker, target_path: &std::path
     let _build_dur = t2.elapsed();
     tracker.record_stage(
         "Graph Assembly",
-        format!("{} nodes, {} edges, {} clusters", stats.node_count, stats.wire_count, graph.clusters.len()),
+        format!(
+            "{} nodes, {} edges, {} clusters; R1 {} files in {:.1} ms: {} Proven wires, {} upgraded, {} retargeted, \
+             {} added, {} dropped, {} unresolved, {} cfg-gated",
+            stats.node_count,
+            stats.wire_count,
+            graph.clusters.len(),
+            stats.r1.files,
+            (stats.r1.crate_graph_us + stats.r1.index_us + stats.r1.resolve_us) as f64 / 1000.0,
+            stats.r1.proven_edges,
+            stats.r1.upgraded,
+            stats.r1.retargeted,
+            stats.r1.added,
+            stats.r1.dropped,
+            stats.r1.unresolved,
+            stats.r1.cfg_gated
+        ),
         None,
         None,
         Some(stats.node_count),
@@ -342,6 +363,7 @@ fn benchmark_canvas_frames(tracker: &mut TimelineTracker, graph: &mut Graph) {
     studio_ui::apply_theme(&ctx);
     let screen = Rect::from_min_size(Pos2::ZERO, egui::vec2(2560.0, 1440.0));
     let mut state = CanvasState::default();
+    state.use_gpu_wires = !CPU_WIRES.load(std::sync::atomic::Ordering::Relaxed);
 
     let t_scene = Instant::now();
     state.refresh_scene(graph);
@@ -628,6 +650,7 @@ fn benchmark_rkyv_caching(tracker: &mut TimelineTracker) {
         wire_count: count_edges,
         function_count: count_nodes,
         type_count: 0,
+        ..Default::default()
     };
 
     let temp_proj = std::env::temp_dir().join("tbd_bench_rkyv_project");

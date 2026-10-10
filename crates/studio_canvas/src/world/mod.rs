@@ -59,6 +59,15 @@ impl Stop {
     }
 }
 
+/// How tall the content of the districts that grow with it is, in local units. `None` keeps the
+/// district at its fixed height; content shorter than that never shrinks it. Pipeline grows north
+/// and Changes south, so the Code map never moves.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct DistrictExtents {
+    pub pipeline: Option<f32>,
+    pub changes: Option<f32>,
+}
+
 /// Where every district is, in world units.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WorldLayout {
@@ -79,23 +88,43 @@ pub struct WorldLayout {
 
 impl Default for WorldLayout {
     fn default() -> Self {
-        Self::compute(Rect::from_min_size(Pos2::ZERO, vec2(CODE_NATURAL[0], CODE_NATURAL[1])))
+        Self::compute(
+            Rect::from_min_size(Pos2::ZERO, vec2(CODE_NATURAL[0], CODE_NATURAL[1])),
+            &DistrictExtents::default(),
+        )
     }
 }
 
 impl WorldLayout {
-    /// Lays the districts out around the Code map's bounds.
-    pub fn compute(code: Rect) -> Self {
-        let scale = (code.width() / CODE_NATURAL[0]).max(code.height() / CODE_NATURAL[1]).max(1.0);
+    /// World units per local unit around a map with these bounds.
+    fn scale_for(code: Rect) -> f32 {
+        (code.width() / CODE_NATURAL[0]).max(code.height() / CODE_NATURAL[1]).max(1.0)
+    }
+
+    /// The width of the centre column (Pipeline, Desk, Changes) around a map with these bounds, in
+    /// local units: what a district's content is laid out in before the world is.
+    pub fn centre_width_local(code: Rect) -> f32 {
+        let scale = Self::scale_for(code);
+        code.width().max(CENTRE_MIN_WIDTH * scale) / scale
+    }
+
+    /// Lays the districts out around the Code map's bounds, each as tall as `extents` asks.
+    pub fn compute(code: Rect, extents: &DistrictExtents) -> Self {
+        let scale = Self::scale_for(code);
         let gap = GAP * scale;
         let width = code.width().max(CENTRE_MIN_WIDTH * scale);
         let (left, right) = (code.center().x - width * 0.5, code.center().x + width * 0.5);
         let row = |top: f32, height: f32| Rect::from_min_size(pos2(left, top), vec2(width, height * scale));
 
         let code_cell = Rect::from_x_y_ranges(left..=right, code.y_range());
-        let pipeline = row(code.top() - gap - PIPELINE_HEIGHT * scale, PIPELINE_HEIGHT);
+        let height = |content: Option<f32>, fixed: f32| content.map_or(fixed, |h| h.max(fixed));
+        let pipeline_height = height(extents.pipeline, PIPELINE_HEIGHT);
+        // Built up from its bottom edge, which stays put however tall it grows.
+        let pipeline_bottom = code.top() - gap;
+        let pipeline =
+            Rect::from_x_y_ranges(left..=right, (pipeline_bottom - pipeline_height * scale)..=pipeline_bottom);
         let desk = row(code.bottom() + gap, DESK_HEIGHT);
-        let changes = row(desk.bottom() + gap, CHANGES_HEIGHT);
+        let changes = row(desk.bottom() + gap, height(extents.changes, CHANGES_HEIGHT));
         let side = SIDE_WIDTH * scale;
         let files = Rect::from_min_max(pos2(left - gap - side, code.top()), pos2(left - gap, desk.bottom()));
         let run = Rect::from_min_max(pos2(right + gap, code.top()), pos2(right + gap + side, desk.bottom()));
@@ -103,9 +132,11 @@ impl WorldLayout {
         Self { scale, code, code_cell, pipeline, files, desk, run, changes, bounds }
     }
 
-    /// Lays the districts out around the graph's map: the root folder, else every card.
-    pub fn for_graph(graph: &Graph) -> Self {
-        Self::compute(code_bounds(graph).unwrap_or_else(|| Self::default().code))
+    /// Lays the districts out around the graph's map: the root folder, else every card. `extents`
+    /// gets the centre column's width in local units and says how tall the districts' content is.
+    pub fn for_graph(graph: &Graph, extents: impl FnOnce(f32) -> DistrictExtents) -> Self {
+        let code = code_bounds(graph).unwrap_or_else(|| Self::default().code);
+        Self::compute(code, &extents(Self::centre_width_local(code)))
     }
 
     /// The district's rectangle; the whole world for [`Stop::World`], the map's row for Code.

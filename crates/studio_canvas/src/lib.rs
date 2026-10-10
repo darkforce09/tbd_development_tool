@@ -18,6 +18,9 @@ pub use districts::changes::{
     ShippedView, TicketLinkView, TicketView, TicketsColumnView, WorktreeRowView,
 };
 pub use districts::files::{FilesView, IgnoredView, SettingRow, SettingsCardView};
+pub use districts::pipeline::{
+    PipelineAction, PipelineGroup, PipelineLane, PipelineLink, PipelineStep, PipelineView, StepSlot,
+};
 pub use districts::run::{PackageBrick, RunSection, RunView, ToolTile, WorkflowRow};
 pub use districts::DistrictViews;
 pub use gpu::{CanvasFrame, CanvasGpu, CanvasLayer, CanvasPaint, SceneUniforms};
@@ -31,4 +34,5 @@ pub use view::{
     CanvasState, CanvasView,
 };
 pub use wire::{compute_bezier_control_points, distance_to_bezier, paint_bezier_wire};
+pub use world::DistrictExtents;
 pub use world::WorldLayout;

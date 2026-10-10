@@ -1,0 +1,4 @@
+# The R1 graph fixture: tests/r1_graph.rs builds the Code map of this virtual workspace (never compiled).
+[workspace]
+resolver = "2"
+members = ["app", "tools"]

@@ -14,6 +14,7 @@ use studio_sources::{
     tools_job, AgentIndex, FileChange, GitDisk, GitHistory, Packages, PartCommits, Settings, SourceEvent, SourceHub,
     SourceKind, SourceState, TicketIndex, Tools, Worktree,
 };
+use studio_sources::{pipeline_job, Pipeline};
 
 use super::title_bar::TitlePills;
 use super::StudioApp;
@@ -28,6 +29,10 @@ pub struct ProjectSources {
     /// Bytes on disk of top-level and ignored entries, relative to the root.
     pub sizes: BTreeMap<PathBuf, u64>,
     pub settings: Option<Arc<Settings>>,
+    /// The pipeline, and the district's view of it, made once when it arrives.
+    pub pipeline: Option<(Arc<Pipeline>, Arc<studio_canvas::PipelineView>)>,
+    /// Whether the pipeline job has been started.
+    pipeline_started: bool,
     /// Whether the jobs that need the parsed project have been started.
     started: bool,
     /// Branches, worktrees and HEAD's history.
@@ -79,6 +84,8 @@ impl ProjectSources {
             disk: None,
             sizes: BTreeMap::new(),
             settings: None,
+            pipeline: None,
+            pipeline_started: false,
             started: false,
             history: None,
             history_elapsed: None,
@@ -269,6 +276,17 @@ impl StudioApp {
                         sources.changes_dirty = true;
                         changed = true;
                     }
+                    // Without packages or tools the pipeline still reads tags and routes.
+                    let missing = matches!(source, SourceKind::Packages | SourceKind::Tools)
+                        && matches!(state, SourceState::Unavailable(_) | SourceState::Failed(_));
+                    if missing && !sources.pipeline_started {
+                        sources.pipeline_started = true;
+                        let packages = sources.packages.clone().unwrap_or_default();
+                        sources.hub.spawn(
+                            SourceKind::Pipeline,
+                            pipeline_job(packages, Arc::default(), file_list(&self.graph)),
+                        );
+                    }
                     sources.status.insert(source, state);
                 }
                 SourceEvent::Packages(packages) => {
@@ -280,7 +298,19 @@ impl StudioApp {
                     changed = true;
                 }
                 SourceEvent::Tools(tools) => {
+                    // The pipeline needs the packages, the tools (their commands) and the files.
+                    if !sources.pipeline_started {
+                        sources.pipeline_started = true;
+                        let packages = sources.packages.clone().unwrap_or_default();
+                        let job = pipeline_job(packages, tools.clone(), file_list(&self.graph));
+                        sources.hub.spawn(SourceKind::Pipeline, job);
+                    }
                     sources.tools = Some(tools);
+                    changed = true;
+                }
+                SourceEvent::Pipeline(pipeline) => {
+                    let view = Arc::new(super::districts::pipeline_view(&pipeline));
+                    sources.pipeline = Some((pipeline, view));
                     changed = true;
                 }
                 SourceEvent::GitDisk(disk) => {
@@ -396,6 +426,14 @@ impl StudioApp {
                 super::title_bar::local_offset_secs(now / 1000),
             );
         }
+        if let Some((_, view)) = &sources.pipeline {
+            let districts = &mut self.canvas_state.districts;
+            if !districts.pipeline.as_ref().is_some_and(|shown| Arc::ptr_eq(shown, view)) {
+                districts.pipeline = Some(view.clone());
+                // The district grows with what it shows; the map stays where it is.
+                self.canvas_state.refresh_world();
+            }
+        }
     }
 
     /// Reads one commit's files in the background, unless they are read or being read.
@@ -421,6 +459,23 @@ fn touches_by_kind(agents: &AgentIndex) -> BTreeMap<&'static str, (usize, usize)
         }
     }
     counts
+}
+
+/// Every file of the project the scan found, as the pipeline job gets it: the path of each file card (the
+/// Files map has one per scanned file, binary and oversized ones included, and the files of folders opened
+/// since), sorted and unique. The scan lists heavy folders (version control, build caches, dependencies,
+/// git-ignored) without descending them, so their files are not project files here either. Built when the
+/// job starts, on arrival of the packages or tools, never per frame.
+fn file_list(graph: &Graph) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = graph
+        .nodes
+        .values()
+        .filter(|n| n.archetype == studio_graph::NodeArchetype::File)
+        .filter_map(|n| n.file_path.as_ref().map(PathBuf::from))
+        .collect();
+    files.sort();
+    files.dedup();
+    files
 }
 
 /// Every `Cargo.toml` in the project, as found on disk.
@@ -526,6 +581,30 @@ mod tests {
     use super::*;
     use studio_graph::GroupCluster;
     use studio_sources::{PartCommit, StatusCounts};
+
+    #[test]
+    fn the_pipeline_gets_every_file_the_scan_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        for (rel, content) in [
+            ("src/main.rs", &b"fn main() {}\n"[..]),
+            ("contracts/a.schema.json", b"{}"),
+            ("deep/er/tagged.ts", b"// @route GET /x\nexport function f() {}\n"),
+            ("assets/logo.bin", b"\0\x01\x02"),
+            ("node_modules/pkg/index.js", b"export {}\n"),
+        ] {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, content).unwrap();
+        }
+        let (graph, _) = studio_parser::load_rust_project(&root).unwrap();
+        let scanned = studio_parser::tree::scan_tree(&root, studio_parser::tree::ScanOptions::default());
+        let mut expected: Vec<PathBuf> = scanned.files.iter().map(|f| root.join(&f.rel)).collect();
+        expected.sort();
+        assert_eq!(expected.len(), 4, "the heavy node_modules folder is listed, not descended: {expected:?}");
+        let files = file_list(&graph);
+        assert_eq!(files.iter().map(|f| f.canonicalize().unwrap()).collect::<Vec<_>>(), expected);
+    }
 
     #[test]
     fn age_reads_in_the_largest_whole_unit() {

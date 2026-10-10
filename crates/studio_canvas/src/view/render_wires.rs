@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use egui::{Color32, Painter, Pos2, Rect, Stroke};
-use studio_graph::{EdgeId, FolderDetail, Graph};
+use studio_graph::{EdgeId, EvidenceTier, FolderDetail, Graph, Provenance};
 use studio_ui::{paint_group_cluster, paint_pin_socket, with_alpha, GroupClusterProps, SocketVisualState};
 
 use crate::gpu::{CanvasFrame, CanvasLayer, CanvasPaint, CardLayer, SceneUniforms};
@@ -217,6 +217,7 @@ pub fn render_background_and_wires(
                 paint_wire_badge_and_label(painter, p0, p3, zoom, edge.step_number, edge.label.as_deref());
             }
         }
+        paint_tier_chip(painter, state, graph, rect);
     }
 
     // How many card pairs each bundled wire carries, and the hub and documentation chips.
@@ -361,7 +362,9 @@ fn paint_wires_cpu(painter: &Painter, state: &CanvasState, graph: &Graph, view_w
     let scene = &state.scene;
     let dim = state.active_flow_edges.is_some();
     let screen = |p: [f32; 2]| state.transform.world_to_screen(Pos2::from(p));
-    let paint = |w: &WireInstance, highlighted: bool| {
+    let clip = painter.clip_rect().expand(16.0);
+    let mut shapes: Vec<egui::Shape> = Vec::new();
+    let mut paint = |w: &WireInstance, highlighted: bool| {
         let [r, g, b, a] = w.color;
         let alpha = match (highlighted, dim) {
             (true, _) => a,
@@ -369,21 +372,21 @@ fn paint_wires_cpu(painter: &Painter, state: &CanvasState, graph: &Graph, view_w
             // Wires are quieter than the structure until highlighted, as in the shader.
             (false, false) => (a as f32 * 0.72) as u8,
         };
+        let alpha = tier_alpha(alpha, w.tier());
         let stroke =
             Stroke::new(wire_width(zoom, highlighted, w.flags), Color32::from_rgba_unmultiplied(r, g, b, alpha));
-        if w.is_curve() {
+        let path = if w.is_curve() {
             let (c1, c2) = world_control_points(Pos2::from(w.p0), Pos2::from(w.p1));
-            let points =
-                [screen(w.p0), state.transform.world_to_screen(c1), state.transform.world_to_screen(c2), screen(w.p1)];
-            painter.add(egui::epaint::CubicBezierShape::from_points_stroke(
-                points,
-                false,
-                Color32::TRANSPARENT,
-                stroke,
-            ));
+            WirePath::Curve([
+                screen(w.p0),
+                state.transform.world_to_screen(c1),
+                state.transform.world_to_screen(c2),
+                screen(w.p1),
+            ])
         } else {
-            painter.line_segment([screen(w.p0), screen(w.p1)], stroke);
-        }
+            WirePath::Segment([screen(w.p0), screen(w.p1)])
+        };
+        wire_shapes(path, w.tier(), stroke, clip, &mut shapes);
     };
     let mut drawn = 0;
     let view = view_world.expand(12.0 / zoom.max(1e-4));
@@ -402,5 +405,143 @@ fn paint_wires_cpu(painter: &Painter, state: &CanvasState, graph: &Graph, view_w
         paint(w, true);
         drawn += 1;
     }
+    painter.extend(shapes);
     drawn
+}
+
+/// Dash sizes of the evidence tiers on screen, in points, as in wire.wgsl: (dash, gap) for
+/// possible set and unresolved, the dot spacing for observed.
+const POSSIBLE_DASH: (f32, f32) = (14.0, 8.0);
+const UNRESOLVED_DASH: (f32, f32) = (6.0, 6.0);
+const OBSERVED_SPACING: f32 = 7.0;
+/// Unresolved wires are drawn at this share of their alpha.
+const UNRESOLVED_ALPHA: f32 = 0.6;
+
+/// `alpha` lowered for a wire matched by name only.
+fn tier_alpha(alpha: u8, tier: EvidenceTier) -> u8 {
+    match tier {
+        EvidenceTier::Unresolved => (alpha as f32 * UNRESOLVED_ALPHA) as u8,
+        _ => alpha,
+    }
+}
+
+/// A wire on screen: a straight segment, or a cubic curve (start, two control points, end).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum WirePath {
+    Segment([Pos2; 2]),
+    Curve([Pos2; 4]),
+}
+
+/// The shapes of one wire in the line style of its evidence tier: one shape when proven, one per
+/// dash or dot otherwise. Only the part of a segment inside `clip` is dashed; it starts on a whole
+/// period of the pattern, so the dashes stay put while the camera pans.
+pub(crate) fn wire_shapes(path: WirePath, tier: EvidenceTier, stroke: Stroke, clip: Rect, out: &mut Vec<egui::Shape>) {
+    let points: Vec<Pos2> = match (path, tier) {
+        (WirePath::Segment(ends), EvidenceTier::Proven) => {
+            out.push(egui::Shape::line_segment(ends, stroke));
+            return;
+        }
+        (WirePath::Curve(points), EvidenceTier::Proven) => {
+            let curve = egui::epaint::CubicBezierShape::from_points_stroke(points, false, Color32::TRANSPARENT, stroke);
+            out.push(curve.into());
+            return;
+        }
+        (WirePath::Segment([a, b]), _) => {
+            let period = match tier {
+                EvidenceTier::PossibleSet => POSSIBLE_DASH.0 + POSSIBLE_DASH.1,
+                EvidenceTier::Observed => OBSERVED_SPACING,
+                _ => UNRESOLVED_DASH.0 + UNRESOLVED_DASH.1,
+            };
+            match clip_segment(a, b, clip, period) {
+                Some((a, b)) => vec![a, b],
+                None => return,
+            }
+        }
+        (WirePath::Curve(points), _) => {
+            if !Rect::from_points(&points).intersects(clip) {
+                return;
+            }
+            egui::epaint::CubicBezierShape::from_points_stroke(points, false, Color32::TRANSPARENT, stroke)
+                .flatten(None)
+        }
+    };
+    match tier {
+        EvidenceTier::Observed => {
+            out.extend(egui::Shape::dotted_line(&points, stroke.color, OBSERVED_SPACING, (stroke.width * 0.5).max(1.0)))
+        }
+        EvidenceTier::PossibleSet => {
+            out.extend(egui::Shape::dashed_line(&points, stroke, POSSIBLE_DASH.0, POSSIBLE_DASH.1))
+        }
+        _ => out.extend(egui::Shape::dashed_line(&points, stroke, UNRESOLVED_DASH.0, UNRESOLVED_DASH.1)),
+    }
+}
+
+/// The part of segment `a`-`b` inside `clip`, its start moved back to a whole multiple of
+/// `period` from `a`. `None` when the segment misses `clip`.
+fn clip_segment(a: Pos2, b: Pos2, clip: Rect, period: f32) -> Option<(Pos2, Pos2)> {
+    let d = b - a;
+    let (mut t0, mut t1) = (0.0f32, 1.0f32);
+    for (p, q) in [(-d.x, a.x - clip.min.x), (d.x, clip.max.x - a.x), (-d.y, a.y - clip.min.y), (d.y, clip.max.y - a.y)]
+    {
+        if p == 0.0 {
+            if q < 0.0 {
+                return None;
+            }
+        } else if p < 0.0 {
+            t0 = t0.max(q / p);
+        } else {
+            t1 = t1.min(q / p);
+        }
+    }
+    if t0 > t1 {
+        return None;
+    }
+    let len = d.length();
+    if len < 1e-3 {
+        return Some((a, b));
+    }
+    let start = (t0 * len / period).floor() * period / len;
+    Some((a + d * start, a + d * t1))
+}
+
+/// What the chip on a hovered wire says about its evidence: nothing when proven, "1 of n" for one
+/// of a set of candidates, otherwise the tier's name.
+pub(crate) fn tier_chip_text(provenance: &Provenance) -> Option<String> {
+    match provenance.tier {
+        EvidenceTier::Proven => None,
+        EvidenceTier::PossibleSet => Some(format!("1 of {}", provenance.candidates.max(1))),
+        tier => Some(tier.label().to_string()),
+    }
+}
+
+/// The accent of a tier chip.
+fn tier_chip_color(tier: EvidenceTier) -> Color32 {
+    use studio_ui::color_tokens::{TIER_OBSERVED, TIER_POSSIBLE, TIER_PROVEN, TIER_UNRESOLVED};
+    match tier {
+        EvidenceTier::Proven => TIER_PROVEN,
+        EvidenceTier::PossibleSet => TIER_POSSIBLE,
+        EvidenceTier::Observed => TIER_OBSERVED,
+        EvidenceTier::Unresolved => TIER_UNRESOLVED,
+    }
+}
+
+/// The hovered wire's evidence chip, at the middle of its longest straight piece or of its curve.
+fn paint_tier_chip(painter: &Painter, state: &CanvasState, graph: &Graph, rect: Rect) {
+    let Some(edge) = state.hover.hovered_edge.and_then(|id| graph.get_edge(id)) else { return };
+    let Some(text) = tier_chip_text(&edge.provenance) else { return };
+    let mut points = Vec::new();
+    let at = if crate::view::routed_wire_points_into(graph, edge, &mut points) {
+        let Some(w) = points.windows(2).max_by(|a, b| (a[1] - a[0]).length().total_cmp(&(b[1] - b[0]).length())) else {
+            return;
+        };
+        w[0].lerp(w[1], 0.5)
+    } else {
+        let (a, b) = curve_ends(graph, edge);
+        let (c1, c2) = world_control_points(a, b);
+        crate::wire::eval_cubic_bezier(a, c1, c2, b, 0.5)
+    };
+    let p = state.transform.world_to_screen(at) - egui::vec2(0.0, 12.0);
+    if rect.contains(p) {
+        paint_chip(painter, p, egui::Align2::CENTER_BOTTOM, &text, tier_chip_color(edge.provenance.tier), &[]);
+    }
 }

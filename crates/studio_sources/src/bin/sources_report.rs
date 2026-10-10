@@ -50,6 +50,21 @@ fn main() {
     for (part, tests, files) in parts.iter().take(12) {
         println!("    {part:<40} {tests:>6} tests in {files} files");
     }
+    // R1 on the Code map: Rust imports and calls resolved through modules and manifests.
+    let r1 = &stats.r1;
+    let ms = |us: u64| us as f64 / 1000.0;
+    println!(
+        "  R1                 {} Rust files; crate graph {:.1} ms, index {:.1} ms, resolve {:.1} ms",
+        r1.files,
+        ms(r1.crate_graph_us),
+        ms(r1.index_us),
+        ms(r1.resolve_us)
+    );
+    println!(
+        "    references       {} upgraded, {} retargeted, {} added, {} dropped, {} external, {} unresolved, {} cfg-gated",
+        r1.upgraded, r1.retargeted, r1.added, r1.dropped, r1.external, r1.unresolved, r1.cfg_gated
+    );
+    println!("    Proven wires     {} of {} wires (path resolution)", r1.proven_edges, stats.wire_count);
     // Packages, through cargo where it can be asked.
     let started = Instant::now();
     let manifests: Vec<std::path::PathBuf> = graph
@@ -125,6 +140,9 @@ fn main() {
             workflow.description.as_deref().unwrap_or("")
         );
     }
+
+    // The pipeline: routes, tags, contracts and the flows through them.
+    print_pipeline(&root.canonicalize().unwrap_or(root.clone()), &packages, &tools, &files);
 
     // The disk as git sees it, and settings.
     let canonical = root.canonicalize().unwrap_or(root.clone());
@@ -408,4 +426,146 @@ fn sessions_section(root: &std::path::Path, cold: bool) {
     let top: Vec<String> = unknown.iter().take(10).map(|(t, n)| format!("{t} {n}")).collect();
     println!("    unknown types    {}", top.join(", "));
     println!("    index time       {} ms (warm pass, as the index measures itself)", s.elapsed_ms);
+}
+
+/// The pipeline section: what the Pipeline district would show, with the job's time.
+fn print_pipeline(
+    root: &std::path::Path,
+    packages: &studio_sources::Packages,
+    tools: &studio_sources::Tools,
+    files: &[std::path::PathBuf],
+) {
+    use studio_sources::{FlowGroupKind, LinkKind, StepKind};
+    let started = Instant::now();
+    let Some((p, report)) = studio_sources::pipeline::build_with(root, packages, tools, files, &|| false) else {
+        return;
+    };
+    let t = report.timings;
+    let s = &p.stats;
+    println!(
+        "  pipeline           built in {:.2?} (index {} ms, routes {} ms, tags {} ms, calls {} ms, contracts {} ms)",
+        started.elapsed(),
+        t.index_ms,
+        t.routes_ms,
+        t.tags_ms,
+        t.calls_ms,
+        t.contracts_ms
+    );
+    let kind_count = |k: StepKind| p.steps.iter().filter(|x| x.kind == k).count();
+    let senders = kind_count(StepKind::Sender);
+    println!("    routes           {}", s.routes);
+    println!(
+        "    route tags       {} ({} sender steps, handler tags {} agree / {} disagree)",
+        s.route_tags, senders, s.handler_tags_agree, s.handler_tags_disagree
+    );
+    let mut contract_tiers = [0usize; 4];
+    for l in p.links.iter().filter(|l| l.kind == LinkKind::Declares) {
+        contract_tiers[tier_index(l.provenance.tier)] += 1;
+    }
+    println!(
+        "    contract tags    {} (Declares links: {} proven, {} possible, {} unresolved)",
+        s.contract_tags, contract_tiers[0], contract_tiers[1], contract_tiers[3]
+    );
+    for (why, n) in &report.unresolved_contracts {
+        println!("      unresolved   {n} × {why}");
+    }
+    println!(
+        "    entry points     {} ({} routes, {} programs, {} commands)",
+        s.entry_points,
+        p.flows.iter().filter(|f| p.steps[f.entry].kind == StepKind::Route).count(),
+        p.flows.iter().filter(|f| p.steps[f.entry].kind == StepKind::Main).count(),
+        p.flows.iter().filter(|f| p.steps[f.entry].kind == StepKind::Command).count()
+    );
+    let per_kind = |k: FlowGroupKind| -> (usize, usize) {
+        let groups: Vec<_> = p.groups.iter().filter(|g| g.kind == k).collect();
+        (groups.len(), groups.iter().map(|g| g.flows.len()).sum())
+    };
+    let (_, cross) = per_kind(FlowGroupKind::CrossLanguage);
+    let (endpoint_groups, endpoints) = per_kind(FlowGroupKind::Endpoints);
+    let (_, mains) = per_kind(FlowGroupKind::Mains);
+    let (_, commands) = per_kind(FlowGroupKind::Commands);
+    let (_, none) = per_kind(FlowGroupKind::NoLinks);
+    println!(
+        "    flows            {} (cross-language {cross}, endpoints {endpoints} in {endpoint_groups} router files, programs {mains}, commands {commands}, no links {none}); truncated {}",
+        s.flows,
+        p.flows.iter().filter(|f| f.truncated > 0).count()
+    );
+    let kinds = [
+        StepKind::Main,
+        StepKind::Command,
+        StepKind::Sender,
+        StepKind::Route,
+        StepKind::Handler,
+        StepKind::Function,
+        StepKind::Contract,
+    ];
+    let by_kind: Vec<String> = kinds.iter().map(|&k| format!("{k:?} {}", kind_count(k))).collect();
+    println!("    steps            {} ({})", s.steps, by_kind.join(", "));
+    let [proven, possible, observed, unresolved] = s.links_by_tier;
+    println!(
+        "    links            {} ({proven} proven, {possible} possible, {observed} observed, {unresolved} unresolved)",
+        p.links.len()
+    );
+    let link_kinds = [LinkKind::Calls, LinkKind::Requests, LinkKind::Serves, LinkKind::Declares, LinkKind::Mounts];
+    let by_link: Vec<String> =
+        link_kinds.iter().map(|&k| format!("{k:?} {}", p.links.iter().filter(|l| l.kind == k).count())).collect();
+    println!("      by kind        {}", by_link.join(", "));
+    println!("    crossings        {}", s.crossings);
+    println!("    job time         {} ms", s.elapsed_ms);
+
+    // The fleet report links (exit E1) when the project has them, and every cross-language link.
+    let show = |li: usize| {
+        let l = &p.links[li];
+        let (a, b) = (&p.steps[l.from], &p.steps[l.to]);
+        let evidence: Vec<String> = l.evidence.iter().map(|(f, n)| format!("{}:{n}", f.display())).collect();
+        let tier = match l.provenance.tier {
+            studio_graph::EvidenceTier::PossibleSet => format!("possible 1 of {}", l.provenance.candidates),
+            other => other.label().to_string(),
+        };
+        format!(
+            "{:?} {} ({}:{}) -> {} ({}:{}) [{tier}, {:?}{}] evidence {}",
+            l.kind,
+            a.title,
+            a.path.display(),
+            a.line,
+            b.title,
+            b.path.display(),
+            b.line,
+            l.provenance.basis,
+            l.crossing.as_ref().map(|(x, y)| format!(", {x} -> {y}")).unwrap_or_default(),
+            evidence.join(" ")
+        )
+    };
+    for suffix in ["/result", "/executing"] {
+        let fleet = p.links.iter().position(|l| {
+            l.kind == LinkKind::Requests
+                && p.steps[l.from].title == "SendReport"
+                && p.steps[l.to].title.starts_with("POST /api/v1/fleet-executor/commands/")
+                && p.steps[l.to].title.ends_with(suffix)
+        });
+        if let Some(li) = fleet {
+            println!("    E1 {}", show(li));
+            let route = p.links[li].to;
+            for si in (0..p.links.len()).filter(|&i| p.links[i].from == route && p.links[i].kind == LinkKind::Serves) {
+                println!("       {}", show(si));
+            }
+        }
+    }
+    let crossing: Vec<usize> = (0..p.links.len()).filter(|&i| p.links[i].crossing.is_some()).collect();
+    println!("    cross-language links: {}", crossing.len());
+    for &li in crossing.iter().take(40) {
+        println!("      {}", show(li));
+    }
+    if crossing.len() > 40 {
+        println!("      … {} more", crossing.len() - 40);
+    }
+}
+
+fn tier_index(tier: studio_graph::EvidenceTier) -> usize {
+    match tier {
+        studio_graph::EvidenceTier::Proven => 0,
+        studio_graph::EvidenceTier::PossibleSet => 1,
+        studio_graph::EvidenceTier::Observed => 2,
+        studio_graph::EvidenceTier::Unresolved => 3,
+    }
 }

@@ -1,3 +1,4 @@
+pub mod analysis;
 pub mod builder;
 pub mod cache;
 pub mod edit;
@@ -201,7 +202,26 @@ mod tests {
         let (graph, stats) = load_rust_project(manifest_dir).expect("Failed to load studio_parser crate");
 
         assert!(!graph.nodes.is_empty(), "Graph should contain nodes");
-        assert_eq!(stats.crate_count, 1);
+        // Exactly one package is rooted at the crate folder: studio_parser itself.
+        let scanned = scan_project(manifest_dir).expect("scan studio_parser");
+        let root = manifest_dir.canonicalize().unwrap();
+        let rooted: Vec<_> = scanned.crates.iter().filter(|c| c.is_package() && c.root_path == root).collect();
+        assert_eq!(rooted.len(), 1, "one package at the crate folder");
+        assert_eq!(rooted[0].manifest_path.as_deref(), Some(root.join("Cargo.toml").as_path()));
+        // The others are the test fixtures' packages: every `Cargo.toml` under `tests/fixtures/` with a `[package]`
+        // table (a virtual workspace root is not a package).
+        let fixture_packages = walkdir::WalkDir::new(manifest_dir.join("tests/fixtures"))
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name() == "Cargo.toml")
+            .filter(|e| {
+                std::fs::read_to_string(e.path())
+                    .ok()
+                    .and_then(|t| t.parse::<toml::Table>().ok())
+                    .is_some_and(|t| t.contains_key("package"))
+            })
+            .count();
+        assert_eq!(stats.crate_count, 1 + fixture_packages);
         assert!(stats.file_count >= 5, "Should find at least 5 files");
         assert!(stats.node_count > 20, "Should extract nodes");
         assert!(stats.wire_count > 10, "Should connect wires");
@@ -331,6 +351,85 @@ mod tests {
         }
         // Code input + documentation port + one input per member.
         assert_eq!(card.inputs.len(), card.member_nodes.len() + 2, "stale member ports removed");
+    }
+
+    #[test]
+    fn a_save_rewires_calls_by_name_and_never_mints_a_proven_wire() {
+        use studio_graph::{EdgeKind, EvidenceTier};
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/b.rs"), "pub fn beta() {}\n").unwrap();
+        let main = dir.path().join("src/main.rs");
+        std::fs::write(&main, "mod b;\nuse b::beta;\nfn main() {\n    beta();\n}\n").unwrap();
+
+        let (mut graph, _) = load_rust_project(dir.path()).unwrap();
+        let card = graph.nodes.values().find(|n| n.title == "main.rs").unwrap().id;
+        let tiers = |g: &Graph, kind: EdgeKind| -> Vec<EvidenceTier> {
+            g.edges.iter().filter(|e| e.to_node == card && e.kind == kind).map(|e| e.provenance.tier).collect()
+        };
+        assert_eq!(tiers(&graph, EdgeKind::Call), vec![EvidenceTier::Proven], "R1 resolves beta()");
+        assert_eq!(tiers(&graph, EdgeKind::Import), vec![EvidenceTier::Proven], "and the import");
+
+        save_and_reparse(&main, "mod b;\nuse b::beta;\nfn main() {\n    beta();\n    b::beta();\n}\n", &mut graph)
+            .unwrap();
+        assert_eq!(tiers(&graph, EdgeKind::Call), vec![EvidenceTier::Unresolved], "rewired by name on save");
+        assert_eq!(
+            tiers(&graph, EdgeKind::Import),
+            vec![EvidenceTier::Unresolved],
+            "a file wire whose name still matches stays, but a save cannot keep it Proven"
+        );
+    }
+
+    #[test]
+    fn a_save_that_deletes_a_use_keeps_no_proven_wire() {
+        use studio_graph::EvidenceTier;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/b.rs"), "pub fn beta() {}\n").unwrap();
+        std::fs::write(dir.path().join("src/c.rs"), "pub fn gamma() {}\n").unwrap();
+        let main = dir.path().join("src/main.rs");
+        std::fs::write(
+            &main,
+            "mod b;\nmod c;\nuse b::beta;\nuse c::gamma;\nfn main() {\n    beta();\n    gamma();\n}\n",
+        )
+        .unwrap();
+
+        let (mut graph, _) = load_rust_project(dir.path()).unwrap();
+        let card = graph.nodes.values().find(|n| n.title == "main.rs").unwrap().id;
+        let title = |g: &Graph, id: studio_graph::NodeId| g.nodes[&id].title.clone();
+        let wires = |g: &Graph| -> Vec<(String, EvidenceTier)> {
+            let mut w: Vec<(String, EvidenceTier)> = g
+                .edges
+                .iter()
+                .filter(|e| e.to_node == card && e.to_port == g.nodes[&card].inputs[0].id)
+                .map(|e| (title(g, e.from_node), e.provenance.tier))
+                .collect();
+            w.sort();
+            w
+        };
+        assert_eq!(
+            wires(&graph),
+            [("b.rs".to_string(), EvidenceTier::Proven), ("c.rs".to_string(), EvidenceTier::Proven)],
+            "R1 proves both imports"
+        );
+
+        // `b` is still used by name; nothing names `c` any more.
+        save_and_reparse(&main, "mod b;\nuse b::beta;\nfn main() {\n    beta();\n}\n", &mut graph).unwrap();
+        assert_eq!(wires(&graph), [("b.rs".to_string(), EvidenceTier::Unresolved)]);
+        assert!(
+            graph.edges.iter().all(|e| e.to_node != card || e.provenance.tier != EvidenceTier::Proven),
+            "no Proven wire into the saved card"
+        );
     }
 
     #[test]
@@ -675,25 +774,52 @@ Link back: [Hub](../README.md)
     }
 
     #[test]
-    fn documentation_links_are_proven_and_name_matches_are_not() {
-        use studio_graph::{EdgeKind, EvidenceTier};
+    fn documentation_links_and_resolved_rust_paths_are_proven_and_name_matches_are_not() {
+        use studio_graph::{Basis, EdgeKind, EvidenceTier};
         let dir = tempfile::tempdir().unwrap();
         let write = |rel: &str, text: &str| {
             let p = dir.path().join(rel);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, text).unwrap();
         };
+        write("Cargo.toml", "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
         write("README.md", "See [the store](src/store.rs).\n");
-        write("src/store.rs", "pub fn open() {}\n");
-        write("src/main.rs", "mod store;\nuse store::open;\nfn main() { open(); }\n");
+        write("src/store.rs", "pub fn open() {}\npub fn flush() {}\n");
+        write("src/main.rs", "mod store;\nuse store::open;\nfn main() {\n    open();\n    let w = Vec::<u8>::new();\n    w.flush();\n}\n");
         let (graph, _) = load_rust_project(dir.path()).unwrap();
-        assert!(!graph.edges.is_empty());
-        for edge in &graph.edges {
-            let expected =
-                if edge.kind == EdgeKind::Documentation { EvidenceTier::Proven } else { EvidenceTier::Unresolved };
-            assert_eq!(edge.provenance.tier, expected, "{:?}", edge.kind);
-        }
-        assert!(graph.edges.iter().any(|e| e.kind == EdgeKind::Documentation));
+        let member_of = |port: studio_graph::PortId| {
+            graph
+                .nodes
+                .values()
+                .flat_map(|n| n.member_nodes.iter().map(move |m| (n, m)))
+                .find(|(_, m)| m.in_port_id == Some(port) || m.out_port_id == Some(port))
+                .map(|(n, m)| format!("{}#{}", n.title, m.name))
+        };
+        let side = |node, port| member_of(port).unwrap_or_else(|| graph.nodes[&node].title.clone());
+        let mut wires: Vec<(String, String, EdgeKind, EvidenceTier, Basis)> = graph
+            .edges
+            .iter()
+            .map(|e| {
+                let p = e.provenance;
+                (side(e.from_node, e.from_port), side(e.to_node, e.to_port), e.kind, p.tier, p.basis)
+            })
+            .collect();
+        wires.sort_by_key(|w| format!("{w:?}"));
+        let (proven, unresolved) = (EvidenceTier::Proven, EvidenceTier::Unresolved);
+        let mut expected = vec![
+            // The link names a file that exists.
+            ("README.md".into(), "store.rs".into(), EdgeKind::Documentation, proven, Basis::DocLink),
+            ("README.md".into(), "store.rs".into(), EdgeKind::Documentation, proven, Basis::DocLink),
+            // `use store::open` and `open()` resolve through `mod store;` (R1).
+            ("store.rs".into(), "main.rs".into(), EdgeKind::Import, proven, Basis::PathResolution),
+            ("store.rs#open".into(), "main.rs#main".into(), EdgeKind::Call, proven, Basis::PathResolution),
+            // `w.flush()` is a method call: only its name matches `store::flush`.
+            ("store.rs#flush".into(), "main.rs#main".into(), EdgeKind::Call, unresolved, Basis::NameMatch),
+        ];
+        // The link row's wire and the file's wire both start at README.md.
+        expected[0].0 = "README.md#the store".into();
+        expected.sort_by_key(|w| format!("{w:?}"));
+        assert_eq!(wires, expected);
     }
 
     #[test]
