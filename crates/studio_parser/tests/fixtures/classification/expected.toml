@@ -1,0 +1,70 @@
+# Classification fixture: one file per row of studio_parser::classify::RULES, one folder per
+# heavy marker. The test copies tree/ to a temp dir, writes the files below that would otherwise
+# change this repository (its own .gitignore and .gitattributes, and the markers), runs `git init`,
+# scans, and compares every class, rule row and heavy folder exactly.
+
+[setup]
+gitignore = "/scratch.rs\ncache/\n"
+gitattributes = "gen/** linguist-generated\nthird_party/** linguist-vendored\nmanual/** linguist-documentation\n"
+
+# Folder = marker file written into it at test time (with one file beside it).
+[markers]
+"heavy/cachedir" = "CACHEDIR.TAG"
+"heavy/venv" = "pyvenv.cfg"
+"heavy/npm/node_modules" = ".package-lock.json"
+"heavy/pnpm/node_modules" = ".modules.yaml"
+"heavy/yarn1/node_modules" = ".yarn-integrity"
+"heavy/yarn2/node_modules" = ".yarn-state.yml"
+
+# Every heavy folder and its reason; every other folder is descended.
+[heavy]
+".git" = "version control"
+"cache" = "gitignored"
+"heavy/cachedir" = "build cache"
+"heavy/venv" = "dependencies"
+"heavy/npm/node_modules" = "dependencies"
+"heavy/pnpm/node_modules" = "dependencies"
+"heavy/yarn1/node_modules" = "dependencies"
+"heavy/yarn2/node_modules" = "dependencies"
+
+# Every listed file: its class and the 1-based row of RULES that decided it, with the Linguist
+# attributes git reports applied.
+[classes]
+"gen/schema_gen.rs" = { class = "build output", rule = 1 }
+"third_party/lib.c" = { class = "vendored", rule = 2 }
+"manual/intro.html" = { class = "docs", rule = 3 }
+"scratch.rs" = { class = "build output", rule = 4 }
+"README.md" = { class = "docs", rule = 5 }
+"crates/app/tests/README.md" = { class = "docs", rule = 5 }
+"svc/main_test.go" = { class = "tests", rule = 6 }
+"py/test_api.py" = { class = "tests", rule = 7 }
+"web/app.test.ts" = { class = "tests", rule = 8 }
+"contracts/order.schema.json" = { class = "schemas", rule = 9 }
+"Makefile" = { class = "tooling", rule = 10 }
+"Cargo.lock" = { class = "config", rule = 11 }
+"Cargo.toml" = { class = "config", rule = 12 }
+"crates/app/Cargo.toml" = { class = "config", rule = 12 }
+".gitignore" = { class = "config", rule = 13 }
+".gitattributes" = { class = "config", rule = 13 }
+".github/workflows/ci.yml" = { class = "CI", rule = 14 }
+".gitlab-ci.yml" = { class = "CI", rule = 15 }
+".circleci/config.yml" = { class = "CI", rule = 16 }
+"Jenkinsfile" = { class = "CI", rule = 17 }
+"azure-pipelines.yml" = { class = "CI", rule = 18 }
+".ai/tickets/T-1.toml" = { class = "tickets", rule = 19 }
+"crates/app/build.rs" = { class = "tooling", rule = 20 }
+"crates/app/tests/it.rs" = { class = "tests", rule = 21 }
+"crates/app/benches/b.rs" = { class = "tests", rule = 22 }
+"crates/app/examples/demo.rs" = { class = "docs", rule = 23 }
+"crates/app/src/lib.rs" = { class = "code", rule = 24 }
+"tools/tests/check.rs" = { class = "code", rule = 24 }
+"node_modules/pkg/index.js" = { class = "code", rule = 24 }
+"scripts/run.sh" = { class = "tooling", rule = 25 }
+"docs/guide.md" = { class = "docs", rule = 26 }
+"contracts/api.proto" = { class = "schemas", rule = 27 }
+"config/app.yaml" = { class = "config", rule = 28 }
+"sub/.github/workflows/nested.yml" = { class = "config", rule = 28 }
+"assets/logo.png" = { class = "assets", rule = 29 }
+"mod/Prefabs/unit.et" = { class = "assets", rule = 30 }
+"logs/build.log" = { class = "build output", rule = 31 }
+"data/blob.bin" = { class = "other", rule = 32 }

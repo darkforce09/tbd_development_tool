@@ -235,6 +235,7 @@ mod tests {
         write(r, "svc/go.mod", "module example.com/team/svc\n\ngo 1.22\n");
         write(r, "svc/main.go", "");
         write(r, "docs/guide.md", "");
+        write(r, "node_modules/.package-lock.json", "{}");
         write(r, "node_modules/dep/package.json", "{\"name\": \"dep\"}");
 
         let groups = group(r);

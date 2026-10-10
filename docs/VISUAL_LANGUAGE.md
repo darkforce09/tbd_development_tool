@@ -60,7 +60,7 @@ Every folder header has three buttons, one per level (minimised, node view, open
 
 **L6. Hubs are badges.** A file or folder that feeds at least half of the other connected items in its folder, and at least 8 of them, is a **hub** (a shared types file, a prelude). Its wires would say little ("everything uses it") and bury everything else, so they are not drawn or laid out. The hub shows a "used by N" badge instead, and its wires appear when it is selected. A hub still sits left of everything it feeds (L1).
 
-**L7. Districts keep their places and never overlap.** Every project gets the same five districts, always in the same place: **Pipeline** north, **Files** west, **Code** in the centre with the **Desk** below it, **Run** east, **Changes** south (see [Districts](#districts)). Wires never leave the Code map.
+**L7. Districts keep their places and never overlap.** Every project gets the same five districts, always in the same place: **Pipeline** north, **Files** west, **Code** in the centre with the **Desk** below it, **Run** east, **Changes** south (see [Districts](#districts) and [Desk](#desk)). Wires never leave the Code map.
 
 ## Districts
 
@@ -80,6 +80,40 @@ The map of the code (everything above) is one district of a larger world. The wo
 - At a district, the others dim. Clicking a dimmed district goes there.
 - A district with nothing to show says so plainly ("No git repository here"). It never shows sample content, and it never disappears or moves the others.
 - The camera flies between districts in 0.85 s, zooming out on long trips so the way stays visible. Any wheel, pinch or drag stops it where it is. A flight that ends at 100% lands on whole pixels.
+
+### Files
+
+- The disk tree is in Finder order, flowed into columns. Each row ends with its marks, joined by " · ": **ignored**, **heavy** with its reason ("heavy: build cache"), **LFS**, **generated**, **vendored**, **hidden**, then its size. Example: "ignored · heavy: build cache · 2.0 KB".
+- Ignored and hidden rows have dimmed names; the marks of an ignored row are in the district's teal. Something inside an ignored folder is ignored too.
+- LFS, generated and vendored come from `.gitattributes` as git reads it, and mark files only. Hidden means the name starts with `.`. Heavy folders are listed with their totals but not opened (see [CLASSIFICATION.md](CLASSIFICATION.md#heavy-folders)).
+- In the size map, ignored entries are grey; the rest are teal.
+- "Tracked files by class" lists each class with its files and bytes and the rule that decided most of them; hovering a class lists all its rules.
+
+### Changes
+
+- Session facts come from agents' logs and are **Observed**: the session lane is headed "AGENT SESSIONS · observed", and each session chip's tip says "observed".
+- A ticket named in a branch is **Unresolved** (matched by the branch name): its chip is dashed and muted, and its tip says "matched by branch name · unresolved".
+- A ticket whose `shipped_at` commit git confirms is **Proven**: its card has a solid outline in the district's purple.
+
+### Pipeline
+
+- One lane per flow; steps run left to right by how far they are from the entry point.
+- A lane shows at most 3 steps per column and 7 columns. The rest fold into a "+k more" card, in the column or at the lane's end.
+- Every link has a chip naming its tier ("1 of n" for a Possible set); a route that exists only under a condition says "conditional".
+- Groups of flows collapse; the district grows north to fit and the map never moves.
+
+## Desk
+
+The Desk is where files and plans are read. It sits below the Code map and is part of the world: it moves and zooms with the camera like everything else.
+
+- Its text is real text: you can select and copy it.
+- The navigator is on the left: Finder-like columns from a part down to a file. Open cards sit to its right, side by side, and the row scrolls sideways.
+- At most 12 cards are open. Opening a 13th puts away the one opened longest ago.
+- Below 45% zoom the Desk shows only outlines; its text comes back as you zoom in.
+- Each card has an X (put it away) and a crosshair (show it on the map). A Markdown card switches between **Rendered** and **Source**.
+- Links in Markdown open their file on the Desk, at the lines they name (`#L10`, `#L10-L20`); web links open in the browser.
+- A plan card shows a session's plan and the edits the session made, under the step they belong to when the session recorded steps. It is **Observed**: it says what an agent did. An edit still found exactly once in the file is lit; found at several places it is a Possible set; gone, it is stale.
+- Nothing on the Desk changes the map. Opening, closing or reading a card never moves a card, a folder or a wire.
 
 ## Placement of things that are not code flow
 
@@ -101,6 +135,7 @@ A wire takes the colour of the kind of thing it connects. Symbols listed on card
 | Import | imports or includes a file or module | module | slate `#94A3B8` |
 | Documentation | documentation links to code | documentation port | sky blue `#38BDF8` |
 | Asset | references an asset (planned) | | pink `#F472B6` |
+| Dependency | a package depends on another (its manifest says so) | | slate `#94A3B8`, like imports until it has its own colour |
 | | | enum | amber `#FBBF24` |
 
 **A wire's line style is its evidence: solid only when proven.** Colour says what a wire connects; the line says how sure Studio is that the link exists.
@@ -114,6 +149,8 @@ A wire takes the colour of the kind of thing it connects. Symbols listed on card
 
 Dash sizes are in screen pixels and do not change with zoom. A dash pattern starts again at each corner of a routed wire. A wire drawn once for several links (a shared stretch, a bundle, a closed folder's wire) shows the strongest evidence among them. Colour-blind variants come later.
 
+Dependency wires come from the package manifests, so they are always Proven and solid. Each runs from the dependency's `Cargo.toml` card to the dependent's, one per pair of packages; the View menu's **Dependencies** toggle shows or hides them.
+
 ## Limits
 
 - Where many documentation files cross the same narrow gap, their vertical tracks share space and can overlap each other (never a code wire).
@@ -124,4 +161,4 @@ Dash sizes are in screen pixels and do not change with zoom. A dash pattern star
 - A busy folder can have many gates when it is open. Closing the folders around it (they then share their gates) or minimising it folds them.
 - A bundle carrying wires of several kinds is drawn in the colour of the kind it carries most; its count covers all of them.
 - The hub rule is a fixed threshold. It is exact and repeatable, but it can call something a hub that you would not, or miss one.
-- The layout is only as correct as the wires. Until wires are compiler-verified (roadmap Phase 3), the layout correctly follows wires that may themselves be wrong.
+- The layout is only as correct as the wires. Proven wires (Rust paths the resolver settles, package dependencies from manifests, documentation links) are right; Unresolved wires are name matches and may be wrong, and the layout follows them anyway until every language has a compiler-grade resolver (roadmap Phase 3).

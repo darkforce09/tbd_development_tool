@@ -54,7 +54,14 @@ pub struct RunView {
     /// Tests by part, most first.
     pub tests: Vec<(String, u64)>,
     pub packages: Vec<PackageBrick>,
+    /// Why there are no packages, when their source said why ("No Cargo packages here").
+    pub packages_note: Option<String>,
 }
+
+/// What the tools grid says when the project has no tools.
+pub const NO_TOOLS: &str = "No tools found: no Cargo binaries or aliases, npm scripts, make, just or workflows";
+/// What the package wall says when it is empty and no source said why.
+pub const NO_PACKAGES: &str = "No packages found";
 
 /// The sections of the district, top to bottom.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,7 +209,11 @@ pub fn paint_run(
         }
     }
 
+    let section = |s: RunSection| layout.sections.iter().find(|(k, _)| *k == s).map(|(_, r)| at(*r));
     // Tools: one tile each, the selected one's commands beside the grid.
+    if let Some(r) = section(RunSection::Tools).filter(|r| r.intersects(screen) && text_ok && view.tools.is_empty()) {
+        painter.text(r.min + vec2(0.0, HEADER * local), Align2::LEFT_TOP, NO_TOOLS, font(13.0), TEXT_DIM);
+    }
     for (i, (tool, rect)) in view.tools.iter().zip(&layout.tiles).enumerate() {
         let r = at(*rect);
         if !r.intersects(screen) {
@@ -335,7 +346,6 @@ pub fn paint_run(
         }
     }
 
-    let section = |s: RunSection| layout.sections.iter().find(|(k, _)| *k == s).map(|(_, r)| at(*r));
     // CI: each workflow with its jobs.
     if let Some(r) = section(RunSection::Ci).filter(|r| r.intersects(screen) && text_ok) {
         if view.workflows.is_empty() {
@@ -409,6 +419,10 @@ pub fn paint_run(
 
     // Builds: a brick per package, the ones that build programs in the district's colour.
     if let Some(r) = section(RunSection::Builds).filter(|r| r.intersects(screen)) {
+        if view.packages.is_empty() && text_ok {
+            let note = view.packages_note.as_deref().unwrap_or(NO_PACKAGES);
+            painter.text(r.min + vec2(0.0, HEADER * local), Align2::LEFT_TOP, note, font(13.0), TEXT_DIM);
+        }
         let per_row = ((r.width() / local + 8.0) / (BRICK[0] + 8.0)).floor().max(1.0) as usize;
         for (i, p) in view.packages.iter().enumerate() {
             let (col, row) = (i % per_row, i / per_row);
@@ -474,6 +488,7 @@ mod tests {
             }],
             tests: vec![("api".into(), 499), ("web".into(), 12)],
             packages: (0..30).map(|i| PackageBrick { name: format!("p{i}"), binaries: i % 3 }).collect(),
+            packages_note: None,
         }
     }
 

@@ -1,0 +1,74 @@
+# What git.rs reads from the repository tests/git_fixture.rs builds: no user or system config, author and
+# committer "Sam <sam@example.invalid>", commit N dated 2026-01-0N 12:00 UTC, so every id below is stable.
+#
+#   10690f5 Start the app            app/main.rs, lib/util.rs, README.md
+#   e89db28 Rename util to helpers   lib/util.rs -> lib/helpers.rs           Co-Authored-By: Ada
+#   43665a7 Add the feature          app/feature.rs, lib/helpers.rs (feature) Co-Authored-By: Ada, Bob
+#   2c662fb Write the guide          docs/guide.md, README.md (main)
+#   ea9693f Merge feature            --no-ff merge of feature into main
+#
+# Branch release stays at e89db28 and tracks main; wip is checked out in the linked worktree `wt`.
+# Uncommitted: in `repo` README.md gains a line; in `wt` app/main.rs changes a line and gains one,
+# docs/guide.md is deleted, notes.txt is staged new, README.md is renamed (git mv) to README.txt and
+# scratch.txt is untracked.
+#
+# Lines: branch "name head up=upstream ahead=n behind=n time=unix | subject"; worktree "folder main=…
+# branch=… head=… | status counts"; file "path [<- old path] +added -deleted"; commit "id short author time
+# parents=n | subject | co=trailers"; part commit "id short time | subject".
+
+branches = [
+    "feature 43665a7ae977eff9ab2079e2e62a4665cd052639 up=- ahead=0 behind=0 time=1767441600 | Add the feature",
+    "main ea9693ff2e91b66ad252922b15aca24fb2525740 up=- ahead=0 behind=0 time=1767614400 | Merge feature",
+    "release e89db28dc1198adc81845eadd0bbc8e3d8139e22 up=main ahead=0 behind=3 time=1767355200 | Rename util to helpers",
+    "wip ea9693ff2e91b66ad252922b15aca24fb2525740 up=- ahead=0 behind=0 time=1767614400 | Merge feature",
+]
+
+worktrees = [
+    "repo main=true branch=main head=ea9693ff2e91b66ad252922b15aca24fb2525740 | modified=1 added=0 deleted=0 renamed=0 untracked=0 conflicted=0",
+    "wt main=false branch=wip head=ea9693ff2e91b66ad252922b15aca24fb2525740 | modified=1 added=1 deleted=1 renamed=1 untracked=1 conflicted=0",
+]
+
+history_length = 5
+# `git rev-list --count HEAD`.
+commit_count = 5
+# Commits with at least one trailer.
+co_authored_commits = 2
+
+# Commits `read_part_commits` scanned (the whole history).
+part_commits_scanned = 5
+
+# Newest first: `git log` order by commit date.
+commits = [
+    "ea9693ff2e91b66ad252922b15aca24fb2525740 ea9693f Sam 1767614400 parents=2 | Merge feature | co=",
+    "2c662fb6bb6f5ffe9af89215c957203d4ae78e36 2c662fb Sam 1767528000 parents=1 | Write the guide | co=",
+    "43665a7ae977eff9ab2079e2e62a4665cd052639 43665a7 Sam 1767441600 parents=1 | Add the feature | co=Ada <ada@example.com>; Bob <bob@example.com>",
+    "e89db28dc1198adc81845eadd0bbc8e3d8139e22 e89db28 Sam 1767355200 parents=1 | Rename util to helpers | co=Ada <ada@example.com>",
+    "10690f5a8594a389c7df18898d456bf1982dc2e8 10690f5 Sam 1767268800 parents=0 | Start the app | co=",
+]
+
+# `git diff --numstat -M HEAD` per worktree: tracked files only (scratch.txt is only counted), by path.
+[worktree_files]
+repo = ["README.md +1 -0"]
+wt = ["README.txt <- README.md +0 -0", "app/main.rs +2 -1", "docs/guide.md +0 -3", "notes.txt +2 -0"]
+
+# Commits each co-author (by name) is on.
+[co_authors]
+Ada = 2
+Bob = 1
+
+# `commit_files` per commit (by short id): renames keep where they came from; a merge lists its diff against
+# its first parent.
+[commit_files]
+ea9693f = ["app/feature.rs +4 -0", "lib/helpers.rs +1 -0"]
+2c662fb = ["README.md +1 -0", "docs/guide.md +3 -0"]
+43665a7 = ["app/feature.rs +4 -0", "lib/helpers.rs +1 -0"]
+e89db28 = ["lib/helpers.rs <- lib/util.rs +0 -0"]
+10690f5 = ["README.md +2 -0", "app/main.rs +5 -0", "lib/util.rs +3 -0"]
+
+# `read_part_commits`: the newest commit on HEAD touching each folder ("" is the top). The merge lists no
+# files; "Add the feature" touched two parts.
+[part_commits]
+"" = "2c662fb6bb6f5ffe9af89215c957203d4ae78e36 2c662fb 1767528000 | Write the guide"
+app = "43665a7ae977eff9ab2079e2e62a4665cd052639 43665a7 1767441600 | Add the feature"
+docs = "2c662fb6bb6f5ffe9af89215c957203d4ae78e36 2c662fb 1767528000 | Write the guide"
+lib = "43665a7ae977eff9ab2079e2e62a4665cd052639 43665a7 1767441600 | Add the feature"

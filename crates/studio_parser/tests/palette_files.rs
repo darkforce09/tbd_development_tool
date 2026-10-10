@@ -26,6 +26,7 @@ fn fixture() -> Option<tempfile::TempDir> {
     write(r, "secret/key.txt", b"k");
     write(r, "debug.log", b"log");
     write(r, "src/gen.log", b"log");
+    write(r, "node_modules/.package-lock.json", b"{}");
     write(r, "node_modules/pkg/index.js", b"export const a = 1;\n");
     write(r, "target/CACHEDIR.TAG", b"Signature: 8a477f597d28d172789f06886806bc55");
     write(r, "target/debug/app", b"\x7fELF\0\0");

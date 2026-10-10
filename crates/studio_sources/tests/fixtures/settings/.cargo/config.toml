@@ -1,0 +1,9 @@
+[alias]
+xtask = "run --package xtask --"
+lint = ["clippy", "--workspace"]
+
+[build]
+jobs = 4
+
+[env]
+RUST_LOG = "info"

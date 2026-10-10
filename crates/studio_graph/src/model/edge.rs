@@ -35,11 +35,13 @@ pub enum EdgeKind {
     Documentation,
     /// Code or data references an asset.
     Asset,
+    /// A package depends on another, by a path dependency in its manifest. Runs between the two manifest cards.
+    Depends,
 }
 
 impl EdgeKind {
     /// Number of kinds, for per-kind tables.
-    pub const COUNT: usize = 6;
+    pub const COUNT: usize = 7;
     /// Every kind, in `as usize` order.
     pub const ALL: [EdgeKind; EdgeKind::COUNT] = [
         EdgeKind::Import,
@@ -48,6 +50,7 @@ impl EdgeKind {
         EdgeKind::Implements,
         EdgeKind::Documentation,
         EdgeKind::Asset,
+        EdgeKind::Depends,
     ];
 
     pub fn label(self) -> &'static str {
@@ -58,10 +61,12 @@ impl EdgeKind {
             EdgeKind::Implements => "implements",
             EdgeKind::Documentation => "documentation",
             EdgeKind::Asset => "asset",
+            EdgeKind::Depends => "depends on",
         }
     }
 
-    /// Code-flow kinds decide the left-to-right layout; documentation and asset wires do not.
+    /// Code-flow kinds (package dependencies included) decide the left-to-right layout; documentation and asset
+    /// wires do not.
     pub fn is_code_flow(self) -> bool {
         !matches!(self, EdgeKind::Documentation | EdgeKind::Asset)
     }

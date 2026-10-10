@@ -110,14 +110,7 @@ pub struct WireBundle {
 impl WireBundle {
     /// The kind the bundle carries most (ties go to the earlier kind), for its colour.
     pub fn main_kind(&self) -> crate::model::EdgeKind {
-        let kinds = [
-            EdgeKind::Import,
-            EdgeKind::Call,
-            EdgeKind::TypeUse,
-            EdgeKind::Implements,
-            EdgeKind::Documentation,
-            EdgeKind::Asset,
-        ];
+        let kinds = EdgeKind::ALL;
         let best = (0..kinds.len()).max_by_key(|&i| (self.kinds[kinds[i] as usize], std::cmp::Reverse(i))).unwrap_or(0);
         kinds[best]
     }

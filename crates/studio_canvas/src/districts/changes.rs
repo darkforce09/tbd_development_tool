@@ -66,6 +66,8 @@ pub struct WorktreeRowView {
     pub more_sessions: usize,
     /// Ticket ids in the branch name that name a ticket (Unresolved: matched by branch name).
     pub tickets: Vec<String>,
+    /// Said instead of the row's git facts ("No git repository here" on a folder's own row).
+    pub note: Option<String>,
 }
 
 /// A changed file in a row or a commit.
@@ -237,8 +239,8 @@ pub struct ChangesLayout {
     pub strip_columns: usize,
 }
 
-/// The district's height in local units (the world's `CHANGES_HEIGHT`, fixed).
-pub const HEIGHT: f32 = 1000.0;
+/// The district's height in local units: the world's, fixed.
+pub use crate::world::CHANGES_HEIGHT as HEIGHT;
 
 const MARGIN: f32 = 36.0;
 const LABEL_Y: f32 = 92.0;
@@ -616,13 +618,14 @@ pub fn paint_changes(
         paint_header(&pen, view, world.changes.width() / world.scale);
     }
     match &view.message {
-        Some(message) => {
+        // A message with rows (a folder without git, with sessions): the rows carry it as their note.
+        Some(message) if view.rows.is_empty() => {
             if pen.text_ok {
                 let area = pen.at(layout.rows_area.union(layout.strip));
                 pen.text(area.center(), Align2::CENTER_CENTER, message, pen.font(17.0), TEXT_DIM);
             }
         }
-        None => {
+        message => {
             for (i, (row, rect)) in view.rows.iter().zip(&layout.rows).enumerate() {
                 if let Some(a) = paint_row(&pen, view, i, row, *rect, selection, &mut tip) {
                     action = Some(a);
@@ -635,8 +638,11 @@ pub fn paint_changes(
                     if hidden == 1 { "+1 more worktree".to_string() } else { format!("+{hidden} more worktrees") };
                 pen.text(r.left_center(), Align2::LEFT_CENTER, text, pen.font(13.0), TEXT_DIM);
             }
-            if let Some(a) = paint_strip(&pen, view, &layout, &mut tip) {
-                action = Some(a);
+            // No git, no branches: the strip would only be empty.
+            if message.is_none() {
+                if let Some(a) = paint_strip(&pen, view, &layout, &mut tip) {
+                    action = Some(a);
+                }
             }
         }
     }
@@ -727,8 +733,10 @@ fn paint_row(
             if let Some((ahead, behind)) = row.ahead_behind {
                 words.push(format!("{ahead} ahead · {behind} behind"));
             }
-            if row.change_counts.is_empty() {
-                words.push("no changes".to_string());
+            match &row.note {
+                Some(note) => words.push(note.clone()),
+                None if row.change_counts.is_empty() => words.push("no changes".to_string()),
+                None => {}
             }
             words.extend(row.change_counts.iter().map(|(word, n)| format!("{n} {word}")));
             pen.text(
@@ -795,7 +803,7 @@ fn paint_row(
         }
     }
     let commit = picked.and_then(|b| row.commits.get(b));
-    if pen.text_ok {
+    if pen.text_ok && row.note.is_none() {
         let caption = match commit {
             Some(c) => {
                 let co = if c.co_authored { " · co-authored" } else { "" };
@@ -1370,5 +1378,25 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(click_at(&message, &none, Some(pos2(400.0, 400.0)), 1.0), None);
+    }
+
+    #[test]
+    fn a_folder_without_git_shows_its_sessions_row_under_the_message() {
+        let no_git = WorktreeRowView {
+            branch: "project folder · no git".into(),
+            path: PathBuf::from("/p"),
+            sessions: vec![SessionChip { id: "s0".into(), ..Default::default() }],
+            note: Some("No git repository here".into()),
+            ..Default::default()
+        };
+        let v =
+            ChangesView { message: Some("No git repository here".into()), rows: vec![no_git], ..Default::default() };
+        let l = layout(&v, 2800.0);
+        let parts = row_parts(l.rows[0]);
+        let none = ChangesSelection::default();
+        let session = session_slot(parts.lane, 0).center();
+        assert_eq!(click_at(&v, &none, Some(session), 1.0), Some(ChangesAction::LightSession(Some("s0".into()))));
+        let empty = parts.left.right_bottom() - vec2(4.0, 4.0);
+        assert_eq!(click_at(&v, &none, Some(empty), 1.0), Some(ChangesAction::SelectRow(0)));
     }
 }

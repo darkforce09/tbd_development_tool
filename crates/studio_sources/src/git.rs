@@ -264,9 +264,9 @@ pub fn commit_files(runner: &Runner, root: &Path, commit: &str) -> Result<Vec<Fi
     Ok(parse_numstat_z(&out))
 }
 
-/// A full commit id: 40 lowercase hex digits.
+/// A full commit id: 40 (SHA-1) or 64 (SHA-256) lowercase hex digits.
 fn is_full_id(id: &str) -> bool {
-    id.len() == 40 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    matches!(id.len(), 40 | 64) && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// [`commit_files`] for a full commit id, kept in `store` as `commit-<id>`: a commit never
@@ -379,6 +379,14 @@ pub fn part_commits_job() -> impl FnOnce(&JobContext) -> Result<(), JobError> + 
 mod tests {
     use super::*;
     use crate::exec::CancelToken;
+
+    #[test]
+    fn full_ids_are_sha1_or_sha256_lowercase_hex() {
+        assert!(is_full_id(&"a".repeat(40)), "SHA-1");
+        assert!(is_full_id(&"0".repeat(64)), "SHA-256");
+        assert!(!is_full_id(&"a".repeat(39)) && !is_full_id(&"a".repeat(41)) && !is_full_id(&"a".repeat(63)));
+        assert!(!is_full_id(&"A".repeat(40)) && !is_full_id(&"g".repeat(64)), "lowercase hex only");
+    }
 
     #[test]
     fn history_reads_branches_worktrees_commits_and_co_authors() {

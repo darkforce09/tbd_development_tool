@@ -40,7 +40,7 @@ pub struct Ticket {
     pub priority: Option<i64>,
     pub order: Option<i64>,
     pub parent: Option<String>,
-    /// The commit id as written in the ticket (7–40 hex).
+    /// The commit id as written in the ticket (4–40 hex, or a full 64-hex SHA-256 id).
     pub shipped_at: Option<String>,
     /// What git says about `shipped_at`.
     pub shipped: Shipped,
@@ -174,9 +174,10 @@ fn confirm_shipped(runner: &Runner, root: &Path, tickets: &mut [Ticket]) -> Resu
     Ok(())
 }
 
-/// 4 to 40 hex digits: something git can look up as a commit.
+/// 4 to 40 hex digits (a SHA-1 id or a prefix), or a full 64-digit SHA-256 id: something git
+/// can look up as a commit.
 fn is_commit_id(sha: &str) -> bool {
-    (4..=40).contains(&sha.len()) && sha.bytes().all(|b| b.is_ascii_hexdigit())
+    ((4..=40).contains(&sha.len()) || sha.len() == 64) && sha.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// Git answers each line in order: `<full id> commit <size>` when found, `<input> missing` or
@@ -188,7 +189,7 @@ fn parse_batch_check(asked: &[String], stdout: &str) -> Vec<Shipped> {
         .map(|sha| {
             let fields: Vec<&str> = lines.next().unwrap_or_default().split_whitespace().collect();
             match fields[..] {
-                [full, "commit", _] if full.len() == 40 && full.starts_with(sha.as_str()) => {
+                [full, "commit", _] if matches!(full.len(), 40 | 64) && full.starts_with(sha.as_str()) => {
                     Shipped::Commit(full.to_string())
                 }
                 _ => Shipped::NotInRepo,
@@ -330,6 +331,20 @@ mod tests {
         // A found id that does not extend the one asked is not trusted.
         assert_eq!(parse_batch_check(&["fff0".to_string()], &format!("{full} commit 1\n")), [Shipped::NotInRepo]);
         assert!(is_commit_id("abc1234") && !is_commit_id("abc") && !is_commit_id("v1.2.3") && !is_commit_id(""));
+        // A SHA-256 repository answers with a 64-digit id.
+        let full256 = "0123456789abcdef".repeat(4);
+        assert_eq!(
+            parse_batch_check(&["01234567".to_string()], &format!("{full256} commit 9\n")),
+            [Shipped::Commit(full256.clone())]
+        );
+    }
+
+    #[test]
+    fn commit_ids_may_be_sha1_or_sha256() {
+        assert!(is_commit_id(&"a".repeat(40)), "SHA-1");
+        assert!(is_commit_id(&"b".repeat(64)), "SHA-256");
+        assert!(!is_commit_id(&"c".repeat(41)) && !is_commit_id(&"d".repeat(63)) && !is_commit_id(&"e".repeat(65)));
+        assert!(!is_commit_id(&format!("{}g", "a".repeat(63))), "hex only");
     }
 
     #[test]

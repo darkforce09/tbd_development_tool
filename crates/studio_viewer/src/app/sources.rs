@@ -276,10 +276,14 @@ impl StudioApp {
                         sources.changes_dirty = true;
                         changed = true;
                     }
-                    // Without packages or tools the pipeline still reads tags and routes.
-                    let missing = matches!(source, SourceKind::Packages | SourceKind::Tools)
-                        && matches!(state, SourceState::Unavailable(_) | SourceState::Failed(_));
-                    if missing && !sources.pipeline_started {
+                    let missing = matches!(state, SourceState::Unavailable(_) | SourceState::Failed(_));
+                    // Without Cargo packages the tools still read npm, make, just and workflows.
+                    if missing && source == SourceKind::Packages {
+                        let files = project_files(&self.graph);
+                        sources.hub.spawn(SourceKind::Tools, tools_job(Arc::default(), files));
+                    }
+                    // Without tools the pipeline still reads tags and routes.
+                    if missing && source == SourceKind::Tools && !sources.pipeline_started {
                         sources.pipeline_started = true;
                         let packages = sources.packages.clone().unwrap_or_default();
                         sources.hub.spawn(
@@ -287,13 +291,13 @@ impl StudioApp {
                             pipeline_job(packages, Arc::default(), file_list(&self.graph)),
                         );
                     }
+                    // The district that has no view says why.
+                    changed |= missing;
                     sources.status.insert(source, state);
                 }
                 SourceEvent::Packages(packages) => {
                     // Tools need the packages (their binaries), and the files on disk.
-                    let files: Vec<PathBuf> =
-                        self.graph.nodes.values().filter_map(|n| n.file_path.as_ref().map(PathBuf::from)).collect();
-                    sources.hub.spawn(SourceKind::Tools, tools_job(packages.clone(), files));
+                    sources.hub.spawn(SourceKind::Tools, tools_job(packages.clone(), project_files(&self.graph)));
                     sources.packages = Some(packages);
                     changed = true;
                 }
@@ -396,15 +400,19 @@ impl StudioApp {
         // The palette's commands and sources (slot 2), built again only when they changed.
         self.sync_palette_sources();
         let (Some(sources), Some(root)) = (&mut self.sources, &self.current_project_path) else { return };
-        let files = super::districts::files_view(sources.disk.as_deref(), &sources.sizes, sources.settings.as_deref());
+        let mut files =
+            super::districts::files_view(sources.disk.as_deref(), &sources.sizes, sources.settings.as_deref());
+        files.git_note = super::districts::files_git_note(&sources.status);
         self.canvas_state.districts.files = Some(Arc::new(files));
         if let Some(packages) = &sources.packages {
             mark_packages(&mut self.graph, root, packages);
-            if let Some(tools) = &sources.tools {
-                let view = super::districts::run_view(tools, packages, &self.graph);
-                self.canvas_state.districts.run = Some(Arc::new(view));
-            }
         }
+        // Tools arrive after packages, or after the packages source said there are none.
+        if let Some(tools) = &sources.tools {
+            let view = super::districts::run_view(tools, sources.packages.as_deref(), &self.graph, &sources.status);
+            self.canvas_state.districts.run = Some(Arc::new(view));
+        }
+        self.canvas_state.districts.notes = super::districts::district_notes(&sources.status);
         let now = now_unix_ms();
         if !sources.part_folders.is_empty() {
             mark_part_commits(&mut self.graph, &sources.part_folders, now, &mut sources.commit_marks);
@@ -475,6 +483,15 @@ fn file_list(graph: &Graph) -> Vec<PathBuf> {
         .filter(|n| n.archetype == studio_graph::NodeArchetype::File)
         .filter_map(|n| n.file_path.as_ref().map(PathBuf::from))
         .collect();
+    files.sort();
+    files.dedup();
+    files
+}
+
+/// Every path a node of the graph points at, as the tools job gets it: sorted and unique.
+fn project_files(graph: &Graph) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> =
+        graph.nodes.values().filter_map(|n| n.file_path.as_ref().map(PathBuf::from)).collect();
     files.sort();
     files.dedup();
     files
@@ -593,6 +610,7 @@ mod tests {
             ("contracts/a.schema.json", b"{}"),
             ("deep/er/tagged.ts", b"// @route GET /x\nexport function f() {}\n"),
             ("assets/logo.bin", b"\0\x01\x02"),
+            ("node_modules/.package-lock.json", b"{}"),
             ("node_modules/pkg/index.js", b"export {}\n"),
         ] {
             let path = root.join(rel);

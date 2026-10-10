@@ -1,0 +1,109 @@
+# What settings.rs reads from this folder (tests/settings_fixture.rs passes the four Cargo.toml files and the
+# three .json files). Checked by hand against the files here.
+#
+# Fact lines: "[section] key = value @line"; the section is "" for top-level keys. TOML keys come in key order
+# (the toml crate sorts tables), not file order. A shared dependency says how many member manifests use it with
+# `workspace = true`: serde (a, b), tokio (a), local (b, as a dev-dependency), unused (none).
+
+# `$schema` files only (contracts/sample.json has none), by path: "file title= kind= properties= required=
+# definitions= refs= formats=". Counts are of the root object; refs and formats are counted everywhere.
+schemas = [
+    "contracts/team.schema.json title=- kind=object | null properties=3 required=1 definitions=2 refs=1 formats=uri",
+    "contracts/user.schema.json title=User kind=object properties=5 required=3 definitions=1 refs=2 formats=date-time,email,uuid",
+]
+
+[[sheet]]
+title = "Cargo workspace"
+file = "Cargo.toml"
+summary = "1 member patterns · 4 shared dependencies"
+facts = [
+    "[Members] crates/* =  @2",
+    "[Shared dependencies] local = path crates/local · used by 1 @8",
+    "[Shared dependencies] serde = 1.0 · used by 2 @6",
+    "[Shared dependencies] tokio = 1.40 · used by 1 @7",
+    "[Shared dependencies] unused = 0.3 · used by 0 @9",
+    "[Profile dev] opt-level = 1 @16",
+    "[Profile release] codegen-units = 1 @13",
+    "[Profile release] lto = true @12",
+]
+
+[[sheet]]
+title = "Toolchain"
+file = "rust-toolchain.toml"
+summary = "3 settings"
+facts = [
+    "[toolchain] channel = 1.95.0 @2",
+    "[toolchain] components = clippy, rustfmt @3",
+    "[toolchain] profile = minimal @4",
+]
+
+[[sheet]]
+title = "Cargo settings"
+file = ".cargo/config.toml"
+summary = "4 settings"
+facts = [
+    "[alias] lint = clippy, --workspace @3",
+    "[alias] xtask = run --package xtask -- @2",
+    "[build] jobs = 4 @6",
+    "[env] RUST_LOG = info @9",
+]
+
+[[sheet]]
+title = "Lints"
+file = "clippy.toml"
+summary = "3 settings"
+facts = [
+    "[] disallowed-names = foo, bar @3",
+    "[] msrv = 1.80 @1",
+    "[] too-many-arguments-threshold = 8 @2",
+]
+
+[[sheet]]
+title = "Formatting"
+file = "rustfmt.toml"
+summary = "3 settings"
+facts = ["[] edition = 2021 @3", "[] max_width = 120 @1", "[] use_small_heuristics = Max @2"]
+
+# One section per pattern, in file order; `root = true` sits in the "" section before the first pattern and is
+# counted in the summary.
+[[sheet]]
+title = "Editor settings"
+file = ".editorconfig"
+summary = "4 file patterns"
+facts = [
+    "[] root = true @2",
+    "[*] indent_style = space @5",
+    "[*] indent_size = 4 @6",
+    "[*.md] trim_trailing_whitespace = false @10",
+    "[Makefile] indent_style = tab @13",
+]
+
+# LFS rules first, then the rest, each in file order.
+[[sheet]]
+title = "Git attributes"
+file = ".gitattributes"
+summary = "3 LFS rules · 3 other"
+facts = [
+    "[Kept in Git LFS] *.png = filter=lfs diff=lfs merge=lfs -text @2",
+    "[Kept in Git LFS] *.psd = filter=lfs diff=lfs merge=lfs -text @3",
+    "[Kept in Git LFS] assets/**/*.wav = filter=lfs diff=lfs merge=lfs -text @4",
+    "[Other attributes] *.rs = text eol=lf @7",
+    "[Other attributes] *.sh = text eol=lf @8",
+    "[Other attributes] Cargo.lock = linguist-generated=true -diff @9",
+]
+
+# Groups start at the three `# ====` banners; a comment after a blank line or a closing banner is a note on the
+# rule below it, not a group. Rules: "group | pattern @line (note)".
+[gitignore]
+patterns = 8
+groups = ["1. Secrets @2: 2 patterns", "2. Build output @8: 3 patterns", "3. Editors @18: 3 patterns"]
+rules = [
+    "1. Secrets | .env @4",
+    "1. Secrets | !.env.example @5",
+    "2. Build output | /target/ @11 (what cargo builds)",
+    "2. Build output | /target-*/ @12",
+    "2. Build output | /ci-cache/ @15 (Old CI folders)",
+    "3. Editors | .idea/ @20",
+    "3. Editors | .vscode/ @21",
+    "3. Editors | *.swp @22",
+]

@@ -318,7 +318,7 @@ fn read_manifest(manifest: &Path) -> Option<Package> {
     let workspace = workspace_of(manifest, &toml);
     let ws_package = |key: &str| {
         let (_, ws) = workspace.as_ref()?;
-        ws.get("package")?.get(key)?.as_str().map(str::to_string)
+        ws.get("workspace")?.get("package")?.get(key)?.as_str().map(str::to_string)
     };
     let edition = match package.get("edition") {
         Some(toml::Value::String(e)) => e.clone(),

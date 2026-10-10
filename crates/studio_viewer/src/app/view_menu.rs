@@ -18,7 +18,7 @@ pub struct ViewToggle {
 }
 
 /// Every View toggle, in menu order.
-pub const VIEW_TOGGLES: [ViewToggle; 8] = [
+pub const VIEW_TOGGLES: [ViewToggle; 9] = [
     ViewToggle {
         label: "Wires",
         title: "Show wires",
@@ -76,6 +76,13 @@ pub const VIEW_TOGGLES: [ViewToggle; 8] = [
         get: |c| c.wire_kinds.assets,
         flag: |c| &mut c.wire_kinds.assets,
     },
+    ViewToggle {
+        label: "Dependencies",
+        title: "Show dependency wires",
+        tooltip: "Slate: a package depends on another, by a path dependency in its manifest.",
+        get: |c| c.wire_kinds.depends,
+        flag: |c| &mut c.wire_kinds.depends,
+    },
 ];
 
 /// The View dropdown. Ticking an entry keeps the menu open. Returns the toggle ticked, for the
@@ -102,7 +109,7 @@ mod tests {
         let mut canvas = CanvasState::default();
         assert!(canvas.show_wires && canvas.show_subnode_wires_globally);
         let docs = 1 << studio_graph::EdgeKind::Documentation as u32;
-        assert_eq!(canvas.wire_kinds.mask(), 0b11_1111 & !docs, "every kind but documentation shows by default");
+        assert_eq!(canvas.wire_kinds.mask(), 0b111_1111 & !docs, "every kind but documentation shows by default");
         for toggle in &VIEW_TOGGLES {
             *(toggle.flag)(&mut canvas) = false;
             assert!(!(toggle.get)(&canvas), "{} reads its own flag", toggle.label);

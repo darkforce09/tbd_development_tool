@@ -9,6 +9,7 @@ use super::common::{node_rel_path, resolve_link, slash_path};
 use super::members::{attach_member_ports, build_member_nodes, link_member_id, member_calls, MemberPortIndex};
 use super::rust_paths::{self, FileRefs, Outcome, RustPathStats, Target};
 use super::ProjectStats;
+use crate::analysis::crate_graph::{DepKind, PathDep};
 use crate::extractor::{detect_language_by_path, ExtractedFile, ExtractedProject, SourceLang, UseItem};
 use crate::tree::{DirKind, FileKind, ProjectTree};
 
@@ -52,10 +53,12 @@ pub fn build_files_graph(project: &ExtractedProject) -> (Graph, ProjectStats) {
     );
     stats.r1 = r1.stats.clone();
     wiring.queue_deferred_rust(&graph, &parsed, &r1);
+    let manifest_wires = wiring.manifest_wires(&r1.path_deps);
     wiring.connect(&mut graph, &mut stats.r1);
+    stats.r1.manifest_edges = connect_manifest_wires(&mut graph, &manifest_wires);
     let proven = Provenance::proven(Basis::PathResolution);
     stats.r1.proven_edges = graph.edges.iter().filter(|e| e.provenance == proven).count();
-    summarize_folders(&mut graph);
+    summarize_folders(&mut graph, &project.tree);
     stats.file_count = project.tree.files.len();
 
     graph.layout_folder_tree();
@@ -336,14 +339,15 @@ fn describe_parsed(file: &ExtractedFile) -> String {
     }
 }
 
-/// Puts what each folder holds on its subtitle (files and tests inside it, at any depth) and
-/// the first sentence of its README as what it is for. Folders not loaded or unreadable keep
-/// theirs.
-pub fn summarize_folders(graph: &mut Graph) {
+/// Puts what each folder holds on its subtitle (files and tests inside it, at any depth, and its
+/// largest file classes, with what `tree` knows git ignores) and the first sentence of its README
+/// as what it is for. Folders not loaded or unreadable keep theirs.
+pub fn summarize_folders(graph: &mut Graph, tree: &ProjectTree) {
     let index: HashMap<String, usize> = graph.clusters.iter().enumerate().map(|(i, c)| (c.id.clone(), i)).collect();
     let count = graph.clusters.len();
     let mut files = vec![0usize; count];
     let mut tests = vec![0u64; count];
+    let mut classes = folder_classes(graph, tree);
     for (i, c) in graph.clusters.iter().enumerate() {
         files[i] = c.node_ids.len();
         tests[i] = c.node_ids.iter().filter_map(|id| graph.nodes.get(id)).map(|n| n.test_count as u64).sum();
@@ -354,6 +358,9 @@ pub fn summarize_folders(graph: &mut Graph) {
         if let Some(&p) = graph.clusters[i].parent_id.as_ref().and_then(|p| index.get(p)) {
             files[p] += files[i];
             tests[p] += tests[i];
+            let child = std::mem::take(&mut classes[i]);
+            classes[p].add(&child);
+            classes[i] = child;
         }
     }
     for i in 0..count {
@@ -380,6 +387,7 @@ pub fn summarize_folders(graph: &mut Graph) {
             1 => parts.push("1 test".to_string()),
             n => parts.push(format!("{} tests", group_thousands(n))),
         }
+        parts.push(classes[i].top(3));
         let mut subtitle = parts.join(" · ");
         if let Some(about) = &about {
             subtitle = format!("{subtitle} — {about}");
@@ -387,6 +395,69 @@ pub fn summarize_folders(graph: &mut Graph) {
         c.subtitle = Some(subtitle);
         c.about = about;
     }
+}
+
+/// Files per class in one folder, and the tool conventions that decided any of them.
+#[derive(Default)]
+struct ClassCounts {
+    counts: [u64; crate::classify::FileClass::ALL.len()],
+    conventions: [std::collections::BTreeSet<&'static str>; crate::classify::FileClass::ALL.len()],
+}
+
+impl ClassCounts {
+    fn add(&mut self, other: &ClassCounts) {
+        for (i, n) in other.counts.iter().enumerate() {
+            self.counts[i] += n;
+            self.conventions[i].extend(other.conventions[i].iter().copied());
+        }
+    }
+
+    /// The `n` largest classes, largest first (ties in table order): "12 code, 3 test files
+    /// (tool convention: Cargo), 1 docs".
+    fn top(&self, n: usize) -> String {
+        use crate::classify::FileClass;
+        let mut order: Vec<usize> = (0..FileClass::ALL.len()).filter(|&i| self.counts[i] > 0).collect();
+        order.sort_by(|&a, &b| self.counts[b].cmp(&self.counts[a]).then(a.cmp(&b)));
+        let shown: Vec<String> = order
+            .into_iter()
+            .take(n)
+            .map(|i| {
+                let class = FileClass::ALL[i];
+                let label = if class == FileClass::Tests { "test files" } else { class.label() };
+                let mut text = format!("{} {label}", group_thousands(self.counts[i]));
+                if !self.conventions[i].is_empty() {
+                    let tools: Vec<&str> = self.conventions[i].iter().copied().collect();
+                    text.push_str(&format!(" (tool convention: {})", tools.join(", ")));
+                }
+                text
+            })
+            .collect();
+        shown.join(", ")
+    }
+}
+
+/// Each folder's own files by class, from the classification table with the scan's inputs (every
+/// path and what git ignores; Linguist overrides are not known here).
+fn folder_classes(graph: &Graph, tree: &ProjectTree) -> Vec<ClassCounts> {
+    use crate::classify::{classify, FileClass, RuleKind};
+    use rayon::prelude::*;
+    let inputs = crate::tree::class_inputs(tree);
+    let class_index = |class: FileClass| FileClass::ALL.iter().position(|&c| c == class).unwrap_or(0);
+    graph
+        .clusters
+        .par_iter()
+        .map(|c| {
+            let mut counts = ClassCounts::default();
+            for rel in c.node_ids.iter().filter_map(|id| graph.nodes.get(id)).filter_map(node_rel_path) {
+                let (class, rule) = classify(&rel, &inputs);
+                counts.counts[class_index(class)] += 1;
+                if rule.kind == RuleKind::Convention {
+                    counts.conventions[class_index(class)].insert(rule.basis);
+                }
+            }
+            counts
+        })
+        .collect()
 }
 
 /// The first sentence of a document's first paragraph of text (badges, headings and HTML
@@ -934,6 +1005,27 @@ impl Wiring {
         }
     }
 
+    /// One wire per pair of packages joined by a normal or build path dependency: (dependency's manifest card,
+    /// its out-port, dependent's manifest card, its in-port, line of the first entry declaring it). Dev
+    /// dependencies make no wire: a wire could not tell that only the package's tests use the other.
+    fn manifest_wires(&self, deps: &[PathDep]) -> Vec<ManifestWire> {
+        let mut seen: HashSet<(NodeId, NodeId)> = HashSet::new();
+        let mut out = Vec::new();
+        // `deps` is sorted by (manifest, target, kind, line): the first entry of a pair is its strongest.
+        for d in deps.iter().filter(|d| d.kind != DepKind::Dev) {
+            let (Some(&provider), Some(&consumer)) =
+                (self.abs_to_node.get(&d.target), self.abs_to_node.get(&d.manifest))
+            else {
+                continue;
+            };
+            let (Some(p), Some(c)) = (self.file_ports.get(&provider), self.file_ports.get(&consumer)) else { continue };
+            if seen.insert((provider, consumer)) {
+                out.push((provider, p.output, consumer, c.input, d.line));
+            }
+        }
+        out
+    }
+
     fn resolve_file(&self, target_name: &str) -> Option<NodeId> {
         let clean = target_name
             .trim_start_matches("./")
@@ -954,6 +1046,22 @@ impl Wiring {
             .or_else(|| self.module_to_file.get(stem))
             .copied()
     }
+}
+
+/// A manifest wire: (provider card, out-port, consumer card, in-port, line in the consumer's manifest).
+type ManifestWire = (NodeId, PortId, NodeId, PortId, Option<usize>);
+
+/// Adds the manifest wires, Proven by the manifest; the wire's `source_line` is the dependency's line in the
+/// dependent's manifest. Returns how many were added.
+fn connect_manifest_wires(graph: &mut Graph, wires: &[ManifestWire]) -> usize {
+    let mut added = 0;
+    for &(provider, out, consumer, input, line) in wires {
+        if let Some(id) = graph.connect_labeled(provider, out, consumer, input, EdgeKind::Depends, None, None, line) {
+            graph.set_provenance(id, Provenance::proven(Basis::Manifest));
+            added += 1;
+        }
+    }
+    added
 }
 
 /// The out-port of the member row R1's target names (same line, same bare name), if it has one.
@@ -1018,12 +1126,14 @@ mod tests {
         let mut wiring = Wiring { defer_rust: true, ..Default::default() };
         insert_folder_tree(&mut flat, &project.tree, Path::new(""), TreeRoot::New(&project.name), &parsed, &mut wiring);
         wiring.queue_deferred_rust(&flat, &parsed, &r1);
+        let manifest_wires = wiring.manifest_wires(&r1.path_deps);
         wiring.connect(&mut flat, &mut RustPathStats::default());
+        connect_manifest_wires(&mut flat, &manifest_wires);
         let ids: Vec<_> = flat.edges.iter().map(|e| e.id).collect();
         for id in ids {
             flat.set_provenance(id, Provenance::default());
         }
-        summarize_folders(&mut flat);
+        summarize_folders(&mut flat, &project.tree);
         flat.layout_folder_tree();
 
         assert_eq!(flat.edges.len(), graph.edges.len());

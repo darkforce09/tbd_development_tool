@@ -147,7 +147,8 @@ fn main() {
     // The disk as git sees it, and settings.
     let canonical = root.canonicalize().unwrap_or(root.clone());
     let started = Instant::now();
-    match studio_sources::read_git_disk(&runner, &canonical) {
+    let disk = studio_sources::read_git_disk(&runner, &canonical);
+    match &disk {
         Ok(disk) => {
             println!("  git                read in {:.2?}", started.elapsed());
             println!("    tracked files    {}", disk.tracked);
@@ -155,9 +156,16 @@ fn main() {
             println!("    ignored entries  {}", disk.ignored.len());
             let c = disk.changes;
             println!("    changes          {} ({} modified, {} untracked)", c.total(), c.modified, c.untracked);
-            if let Some(target) = disk.ignored.iter().find(|e| e.path == "target/") {
-                if let Some(rule) = &target.rule {
-                    println!("    target/ ignored by {}:{} {}", rule.source.display(), rule.line, rule.pattern);
+            for entry in disk.ignored.iter().filter(|e| e.path.ends_with('/')) {
+                match &entry.rule {
+                    Some(rule) => println!(
+                        "    {:<40} ignored by {}:{} {}",
+                        entry.path,
+                        rule.source.display(),
+                        rule.line,
+                        rule.pattern
+                    ),
+                    None => println!("    {:<40} ignored (no rule found)", entry.path),
                 }
             }
         }
@@ -187,13 +195,6 @@ fn main() {
     }
     let (most, n) = by_folder.iter().max_by_key(|(_, n)| **n).map(|(f, n)| (f.clone(), *n)).unwrap_or_default();
     println!("    JSON Schemas     {} ({n} in {most})", settings.schemas.len());
-    if args_has("--du") {
-        for folder in ["target", "target-glibc236"] {
-            let started = Instant::now();
-            let bytes = studio_sources::du_bytes(&canonical.join(folder));
-            println!("    du {folder:<14} {bytes} bytes in {:.2?}", started.elapsed());
-        }
-    }
 
     // Tickets (`.ai/tickets`), with every `shipped_at` asked of git once.
     let started = Instant::now();
@@ -248,7 +249,18 @@ fn main() {
         ("worktrees", history.map_or(0, |h| h.1)),
         ("tickets", tickets),
     ];
-    palette_section(&canonical, &graph, &sources);
+    let tree = match studio_parser::scan_project(&canonical) {
+        Ok(scanned) => scanned.tree,
+        Err(e) => return println!("  scan               {e:?}"),
+    };
+    heavy_section(&tree);
+    let ignored: Vec<String> =
+        disk.as_ref().map(|d| d.ignored.iter().map(|e| e.path.clone()).collect()).unwrap_or_default();
+    if args_has("--du") {
+        du_section(&canonical, &tree, &ignored);
+    }
+    class_section(&tree, disk.as_ref().ok());
+    palette_section(&tree, &graph, &sources);
 
     let about: Vec<(&str, &str)> = graph
         .clusters
@@ -263,19 +275,129 @@ fn main() {
     }
 }
 
+/// Heavy folders (listed, not descended) with their reason, and what the scan found ignored.
+fn heavy_section(tree: &studio_parser::tree::ProjectTree) {
+    let heavy: Vec<_> = tree.heavy_dirs().collect();
+    let ignored_dirs =
+        heavy.iter().filter(|(_, _, i)| i.reason == studio_parser::tree::HeavyReason::GitIgnored).count();
+    println!("  heavy folders      {}", heavy.len());
+    for (_, dir, info) in &heavy {
+        println!("    {:<50} {}", dir.rel.display(), info.reason.label());
+    }
+    println!("  ignored (scan)     {ignored_dirs} folders, {} single files", tree.ignored_files.len());
+}
+
+/// `--du`: the bytes on disk of every ignored entry git reports and every heavy folder the scan
+/// found, as `du -s --block-size=1` counts them.
+fn du_section(root: &std::path::Path, tree: &studio_parser::tree::ProjectTree, ignored: &[String]) {
+    let heavy = tree.heavy_dirs().map(|(_, d, _)| d.rel.to_string_lossy().replace('\\', "/"));
+    let entries: std::collections::BTreeSet<String> =
+        ignored.iter().map(|p| p.trim_end_matches('/').to_string()).chain(heavy).collect();
+    println!("  du                 {} ignored or heavy entries", entries.len());
+    for entry in &entries {
+        let started = Instant::now();
+        let bytes = studio_sources::du_bytes(&root.join(entry));
+        println!("    du {entry:<40} {bytes} bytes in {:.2?}", started.elapsed());
+    }
+}
+
+/// Files per class, from the classification table with the scan's inputs plus the Linguist
+/// attributes git reports, and every folder each tool convention classifies.
+fn class_section(tree: &studio_parser::tree::ProjectTree, disk: Option<&studio_sources::GitDisk>) {
+    use studio_parser::classify::{classify, FileClass, RuleKind, RULES};
+    let mut inputs = studio_parser::tree::class_inputs(tree);
+    if let Some(disk) = disk {
+        inputs.generated = disk.generated_paths.clone();
+        inputs.vendored = disk.vendored_paths.clone();
+        inputs.documentation = disk.documentation_paths.clone();
+    }
+    let started = Instant::now();
+    let decided: Vec<(String, FileClass, usize)> = tree
+        .files
+        .iter()
+        .map(|f| {
+            let rel = f.rel.to_string_lossy().replace('\\', "/");
+            let (class, rule) = classify(&rel, &inputs);
+            let row = RULES.iter().position(|r| std::ptr::eq(r, rule)).unwrap_or(0);
+            (rel, class, row)
+        })
+        .collect();
+    println!(
+        "  classes            {} files in {:.2?} (Linguist: {} generated, {} vendored)",
+        decided.len(),
+        started.elapsed(),
+        inputs.generated.len(),
+        inputs.vendored.len()
+    );
+    for class in FileClass::ALL {
+        let of_class: Vec<&(String, FileClass, usize)> = decided.iter().filter(|d| d.1 == class).collect();
+        if of_class.is_empty() {
+            continue;
+        }
+        let mut bases: std::collections::BTreeMap<&str, usize> = Default::default();
+        for d in of_class.iter().filter(|d| RULES[d.2].kind == RuleKind::Convention) {
+            *bases.entry(RULES[d.2].basis).or_default() += 1;
+        }
+        let bases: Vec<String> = bases.iter().map(|(b, n)| format!("tool convention: {b} {n}")).collect();
+        let bases = if bases.is_empty() { String::new() } else { format!(" ({})", bases.join(", ")) };
+        println!("    {:<16} {}{bases}", class.label(), of_class.len());
+    }
+    for (row, rule) in RULES.iter().enumerate().filter(|(_, r)| r.kind == RuleKind::Convention) {
+        let folders: std::collections::BTreeSet<String> =
+            decided.iter().filter(|d| d.2 == row).map(|d| convention_folder(rule.pattern, &d.0, &inputs)).collect();
+        let files = decided.iter().filter(|d| d.2 == row).count();
+        if files == 0 {
+            continue;
+        }
+        println!(
+            "    rule {:<2} {} {} -> {}: {files} files in {} folders",
+            row + 1,
+            rule.why(),
+            rule.pattern,
+            rule.class.label(),
+            folders.len()
+        );
+        let all = args_has("--classes");
+        for folder in folders.iter().take(if all { usize::MAX } else { 12 }) {
+            println!("      {folder}");
+        }
+        if !all && folders.len() > 12 {
+            println!("      … {} more (--classes lists all)", folders.len() - 12);
+        }
+    }
+}
+
+/// The folder a convention classified `rel` through: the folder named right after the manifest
+/// (`crates/app/tests` for `{Cargo.toml}/tests/**`), or the file's own folder.
+fn convention_folder(pattern: &str, rel: &str, inputs: &studio_parser::ClassInputs) -> String {
+    let parts: Vec<&str> = rel.split('/').collect();
+    let parent = parts[..parts.len() - 1].join("/");
+    for alt in pattern.split(' ') {
+        let Some((manifest, rest)) = alt.strip_prefix('{').and_then(|p| p.split_once("}/")) else { continue };
+        let first = rest.split('/').next().unwrap_or("");
+        for k in (0..parts.len() - 1).rev().filter(|&k| parts[k] == first) {
+            let beside = if k == 0 { manifest.to_string() } else { format!("{}/{manifest}", parts[..k].join("/")) };
+            if inputs.files.contains(&beside) {
+                return parts[..=k].join("/");
+            }
+        }
+    }
+    if parent.is_empty() {
+        ".".to_string()
+    } else {
+        parent
+    }
+}
+
 fn args_has(flag: &str) -> bool {
     std::env::args().any(|a| a == flag)
 }
 
 /// The palette's file and symbol segments, built the way the loader builds them, and what the
 /// sources read above would add to slot 2 (the viewer builds that segment; this counts its inputs).
-fn palette_section(root: &std::path::Path, graph: &studio_graph::Graph, sources: &[(&str, usize)]) {
-    let tree = match studio_parser::scan_project(root) {
-        Ok(scanned) => scanned.tree,
-        Err(e) => return println!("  palette            {e:?}"),
-    };
+fn palette_section(tree: &studio_parser::tree::ProjectTree, graph: &studio_graph::Graph, sources: &[(&str, usize)]) {
     let started = Instant::now();
-    let files = studio_parser::file_segment(&studio_parser::FileListing::from_tree(&tree, ""));
+    let files = studio_parser::file_segment(&studio_parser::FileListing::from_tree(tree, ""));
     let files_time = started.elapsed();
     let started = Instant::now();
     let symbols = studio_parser::symbol_segment(graph);

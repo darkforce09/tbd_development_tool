@@ -1,0 +1,80 @@
+# What packages.rs reads from this workspace, the same through `cargo metadata --offline --no-deps` and through
+# the manifests alone (tests/packages_fixture.rs checks both). Members are a glob (`crates/*`) plus a plain path.
+#
+# - app: src/main.rs, src/bin/extra.rs, a `[[bin]]` with its own path, examples/demo.rs and examples/multi/main.rs;
+#   path deps (one optional), a renamed registry dep, a platform dep and a workspace dev-dep.
+# - base: a library with a build script, an integration test and a registry dep through the workspace.
+# - macros: a proc-macro library.
+# - quiet: `autobins = false`, so src/main.rs and src/bin/hidden.rs are not targets; only its `[[bin]]` is.
+# - runner: a binary outside `crates/`, with a path dep through `[workspace.dependencies]`.
+#
+# Lines: target "kind name source"; dependency "name [as key] kind [path=folder] [target=platform] [optional]".
+# Paths are relative to the workspace folder.
+
+packages = ["app", "base", "macros", "quiet", "runner"]
+
+[package.app]
+version = "0.2.0"
+edition = "2021"
+manifest = "crates/app/Cargo.toml"
+root = "crates/app"
+proc_macro = false
+targets = [
+    "binary app crates/app/src/main.rs",
+    "binary extra crates/app/src/bin/extra.rs",
+    "binary gen crates/app/src/generate.rs",
+    "example demo crates/app/examples/demo.rs",
+    "example multi crates/app/examples/multi/main.rs",
+]
+depends_on = ["base", "macros"]
+dependencies = [
+    "base normal path=crates/base",
+    "libc normal target=cfg(unix)",
+    "macros normal path=crates/macros optional",
+    "serde dev",
+    "serde_json as json normal",
+]
+
+[package.base]
+version = "0.1.0"
+edition = "2021"
+manifest = "crates/base/Cargo.toml"
+root = "crates/base"
+proc_macro = false
+targets = [
+    "library base crates/base/src/lib.rs",
+    "test smoke crates/base/tests/smoke.rs",
+    "build script build-script-build crates/base/build.rs",
+]
+depends_on = []
+dependencies = ["serde normal"]
+
+[package.macros]
+version = "0.1.0"
+edition = "2021"
+manifest = "crates/macros/Cargo.toml"
+root = "crates/macros"
+proc_macro = true
+targets = ["library macros crates/macros/src/lib.rs"]
+depends_on = []
+dependencies = []
+
+[package.quiet]
+version = "1.0.0"
+edition = "2021"
+manifest = "crates/quiet/Cargo.toml"
+root = "crates/quiet"
+proc_macro = false
+targets = ["binary explicit crates/quiet/src/explicit.rs"]
+depends_on = []
+dependencies = []
+
+[package.runner]
+version = "0.3.0"
+edition = "2021"
+manifest = "tools/runner/Cargo.toml"
+root = "tools/runner"
+proc_macro = false
+targets = ["binary runner tools/runner/src/main.rs"]
+depends_on = ["base"]
+dependencies = ["base normal path=crates/base"]

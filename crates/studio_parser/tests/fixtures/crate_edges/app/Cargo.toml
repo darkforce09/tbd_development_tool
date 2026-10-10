@@ -1,0 +1,11 @@
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+render = { path = "../render" }
+model = { path = "../model" }
+
+[build-dependencies]
+core = { path = "../core" }

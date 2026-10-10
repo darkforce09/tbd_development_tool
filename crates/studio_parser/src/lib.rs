@@ -1,6 +1,7 @@
 pub mod analysis;
 pub mod builder;
 pub mod cache;
+pub mod classify;
 pub mod edit;
 pub mod extractor;
 pub mod fuzzy;
@@ -17,6 +18,7 @@ pub use builder::{
 pub use cache::{
     clear_project_cache, load_project_cache, save_project_cache, user_cache_dir_for_project, CachedProjectData,
 };
+pub use classify::{classify, ClassInputs, FileClass, Rule, RuleKind, HEAVY_MARKERS, RULES};
 pub use edit::{apply_edit, atomic_write, content_hash, EditError, EditOrigin};
 pub use extractor::{
     extract_file, extract_project, EnumItem, ExtractedCrate, ExtractedFile, ExtractedProject, FieldInfo, FunctionItem,
@@ -501,6 +503,8 @@ mod tests {
         write("src/lib/util.py", b"def helper():\n    pass\n");
         write("assets/logo.png", b"\x89PNG\r\n\x1a\n\0\0");
         write("assets/blob.bin", b"abc\0def");
+        // npm 7+ writes this marker into every node_modules it fills: that, not the name, makes it heavy.
+        write("node_modules/.package-lock.json", b"{}");
         write("node_modules/pkg/index.js", b"export function dep() {}\n");
         write("node_modules/pkg/package.json", b"{}");
         std::fs::create_dir_all(r.join("empty")).unwrap();
@@ -545,14 +549,14 @@ mod tests {
         // node_modules is a collapsed placeholder with totals and no cards yet.
         let nm = graph.clusters.iter().find(|c| c.id == "dir:node_modules").unwrap().clone();
         assert!(nm.is_collapsed());
-        assert_eq!(nm.lazy.as_ref().and_then(|l| l.totals).map(|t| t.file_count), Some(2));
+        assert_eq!(nm.lazy.as_ref().and_then(|l| l.totals).map(|t| t.file_count), Some(3));
         assert!(nm.node_ids.is_empty() && nm.child_cluster_ids.is_empty());
         assert!(graph.clusters.iter().find(|c| c.id == "dir:empty").unwrap().subtitle.as_deref() == Some("empty"));
 
         // Expanding it loads its files, parsed, under the right folders.
         let loaded = load_folder_contents(Path::new(&nm.lazy.unwrap().abs_path), "node_modules");
         let added = materialize_folder(&mut graph, "dir:node_modules", &loaded.tree, &loaded.parsed).unwrap();
-        assert_eq!(added, 2);
+        assert_eq!(added, 3);
         let nm = graph.clusters.iter().find(|c| c.id == "dir:node_modules").unwrap();
         assert!(!nm.is_collapsed() && nm.lazy.is_none());
         let pkg = graph.clusters.iter().find(|c| c.id == "dir:node_modules/pkg").expect("nested folder");
@@ -563,7 +567,10 @@ mod tests {
         // The folder brings its own search segments, with project-relative paths, and each symbol
         // key finds its member on the card the load made.
         let paths: Vec<_> = loaded.files.entries().iter().map(|e| e.path.clone().unwrap()).collect();
-        assert_eq!(paths, ["node_modules/pkg/index.js", "node_modules/pkg/package.json"]);
+        assert_eq!(
+            paths,
+            ["node_modules/.package-lock.json", "node_modules/pkg/index.js", "node_modules/pkg/package.json"]
+        );
         assert!(!loaded.symbols.is_empty());
         for sym in loaded.symbols.entries() {
             let card = graph
@@ -960,6 +967,6 @@ Link back: [Hub](../README.md)
         let (graph, _) = load_rust_project(dir.path()).unwrap();
         let api = graph.clusters.iter().find(|c| c.id == folder_cluster_id(Path::new("api"))).unwrap();
         assert_eq!(api.about.as_deref(), Some("Serves the website."));
-        assert_eq!(api.subtitle.as_deref(), Some("2 files · 2 tests — Serves the website."));
+        assert_eq!(api.subtitle.as_deref(), Some("2 files · 2 tests · 1 code, 1 docs — Serves the website."));
     }
 }

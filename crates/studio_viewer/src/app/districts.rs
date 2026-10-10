@@ -5,10 +5,11 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use studio_canvas::districts::files::ClassView;
 use studio_canvas::{
     BranchView, ChangesView, CommitBead, FileChangeView, FilesView, IgnoredView, PackageBrick, PipelineGroup,
     PipelineLane, PipelineLink, PipelineStep, PipelineView, RunView, SessionChip, SettingRow, SettingsCardView,
-    ShippedView, StepSlot, TicketLinkView, TicketView, ToolTile, WorkflowRow, WorktreeRowView,
+    ShippedView, StepSlot, Stop, TicketLinkView, TicketView, ToolTile, WorkflowRow, WorktreeRowView,
 };
 use studio_graph::{human_bytes, EvidenceTier, Graph};
 use studio_sources::tickets::TICKETS_FOLDER;
@@ -60,8 +61,18 @@ fn tile(tool: &Tool) -> ToolTile {
 }
 
 /// The Run district's view: the tools (an alias that only runs a binary is shown once, as the
-/// binary), CI workflows, tests by package and the package wall.
-pub fn run_view(tools: &Tools, packages: &Packages, graph: &Graph) -> RunView {
+/// binary), CI workflows, tests by package and the package wall. Without packages (a project
+/// with no Cargo), the wall says why, in the packages source's words.
+pub fn run_view(
+    tools: &Tools,
+    packages: Option<&Packages>,
+    graph: &Graph,
+    status: &BTreeMap<SourceKind, SourceState>,
+) -> RunView {
+    let packages_note =
+        packages.is_none().then(|| source_note(status, SourceKind::Packages, "Packages", "Reading packages…"));
+    let no_packages = Packages::default();
+    let packages = packages.unwrap_or(&no_packages);
     let mut top: Vec<&Tool> = tools.tools.iter().filter(|t| !matches!(t.kind, ToolKind::Workflow)).collect();
     let binaries: Vec<String> =
         top.iter().filter(|t| t.kind == ToolKind::Binary).map(|t| t.invocation.clone()).collect();
@@ -92,7 +103,24 @@ pub fn run_view(tools: &Tools, packages: &Packages, graph: &Graph) -> RunView {
                 binaries: p.targets.iter().filter(|t| t.kind == TargetKind::Bin).count(),
             })
             .collect(),
+        packages_note,
     }
+}
+
+/// Each district's note while it has no view: its source's own words when the project has
+/// nothing for it or it failed. A district whose source is still reading has none.
+pub fn district_notes(status: &BTreeMap<SourceKind, SourceState>) -> BTreeMap<Stop, String> {
+    let sources = [
+        (Stop::Run, SourceKind::Tools, "The project's tools"),
+        (Stop::Pipeline, SourceKind::Pipeline, "The pipeline"),
+        (Stop::Files, SourceKind::Disk, "The disk"),
+        (Stop::Changes, SourceKind::Git, "Git"),
+    ];
+    sources
+        .into_iter()
+        .filter(|(_, kind, _)| matches!(status.get(kind), Some(SourceState::Unavailable(_) | SourceState::Failed(_))))
+        .map(|(stop, kind, what)| (stop, source_note(status, kind, what, "")))
+        .collect()
 }
 
 /// Tests per package (files belong to the innermost package holding them), most first.
@@ -225,14 +253,43 @@ pub fn files_view(disk: Option<&GitDisk>, sizes: &BTreeMap<PathBuf, u64>, settin
             sections: vec![(String::new(), rows)],
         });
     }
-    FilesView {
+    let view = FilesView {
         tracked: disk.map(|d| d.tracked),
         lfs: disk.map(|d| d.lfs),
         changes: disk.map(|d| format!("{} changes", d.changes.total())),
         ignored,
         sizes: top,
         cards,
-    }
+        classes: disk.map(class_views).unwrap_or_default(),
+        git_note: None,
+        lfs_paths: disk.map(|d| d.lfs_paths.clone()).unwrap_or_default(),
+        generated: disk.map(|d| d.generated_paths.clone()).unwrap_or_default(),
+        vendored: disk.map(|d| d.vendored_paths.clone()).unwrap_or_default(),
+        lookups: Default::default(),
+    };
+    view.build_lookups();
+    view
+}
+
+/// What the Files district says instead of git's counts when the disk source has none: its own
+/// words ("No git repository here"), or that git could not be read.
+pub fn files_git_note(status: &BTreeMap<SourceKind, SourceState>) -> Option<String> {
+    matches!(status.get(&SourceKind::Disk), Some(SourceState::Unavailable(_) | SourceState::Failed(_)))
+        .then(|| source_note(status, SourceKind::Disk, "Git", ""))
+}
+
+/// Tracked files by class, as the disk job classified them (with git's Linguist attributes and
+/// full project-relative paths), in the table's order.
+fn class_views(disk: &GitDisk) -> Vec<ClassView> {
+    disk.classes
+        .iter()
+        .map(|c| ClassView {
+            label: c.class.label().to_string(),
+            files: c.files,
+            bytes: c.bytes,
+            rules: c.rules.clone(),
+        })
+        .collect()
 }
 
 /// Changed files a row lists (the district shows as many as fit).
@@ -252,6 +309,25 @@ fn source_note(status: &BTreeMap<SourceKind, SourceState>, kind: SourceKind, wha
         Some(SourceState::Failed(e)) => format!("{what} could not be read: {e}"),
         _ => reading.to_string(),
     }
+}
+
+/// The row that holds a folder's sessions when it has no git.
+pub const NO_GIT_ROW: &str = "project folder · no git";
+
+/// A lane's session chips, the first `LANE_SESSIONS` of `sessions` (slug and start only).
+fn session_chips(sessions: &[&Session], now_unix_ms: i64) -> Vec<SessionChip> {
+    sessions
+        .iter()
+        .take(LANE_SESSIONS)
+        .map(|s| SessionChip {
+            id: s.id.clone(),
+            slug: s.slug.clone().unwrap_or_else(|| s.id.chars().take(8).collect()),
+            started_ms: s.started,
+            touches: s.touch_count,
+            has_plan: s.plan.is_some(),
+            started: ago(s.started, now_unix_ms),
+        })
+        .collect()
 }
 
 /// How long ago `then_ms` was at `now_ms`, in words; past a week, the (UTC) date.
@@ -357,22 +433,6 @@ pub fn changes_view(
         view.tickets.more_next = waiting.saturating_sub(view.tickets.next.len());
     }
 
-    let Some(history) = history else {
-        // A folder without git says so through the disk source too, which may report first.
-        view.message = Some(match (status.get(&SourceKind::Git), status.get(&SourceKind::Disk)) {
-            (Some(SourceState::Unavailable(_) | SourceState::Failed(_)), _) | (_, None) => {
-                source_note(status, SourceKind::Git, "Git", "Reading git…")
-            }
-            (_, Some(SourceState::Unavailable(m))) => m.clone(),
-            _ => source_note(status, SourceKind::Git, "Git", "Reading git…"),
-        });
-        return view;
-    };
-    view.commits_on_head = history.commit_count;
-    view.local_branches = history.branches.len();
-    view.co_authored = history.co_authored_commits;
-    view.commits_read = history.commits.len();
-
     let sessions_at = |path: &Path| -> Vec<&Session> {
         let Some(a) = agents else { return Vec::new() };
         let mut found: Vec<&Session> =
@@ -380,6 +440,40 @@ pub fn changes_view(
         found.sort_by(|x, y| y.started.cmp(&x.started).then(x.id.cmp(&y.id)));
         found
     };
+
+    let Some(history) = history else {
+        // A folder without git says so through the disk source too, which may report first.
+        let message = match (status.get(&SourceKind::Git), status.get(&SourceKind::Disk)) {
+            (Some(SourceState::Unavailable(_) | SourceState::Failed(_)), _) | (_, None) => {
+                source_note(status, SourceKind::Git, "Git", "Reading git…")
+            }
+            (_, Some(SourceState::Unavailable(m))) => m.clone(),
+            _ => source_note(status, SourceKind::Git, "Git", "Reading git…"),
+        };
+        // Sessions still worked in the folder: one row holds them, the message is its note.
+        // The project root is the agents index's first root.
+        let root = agents.and_then(|a| a.roots.first());
+        let sessions = root.map(|r| sessions_at(r)).unwrap_or_default();
+        if let (Some(root), false) = (root, sessions.is_empty()) {
+            let chips = session_chips(&sessions, now_unix_ms);
+            view.rows.push(WorktreeRowView {
+                branch: NO_GIT_ROW.to_string(),
+                label: root.display().to_string(),
+                path: root.clone(),
+                more_sessions: sessions.len() - chips.len(),
+                sessions: chips,
+                note: Some(message.clone()),
+                ..Default::default()
+            });
+        }
+        view.message = Some(message);
+        return view;
+    };
+    view.commits_on_head = history.commit_count;
+    view.local_branches = history.branches.len();
+    view.co_authored = history.co_authored_commits;
+    view.commits_read = history.commits.len();
+
     let bead = |c: &Commit| CommitBead {
         id: c.id.clone(),
         short: c.short.clone(),
@@ -427,18 +521,7 @@ pub fn changes_view(
         .filter(|(_, n)| *n > 0)
         .collect();
         let sessions = sessions_at(&w.path);
-        let chips: Vec<SessionChip> = sessions
-            .iter()
-            .take(LANE_SESSIONS)
-            .map(|s| SessionChip {
-                id: s.id.clone(),
-                slug: s.slug.clone().unwrap_or_else(|| s.id.chars().take(8).collect()),
-                started_ms: s.started,
-                touches: s.touch_count,
-                has_plan: s.plan.is_some(),
-                started: ago(s.started, now_unix_ms),
-            })
-            .collect();
+        let chips = session_chips(&sessions, now_unix_ms);
 
         // Tickets the branch names: matched by name only, so Unresolved.
         let mut row_tickets = Vec::new();
@@ -466,6 +549,7 @@ pub fn changes_view(
             more_sessions: sessions.len() - chips.len(),
             sessions: chips,
             tickets: row_tickets,
+            note: None,
         });
     }
 
@@ -557,6 +641,114 @@ mod tests {
     use std::path::PathBuf;
     use studio_sources::{Package, PackageSource, Target};
 
+    /// The Files view carries git's per-file marks and has its lookups built when made.
+    #[test]
+    fn the_files_view_carries_marks_sizes_and_rule_counts() {
+        use studio_sources::{IgnoreFile, IgnoreGroup, IgnoreRule, IgnoreRuleLine, IgnoredEntry};
+        let gitignore = PathBuf::from("/p/.gitignore");
+        let set = |paths: &[&str]| paths.iter().map(|p| p.to_string()).collect::<std::collections::BTreeSet<_>>();
+        let disk = GitDisk {
+            tracked: 3,
+            lfs: 1,
+            lfs_paths: set(&["art/logo.png"]),
+            generated_paths: set(&["gen/api.rs"]),
+            vendored_paths: set(&["vendor/lib.js"]),
+            ignored: vec![IgnoredEntry {
+                path: "target/".into(),
+                rule: Some(IgnoreRule { source: gitignore.clone(), line: 2, pattern: "/target/".into() }),
+            }],
+            ..Default::default()
+        };
+        let sizes = BTreeMap::from([(PathBuf::from("target"), 4096), (PathBuf::from("src"), 100)]);
+        let rule = IgnoreRuleLine { pattern: "/target/".into(), line: 2, note: None };
+        let settings = Settings {
+            gitignore: Some(IgnoreFile {
+                file: gitignore.clone(),
+                groups: vec![IgnoreGroup { title: "build".into(), line: 1, rules: vec![rule] }],
+            }),
+            ..Default::default()
+        };
+        let view = files_view(Some(&disk), &sizes, Some(&settings));
+        assert_eq!((view.lfs_paths.clone(), view.generated.clone()), (disk.lfs_paths, disk.generated_paths));
+        assert_eq!(view.vendored, disk.vendored_paths);
+        assert_eq!(view.sizes, [("target".to_string(), 4096), ("src".to_string(), 100)]);
+        assert!(view.is_ignored("target/debug/app") && !view.is_ignored("src"));
+        assert_eq!(view.cards[0].sections[0].1[0].value, "1 here · 4.0 KB");
+        let world = studio_canvas::WorldLayout::default();
+        assert!(studio_canvas::districts::files::card_world_rect(&world, &view, &gitignore).is_some());
+        assert!(view.classes.is_empty(), "no classes before git has listed the files");
+    }
+
+    /// In a folder without git the disk source says so at once and still measures sizes; the
+    /// Files header shows its words instead of reading forever.
+    #[test]
+    fn a_folder_without_git_says_so_in_the_files_header_and_keeps_its_sizes() {
+        use studio_sources::{disk_job, SourceEvent, SourceHub};
+        let dir = tempfile::tempdir().unwrap();
+        // A broken .git file keeps git from finding any repository around the folder.
+        std::fs::write(dir.path().join(".git"), b"not a gitdir\n").unwrap();
+        std::fs::write(dir.path().join("notes.txt"), vec![b'x'; 5000]).unwrap();
+        let hub = SourceHub::new(dir.path(), || {});
+        hub.spawn(SourceKind::Disk, disk_job());
+        let (mut status, mut sizes) = (BTreeMap::new(), BTreeMap::new());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut ended = false;
+        while !ended && std::time::Instant::now() < deadline {
+            for event in hub.drain() {
+                match event {
+                    SourceEvent::FolderSize(rel, bytes) => {
+                        sizes.insert(rel, bytes);
+                    }
+                    SourceEvent::Status { source, state } => {
+                        // Sizes come after the first Unavailable, so the job ends on the second.
+                        ended = !matches!(state, SourceState::Running) && sizes.contains_key(Path::new("notes.txt"));
+                        status.insert(source, state);
+                    }
+                    _ => {}
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(status.get(&SourceKind::Disk), Some(&SourceState::Unavailable("No git repository here".into())));
+        let mut view = files_view(None, &sizes, None);
+        view.git_note = files_git_note(&status);
+        assert_eq!(studio_canvas::districts::files::tree_summary(&view), "No git repository here");
+        assert!(view.sizes.iter().any(|(name, bytes)| name == "notes.txt" && *bytes > 0), "sizes still shown");
+        let git = BTreeMap::from([(SourceKind::Disk, SourceState::Ready { elapsed: Default::default() })]);
+        assert_eq!(files_git_note(&git), None, "a git repository keeps git's counts");
+    }
+
+    /// Every class git's files fall in is shown, in the table's order, with its rules.
+    #[test]
+    fn the_files_view_totals_tracked_files_by_class() {
+        use studio_parser::classify::FileClass;
+        use studio_sources::disk::ClassTotal;
+        let total = |class, files, bytes, rules: &[(&str, usize)]| ClassTotal {
+            class,
+            files,
+            bytes,
+            rules: rules.iter().map(|(w, n)| (w.to_string(), *n)).collect(),
+        };
+        let disk = GitDisk {
+            tracked: 7,
+            classes: vec![
+                total(FileClass::Code, 4, 4000, &[("extension", 4)]),
+                total(FileClass::Tests, 2, 300, &[("tool convention: Cargo", 1), ("file name", 1)]),
+                total(FileClass::BuildOutput, 1, 5, &[("gitattributes: linguist-generated", 1)]),
+            ],
+            ..Default::default()
+        };
+        let view = files_view(Some(&disk), &BTreeMap::new(), None);
+        let rows: Vec<(&str, usize, u64)> = view.classes.iter().map(|c| (c.label.as_str(), c.files, c.bytes)).collect();
+        assert_eq!(rows, [("code", 4, 4000), ("tests", 2, 300), ("build output", 1, 5)]);
+        assert_eq!(view.classes[1].why(), "tool convention: Cargo 1 · file name 1");
+        assert_eq!(view.classes[2].why(), "gitattributes: linguist-generated 1");
+        let world = studio_canvas::WorldLayout::default();
+        let parts = studio_canvas::districts::files::layout(world.files.size() / world.scale, &view, 0);
+        assert_eq!(parts.class_rows.len(), 3);
+        assert!(parts.classes.top() > parts.map.bottom() && parts.classes.contains_rect(parts.class_rows[2]));
+    }
+
     fn tool(kind: ToolKind, name: &str, invocation: &str) -> Tool {
         Tool {
             kind,
@@ -607,7 +799,8 @@ mod tests {
             node.file_path = Some(path.into());
             node.test_count = tests;
         }
-        let view = run_view(&tools, &packages, &graph);
+        let view = run_view(&tools, Some(&packages), &graph, &BTreeMap::new());
+        assert_eq!(view.packages_note, None);
         let names: Vec<&str> = view.tools.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, ["api-server", "xtask", "build"], "the alias that runs xtask is not shown twice");
         assert_eq!(view.workflows.len(), 1);
@@ -727,6 +920,43 @@ mod tests {
         assert_eq!(view.groups[1].lanes[0].truncated, 4);
         assert_eq!(pipeline_view(&pipeline), view, "the same every time");
         assert!(pipeline_view(&Pipeline::default()).is_empty());
+    }
+
+    #[test]
+    fn a_project_without_cargo_shows_its_other_tools_and_says_why_it_has_no_packages() {
+        let tools = Tools {
+            tools: vec![tool(ToolKind::NpmScript, "dev", "npm run dev"), tool(ToolKind::MakeTarget, "all", "make all")],
+        };
+        let mut status = BTreeMap::new();
+        status.insert(SourceKind::Packages, SourceState::Unavailable("No Cargo packages here".into()));
+        let view = run_view(&tools, None, &Graph::new(), &status);
+        let names: Vec<&str> = view.tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["dev", "all"]);
+        assert!(view.packages.is_empty() && view.tests.is_empty());
+        assert_eq!(view.packages_note.as_deref(), Some("No Cargo packages here"));
+
+        status.insert(SourceKind::Packages, SourceState::Failed("cargo metadata exited 101".into()));
+        let view = run_view(&tools, None, &Graph::new(), &status);
+        assert_eq!(view.packages_note.as_deref(), Some("Packages could not be read: cargo metadata exited 101"));
+    }
+
+    #[test]
+    fn a_district_whose_source_has_nothing_says_why_instead_of_reading() {
+        let mut status = BTreeMap::new();
+        assert!(district_notes(&status).is_empty(), "nothing reported: still reading");
+        status.insert(SourceKind::Pipeline, SourceState::Running);
+        status.insert(SourceKind::Tools, SourceState::Ready { elapsed: Default::default() });
+        assert!(district_notes(&status).is_empty(), "running or ready: no note");
+
+        status.insert(SourceKind::Pipeline, SourceState::Failed("routes.rs: bad table".into()));
+        status.insert(SourceKind::Tools, SourceState::Unavailable("No tools here".into()));
+        let notes = district_notes(&status);
+        assert_eq!(
+            notes.get(&Stop::Pipeline).map(String::as_str),
+            Some("The pipeline could not be read: routes.rs: bad table")
+        );
+        assert_eq!(notes.get(&Stop::Run).map(String::as_str), Some("No tools here"));
+        assert_eq!(notes.len(), 2);
     }
 }
 
@@ -961,6 +1191,31 @@ mod changes_tests {
             assert!(view.rows[0].tickets.is_empty());
         }
         assert_eq!(ShippedView::Commit("0000000".into()).tier(), Some(EvidenceTier::Proven));
+    }
+
+    #[test]
+    fn a_folder_without_git_keeps_its_sessions_in_one_row() {
+        let mut status = BTreeMap::new();
+        status.insert(SourceKind::Git, SourceState::Unavailable("No git repository here".into()));
+        let agents = AgentIndex {
+            roots: vec![PathBuf::from("/p")],
+            sessions: vec![session("a", 0, NOW - 60_000, false, &[]), session("b", 0, NOW - 120_000, true, &[])],
+            ..Default::default()
+        };
+        let view = changes_view(None, Some(&agents), None, &BTreeMap::new(), &status, NOW);
+        assert_eq!(view.message.as_deref(), Some("No git repository here"));
+        assert_eq!(view.rows.len(), 1);
+        let row = &view.rows[0];
+        assert_eq!((row.branch.as_str(), row.path.as_path()), (NO_GIT_ROW, Path::new("/p")));
+        assert_eq!(row.note.as_deref(), Some("No git repository here"), "the message is the row's note");
+        let ids: Vec<&str> = row.sessions.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["a", "b"], "newest first");
+        assert_eq!(row.more_sessions, 0);
+        assert!(row.commits.is_empty() && row.files.is_empty() && !row.is_main);
+
+        // No sessions: no row, the message alone.
+        let none = AgentIndex { roots: vec![PathBuf::from("/p")], ..Default::default() };
+        assert!(changes_view(None, Some(&none), None, &BTreeMap::new(), &status, NOW).rows.is_empty());
     }
 
     #[test]

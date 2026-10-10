@@ -1,0 +1,15 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo test
+  docs:
+    name: Build docs
+    runs-on: macos-latest
+    steps:
+      - run: cargo doc

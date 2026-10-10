@@ -70,17 +70,21 @@ impl<'a> CanvasView<'a> {
         crate::grid::paint_infinite_grid(&painter, rect, &self.state.transform);
         let world = self.state.world;
         let districts = self.state.districts.clone();
-        crate::world::paint::paint_frames(&painter, &world, &self.state.transform, rect, &|stop| match stop {
-            Stop::Code | Stop::Desk => None,
-            Stop::Run if districts.run.is_some() => None,
-            Stop::Run => Some("Reading the project's tools…".to_string()),
-            Stop::Files if districts.files.is_some() => None,
-            Stop::Files => Some("Reading the disk…".to_string()),
-            Stop::Changes if districts.changes.is_some() => None,
-            Stop::Changes => Some("Reading git…".to_string()),
-            Stop::Pipeline if districts.pipeline.is_some() => None,
-            Stop::Pipeline => Some("Reading routes, tags and entry points…".to_string()),
-            _ => Some("Nothing read here yet".to_string()),
+        crate::world::paint::paint_frames(&painter, &world, &self.state.transform, rect, &|stop| {
+            let reading = match stop {
+                Stop::Code | Stop::Desk => return None,
+                Stop::Run if districts.run.is_some() => return None,
+                Stop::Files if districts.files.is_some() => return None,
+                Stop::Changes if districts.changes.is_some() => return None,
+                Stop::Pipeline if districts.pipeline.is_some() => return None,
+                Stop::Run => "Reading the project's tools…",
+                Stop::Files => "Reading the disk…",
+                Stop::Changes => "Reading git…",
+                Stop::Pipeline => "Reading routes, tags and entry points…",
+                _ => "Nothing read here yet",
+            };
+            // A source that said why it has nothing is not still reading.
+            Some(districts.notes.get(&stop).cloned().unwrap_or_else(|| reading.to_string()))
         });
         if let Some(files) = &districts.files {
             let rows = self.state.files_tree(self.graph);

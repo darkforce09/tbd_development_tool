@@ -303,6 +303,7 @@ mod tests {
                 "view.toggle.5",
                 "view.toggle.6",
                 "view.toggle.7",
+                "view.toggle.8",
                 "app.open_folder",
                 "app.shortcuts",
                 "app.debug",

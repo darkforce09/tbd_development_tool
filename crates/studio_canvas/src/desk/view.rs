@@ -99,24 +99,7 @@ pub fn show_desk(
             );
             return;
         }
-        let reveal = desk.reveal.take();
-        let mut close = None;
-        ScrollArea::horizontal().id_salt("desk_cards").auto_shrink([false, false]).show(ui, |ui| {
-            ui.horizontal_top(|ui| {
-                ui.spacing_mut().item_spacing.x = GAP;
-                for card in &mut desk.cards {
-                    let response = ui
-                        .allocate_ui(vec2(CARD_WIDTH, height), |ui| card_ui(ui, card, height, &mut out, &mut close))
-                        .response;
-                    if reveal == Some(card.id) {
-                        response.scroll_to_me(Some(Align::Center));
-                    }
-                }
-            });
-        });
-        if let Some(id) = close {
-            desk.close(id);
-        }
+        cards_row(ui, desk, height, &mut out);
     });
     // Dimmed with the other districts while the camera is elsewhere (the canvas's veil is under
     // this layer).
@@ -129,6 +112,57 @@ pub fn show_desk(
     out
 }
 
+/// The open cards in a row, scrolling sideways; returns the row's size. A card outside the clip
+/// only takes its room: its text is laid out when it comes into view, not all of it on the frame
+/// the cards are filled.
+fn cards_row(ui: &mut Ui, desk: &mut DeskState, height: f32, out: &mut DeskOutput) -> egui::Vec2 {
+    let reveal = desk.reveal.take();
+    let mut close = None;
+    let row = ScrollArea::horizontal().id_salt("desk_cards").auto_shrink([false, false]).show(ui, |ui| {
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = GAP;
+            for card in &mut desk.cards {
+                let size = vec2(CARD_WIDTH, height);
+                let room = Rect::from_min_size(ui.cursor().min, size + card_frame().total_margin().sum());
+                let response = if ui.is_rect_visible(room) {
+                    ui.allocate_ui(size, |ui| card_ui(ui, card, height, out, &mut close)).response
+                } else {
+                    start_highlights(ui, card);
+                    ui.allocate_exact_size(room.size(), Sense::hover()).1
+                };
+                if reveal == Some(card.id) {
+                    response.scroll_to_me(Some(Align::Center));
+                }
+            }
+        });
+    });
+    if let Some(id) = close {
+        desk.close(id);
+    }
+    row.content_size
+}
+
+/// Starts colouring a card's code off screen, as its view would, so it shows coloured when it
+/// comes into view.
+fn start_highlights(ui: &Ui, card: &DeskCard) {
+    let doc = match &card.content {
+        CardContent::Code(doc) => doc,
+        CardContent::Markdown(doc) if card.show_source => doc,
+        _ => return,
+    };
+    let ctx = ui.ctx().clone();
+    studio_ui::code_view::highlights_for(doc, move || ctx.request_repaint());
+}
+
+/// A card's frame, its stroke outside the card's width and height.
+fn card_frame() -> Frame {
+    Frame::new()
+        .fill(CODE_EDITOR_BG)
+        .stroke(Stroke::new(1.0, CARD_BORDER_NORMAL))
+        .corner_radius(CornerRadius::from(14.0))
+        .inner_margin(Margin::symmetric(0, 0))
+}
+
 /// One open file: its header and its contents.
 fn card_ui(ui: &mut Ui, card: &mut DeskCard, height: f32, out: &mut DeskOutput, close: &mut Option<u64>) {
     let accent = if card.session.is_some() {
@@ -136,93 +170,83 @@ fn card_ui(ui: &mut Ui, card: &mut DeskCard, height: f32, out: &mut DeskOutput, 
     } else {
         file_extension_color(card.path.extension().and_then(|e| e.to_str()).unwrap_or(""))
     };
-    Frame::new()
-        .fill(CODE_EDITOR_BG)
-        .stroke(Stroke::new(1.0, CARD_BORDER_NORMAL))
-        .corner_radius(CornerRadius::from(14.0))
-        .inner_margin(Margin::symmetric(0, 0))
-        .show(ui, |ui| {
-            ui.set_min_size(vec2(CARD_WIDTH, height));
-            ui.set_max_size(vec2(CARD_WIDTH, height));
-            ui.vertical(|ui| {
-                Frame::new().inner_margin(Margin { left: 16, right: 10, top: 10, bottom: 8 }).show(ui, |ui| {
+    card_frame().show(ui, |ui| {
+        ui.set_min_size(vec2(CARD_WIDTH, height));
+        ui.set_max_size(vec2(CARD_WIDTH, height));
+        ui.vertical(|ui| {
+            Frame::new().inner_margin(Margin { left: 16, right: 10, top: 10, bottom: 8 }).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let (dot, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
+                    ui.painter().circle_filled(dot.center(), 4.0, accent);
+                    ui.label(RichText::new(card.title()).font(FontId::proportional(15.0)).color(TEXT_PRIMARY).strong());
+                    ui.label(RichText::new(&card.rel).font(FontId::proportional(11.5)).color(TEXT_DIM));
+                    ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                        if ui.button(egui_phosphor::regular::X).on_hover_text("Put it away").clicked() {
+                            *close = Some(card.id);
+                        }
+                        if card.session.is_none() {
+                            let map = ui.button(egui_phosphor::regular::CROSSHAIR).on_hover_text("Show it on the map");
+                            if map.clicked() {
+                                out.show_on_map = Some(card.path.clone());
+                            }
+                        }
+                        if let CardContent::Markdown(_) = card.content {
+                            let label = if card.show_source { "Rendered" } else { "Source" };
+                            if ui.button(label).clicked() {
+                                card.show_source = !card.show_source;
+                            }
+                        }
+                    });
+                });
+            });
+            ui.add(egui::Separator::default().spacing(0.0));
+            let scroll_to = card.scroll_to.take();
+            let id = Id::new(("desk_card", card.id));
+            let lights = card.document().is_some().then(|| code_lights(card.lights()));
+            let (lit, marks) = lights.unwrap_or_default();
+            match &card.content {
+                CardContent::Loading => {
+                    ui.add_space(24.0);
                     ui.horizontal(|ui| {
-                        let (dot, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
-                        ui.painter().circle_filled(dot.center(), 4.0, accent);
-                        ui.label(
-                            RichText::new(card.title()).font(FontId::proportional(15.0)).color(TEXT_PRIMARY).strong(),
+                        ui.add_space(16.0);
+                        ui.spinner();
+                        ui.label(RichText::new("Reading…").color(TEXT_DIM));
+                    });
+                }
+                CardContent::Code(doc) => {
+                    CodeView::new(doc, id).lit(&lit).marks(&marks).scroll_to(scroll_to).show(ui);
+                }
+                CardContent::Markdown(doc) if card.show_source => {
+                    CodeView::new(doc, id).lit(&lit).marks(&marks).scroll_to(scroll_to).show(ui);
+                }
+                CardContent::Markdown(doc) => {
+                    // Lines are lit (by the chosen session): say so, one click from the source.
+                    if !marks.is_empty() || !lit.is_empty() {
+                        let text = format!("{} lines lit — view source", egui_phosphor::regular::CODE);
+                        let note = ui.add(
+                            egui::Button::new(RichText::new(text).color(DISTRICT_CHANGES).size(12.5)).frame(false),
                         );
-                        ui.label(RichText::new(&card.rel).font(FontId::proportional(11.5)).color(TEXT_DIM));
-                        ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                            if ui.button(egui_phosphor::regular::X).on_hover_text("Put it away").clicked() {
-                                *close = Some(card.id);
-                            }
-                            if card.session.is_none() {
-                                let map =
-                                    ui.button(egui_phosphor::regular::CROSSHAIR).on_hover_text("Show it on the map");
-                                if map.clicked() {
-                                    out.show_on_map = Some(card.path.clone());
-                                }
-                            }
-                            if let CardContent::Markdown(_) = card.content {
-                                let label = if card.show_source { "Rendered" } else { "Source" };
-                                if ui.button(label).clicked() {
-                                    card.show_source = !card.show_source;
-                                }
+                        if note.clicked() {
+                            card.show_source = true;
+                        }
+                    }
+                    ScrollArea::vertical().id_salt(id).auto_shrink([false, false]).show(ui, |ui| {
+                        Frame::new().inner_margin(Margin::symmetric(22, 16)).show(ui, |ui| {
+                            if let Some(target) = MarkdownViewer::new(&doc.text).font_size(14.0).show(ui) {
+                                out.link = Some((card.path.clone(), target));
                             }
                         });
                     });
-                });
-                ui.add(egui::Separator::default().spacing(0.0));
-                let scroll_to = card.scroll_to.take();
-                let id = Id::new(("desk_card", card.id));
-                let lights = card.document().is_some().then(|| code_lights(card.lights()));
-                let (lit, marks) = lights.unwrap_or_default();
-                match &card.content {
-                    CardContent::Loading => {
-                        ui.add_space(24.0);
-                        ui.horizontal(|ui| {
-                            ui.add_space(16.0);
-                            ui.spinner();
-                            ui.label(RichText::new("Reading…").color(TEXT_DIM));
-                        });
-                    }
-                    CardContent::Code(doc) => {
-                        CodeView::new(doc, id).lit(&lit).marks(&marks).scroll_to(scroll_to).show(ui);
-                    }
-                    CardContent::Markdown(doc) if card.show_source => {
-                        CodeView::new(doc, id).lit(&lit).marks(&marks).scroll_to(scroll_to).show(ui);
-                    }
-                    CardContent::Markdown(doc) => {
-                        // Lines are lit (by the chosen session): say so, one click from the source.
-                        if !marks.is_empty() || !lit.is_empty() {
-                            let text = format!("{} lines lit — view source", egui_phosphor::regular::CODE);
-                            let note = ui.add(
-                                egui::Button::new(RichText::new(text).color(DISTRICT_CHANGES).size(12.5)).frame(false),
-                            );
-                            if note.clicked() {
-                                card.show_source = true;
-                            }
-                        }
-                        ScrollArea::vertical().id_salt(id).auto_shrink([false, false]).show(ui, |ui| {
-                            Frame::new().inner_margin(Margin::symmetric(22, 16)).show(ui, |ui| {
-                                if let Some(target) = MarkdownViewer::new(&doc.text).font_size(14.0).show(ui) {
-                                    out.link = Some((card.path.clone(), target));
-                                }
-                            });
-                        });
-                    }
-                    CardContent::Binary(bytes) => {
-                        note(ui, &format!("Binary file · {}", studio_graph::human_bytes(*bytes)))
-                    }
-                    CardContent::TooLarge(bytes) => {
-                        note(ui, &format!("Too large to show here · {}", studio_graph::human_bytes(*bytes)))
-                    }
-                    CardContent::Unreadable(err) => note(ui, &format!("Could not read it: {err}")),
-                    CardContent::Plan(plan) => plan_ui(ui, plan, id, out),
                 }
-            });
+                CardContent::Binary(bytes) => note(ui, &format!("Binary file · {}", studio_graph::human_bytes(*bytes))),
+                CardContent::TooLarge(bytes) => {
+                    note(ui, &format!("Too large to show here · {}", studio_graph::human_bytes(*bytes)))
+                }
+                CardContent::Unreadable(err) => note(ui, &format!("Could not read it: {err}")),
+                CardContent::Plan(plan) => plan_ui(ui, plan, id, out),
+            }
         });
+    });
 }
 
 /// A plan card's body: who and where, the plan, its steps with their edits, the other edits.
@@ -456,5 +480,42 @@ fn paint_skeleton(ui: &Ui, desk: &DeskState, origin: Pos2, local: f32, size: egu
             break;
         }
         outline(Rect::from_min_size(pos2(x, TOP), vec2(CARD_WIDTH, height)), &card.title());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    /// Three code cards, each to scroll to line 5, drawn once in a window `width` wide.
+    fn draw(width: f32) -> (DeskState, egui::Vec2) {
+        let mut desk = DeskState::default();
+        for name in ["a.rs", "b.rs", "c.rs"] {
+            let path = Path::new("/p").join(name);
+            let id = desk.open(&path, Some(5));
+            desk.fill(id, super::super::content_for_text(&path, "fn main() {}\n".repeat(40).into()));
+        }
+        let ctx = egui::Context::default();
+        let raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(width, 600.0))),
+            ..Default::default()
+        };
+        let mut size = egui::Vec2::ZERO;
+        let mut output = ctx.run_ui(raw, |ui| {
+            size = cards_row(ui, &mut desk, 500.0, &mut DeskOutput::default());
+        });
+        output.textures_delta.clear();
+        (desk, size)
+    }
+
+    #[test]
+    fn cards_out_of_view_take_their_room_but_are_not_drawn() {
+        let (narrow, narrow_size) = draw(1000.0);
+        let scrolled: Vec<_> = narrow.cards.iter().map(|c| c.scroll_to).collect();
+        assert_eq!(scrolled, [None, None, Some(5)], "the third card is not drawn yet");
+        let (wide, wide_size) = draw(4000.0);
+        assert!(wide.cards.iter().all(|c| c.scroll_to.is_none()), "all three drawn");
+        assert_eq!(narrow_size, wide_size, "a card's room is the same drawn or not");
     }
 }

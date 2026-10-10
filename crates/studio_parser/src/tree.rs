@@ -1,10 +1,12 @@
 //! Discovery of every file and folder under a project root.
 //!
 //! Nothing is dropped: binary, large, symlinked and unreadable entries are recorded with a kind
-//! instead of being skipped. "Heavy" folders (version control, gitignored, build caches,
-//! dependency trees) are recorded with counts but not descended, so they can be shown collapsed
-//! and materialized on demand with [`scan_tree`] on their own path.
+//! instead of being skipped. "Heavy" folders (version control, gitignored, or holding a marker a
+//! tool writes, see [`crate::classify::HEAVY_MARKERS`]) are recorded with counts but not descended,
+//! so they can be shown collapsed and materialized on demand with [`scan_tree`] on their own path.
+//! No folder is heavy for its name alone. Every file gets its class from [`crate::classify`].
 
+use crate::classify::{self, ClassInputs, FileClass, Rule};
 use rayon::prelude::*;
 use std::collections::HashSet;
 use std::io::Read;
@@ -76,6 +78,19 @@ pub struct FileNode {
     pub dir: DirId,
     pub size: u64,
     pub kind: FileKind,
+    /// What the file is for, from the classification table, with the inputs the scan has (paths
+    /// and what git ignores; Linguist attributes are applied later, by the viewer).
+    pub class: FileClass,
+    /// The table row that decided `class`.
+    pub rule: &'static Rule,
+}
+
+impl FileNode {
+    /// A file not classified yet (the scan classifies every file once all paths are known).
+    fn new(rel: PathBuf, dir: DirId, size: u64, kind: FileKind) -> Self {
+        let fallback = &classify::RULES[classify::RULES.len() - 1];
+        Self { rel, dir, size, kind, class: fallback.class, rule: fallback }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -159,12 +174,7 @@ pub fn scan_tree(root: &Path, opts: ScanOptions) -> ProjectTree {
                                 });
                                 dir_ids.insert(rel, id);
                             } else {
-                                tree.files.push(FileNode {
-                                    rel,
-                                    dir: parent,
-                                    size: 0,
-                                    kind: FileKind::Unreadable(msg),
-                                });
+                                tree.files.push(FileNode::new(rel, parent, 0, FileKind::Unreadable(msg)));
                             }
                         }
                     }
@@ -205,17 +215,44 @@ pub fn scan_tree(root: &Path, opts: ScanOptions) -> ProjectTree {
         .map(|(rel, dir, link)| {
             let abs = root.join(&rel);
             match link {
-                Some(target) => FileNode { rel, dir, size: 0, kind: FileKind::Symlink(target) },
+                Some(target) => FileNode::new(rel, dir, 0, FileKind::Symlink(target)),
                 None => {
                     let (size, kind) = classify_file(&abs);
-                    FileNode { rel, dir, size, kind }
+                    FileNode::new(rel, dir, size, kind)
                 }
             }
         })
         .collect();
     tree.files.extend(classified);
     tree.files.sort_by(|a, b| a.rel.cmp(&b.rel));
+    classify_files(&mut tree);
     tree
+}
+
+/// The classification inputs a scanned tree holds: every file's path, the single files git
+/// ignores and the folders that are heavy because git ignores them.
+pub fn class_inputs(tree: &ProjectTree) -> ClassInputs {
+    let ignored_dirs = tree.heavy_dirs().filter(|(_, _, i)| i.reason == HeavyReason::GitIgnored);
+    ClassInputs {
+        files: tree.files.iter().map(|f| slash(&f.rel)).collect(),
+        ignored: tree
+            .ignored_files
+            .iter()
+            .map(|p| slash(p))
+            .chain(ignored_dirs.map(|(_, d, _)| slash(&d.rel) + "/"))
+            .collect(),
+        ..Default::default()
+    }
+}
+
+/// Gives every file its class, in parallel (pure: same tree, same classes).
+fn classify_files(tree: &mut ProjectTree) {
+    let inputs = class_inputs(tree);
+    tree.files.par_iter_mut().for_each(|f| (f.class, f.rule) = classify::classify(&slash(&f.rel), &inputs));
+}
+
+fn slash(path: &Path) -> String {
+    path.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/")
 }
 
 /// Counts what every heavy folder holds, in parallel. Kept out of [`scan_tree`] so the first
@@ -265,6 +302,8 @@ pub fn hash_tree_state(root: &Path, hasher: &mut impl std::hash::Hasher) {
     }
 }
 
+/// Why a folder is heavy: the version control system's own metadata, ignored by git, or holding a
+/// marker a tool writes ([`classify::HEAVY_MARKERS`]). Never its name alone.
 fn heavy_reason(path: &Path, rel: &Path, ignored_dirs: &HashSet<PathBuf>) -> Option<HeavyReason> {
     let name = rel.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
     if matches!(name.as_ref(), ".git" | ".hg" | ".svn") {
@@ -273,16 +312,7 @@ fn heavy_reason(path: &Path, rel: &Path, ignored_dirs: &HashSet<PathBuf>) -> Opt
     if ignored_dirs.contains(rel) {
         return Some(HeavyReason::GitIgnored);
     }
-    // Standard cache-directory marker (Cargo's target/, many build tools).
-    if path.join("CACHEDIR.TAG").is_file() {
-        return Some(HeavyReason::BuildCache);
-    }
-    if matches!(name.as_ref(), "node_modules" | "__pycache__" | ".gradle" | ".tox" | ".mypy_cache" | ".pytest_cache")
-        || path.join("pyvenv.cfg").is_file()
-    {
-        return Some(HeavyReason::Dependencies);
-    }
-    None
+    classify::heavy_marker(path).map(|m| m.reason)
 }
 
 /// Folders git ignores entirely, and single ignored files outside them (sorted), relative to
@@ -374,6 +404,7 @@ mod tests {
         std::fs::create_dir_all(r.join("empty")).unwrap();
         std::fs::create_dir_all(r.join("only_dirs/x")).unwrap();
         std::fs::create_dir_all(r.join("only_dirs/y")).unwrap();
+        write(r, "node_modules/.package-lock.json", b"{}");
         write(r, "node_modules/pkg/index.js", b"module.exports = 1;");
         write(r, "node_modules/pkg/lib/util.js", b"x");
         write(r, "target/CACHEDIR.TAG", b"Signature: 8a477f597d28d172789f06886806bc55");
@@ -441,7 +472,7 @@ mod tests {
             .heavy_dirs()
             .map(|(_, d, info)| (d.rel.to_string_lossy().to_string(), info.reason, info.totals.unwrap().file_count))
             .collect();
-        assert!(heavy.contains(&("node_modules".to_string(), HeavyReason::Dependencies, 2)), "{heavy:?}");
+        assert!(heavy.contains(&("node_modules".to_string(), HeavyReason::Dependencies, 3)), "{heavy:?}");
         assert!(heavy.contains(&("target".to_string(), HeavyReason::BuildCache, 2)), "{heavy:?}");
     }
 
@@ -469,6 +500,51 @@ mod tests {
 
         let inside = scan_tree(&dir.path().join("secret"), ScanOptions { gitignored_heavy: false });
         assert_eq!(inside.files.len(), 1, "materializing an ignored folder lists its contents");
+    }
+
+    #[test]
+    fn a_folder_is_never_heavy_for_its_name_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = dir.path();
+        for name in ["node_modules", "__pycache__", ".gradle", ".tox", ".mypy_cache", ".pytest_cache", "target"] {
+            write(r, &format!("{name}/x.txt"), b"x");
+        }
+        write(r, "fake_cache/CACHEDIR.TAG", b"no signature");
+        let tree = scan_tree(r, ScanOptions::default());
+        assert_eq!(tree.heavy_dirs().count(), 0, "{:?}", tree.dirs);
+        assert_eq!(tree.files.len(), 8, "every folder is descended");
+    }
+
+    #[test]
+    fn every_marker_makes_its_folder_heavy() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = dir.path();
+        for (i, marker) in classify::HEAVY_MARKERS.iter().enumerate() {
+            let content: &[u8] = if marker.file == "CACHEDIR.TAG" { classify::CACHEDIR_SIGNATURE } else { b"" };
+            write(r, &format!("m{i}/{}", marker.file), content);
+            write(r, &format!("m{i}/inside/x.txt"), b"x");
+        }
+        let tree = scan_tree(r, ScanOptions::default());
+        let heavy: Vec<(String, HeavyReason)> =
+            tree.heavy_dirs().map(|(_, d, i)| (d.rel.to_string_lossy().to_string(), i.reason)).collect();
+        let expected: Vec<(String, HeavyReason)> =
+            classify::HEAVY_MARKERS.iter().enumerate().map(|(i, m)| (format!("m{i}"), m.reason)).collect();
+        assert_eq!(heavy, expected);
+        assert!(tree.files.is_empty(), "nothing inside a marked folder is listed");
+    }
+
+    #[test]
+    fn every_file_gets_its_class_at_scan_time() {
+        let dir = fixture();
+        write(dir.path(), "Cargo.toml", b"[package]\nname = \"x\"\n");
+        write(dir.path(), "tests/it.rs", b"#[test] fn a() {}");
+        let tree = scan_tree(dir.path(), ScanOptions::default());
+        let class = |rel: &str| tree.files.iter().find(|f| f.rel == Path::new(rel)).map(|f| (f.class, f.rule.why()));
+        assert_eq!(class("src/a/b/c/deep.rs"), Some((FileClass::Code, "extension".to_string())));
+        assert_eq!(class("tests/it.rs"), Some((FileClass::Tests, "tool convention: Cargo".to_string())));
+        assert_eq!(class("assets/logo.png"), Some((FileClass::Assets, "extension".to_string())));
+        assert_eq!(class("Cargo.lock"), Some((FileClass::Config, "file name".to_string())));
+        assert_eq!(class("assets/blob.bin"), Some((FileClass::Other, "fallback".to_string())));
     }
 
     #[cfg(unix)]

@@ -66,7 +66,13 @@ fn r1_wires_and_counters_are_exact() {
     assert_eq!(wires(&graph, &root), want);
     for e in &graph.edges {
         if e.provenance.tier == studio_graph::EvidenceTier::Proven && e.kind != EdgeKind::Documentation {
-            assert_eq!(e.provenance.basis, studio_graph::Basis::PathResolution);
+            // Package dependencies come from the manifests (tests/crate_edges.rs); every other wire from R1.
+            let basis = if e.kind == EdgeKind::Depends {
+                studio_graph::Basis::Manifest
+            } else {
+                studio_graph::Basis::PathResolution
+            };
+            assert_eq!(e.provenance.basis, basis);
         }
     }
 

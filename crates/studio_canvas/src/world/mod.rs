@@ -26,7 +26,8 @@ const CODE_NATURAL: [f32; 2] = [2800.0, 1800.0];
 const CENTRE_MIN_WIDTH: f32 = 2800.0;
 const PIPELINE_HEIGHT: f32 = 900.0;
 const DESK_HEIGHT: f32 = 1200.0;
-const CHANGES_HEIGHT: f32 = 1000.0;
+/// The Changes district's height in local units, fixed (its contents fit it with "+k more").
+pub const CHANGES_HEIGHT: f32 = 1000.0;
 const SIDE_WIDTH: f32 = 1600.0;
 /// Space between districts, in local units.
 const GAP: f32 = 160.0;

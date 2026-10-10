@@ -18,7 +18,7 @@ use std::time::Instant;
 
 use rayon::prelude::*;
 
-use crate::analysis::crate_graph::CrateGraph;
+use crate::analysis::crate_graph::{path_dependencies, CrateGraph, PathDep};
 use crate::analysis::rust_resolver::{ItemKind, ItemRef, ModuleId, Resolution, RustIndex};
 use crate::extractor::{ExtractedProject, UseItem};
 
@@ -47,6 +47,8 @@ pub struct RustPathStats {
     pub cfg_gated: usize,
     /// Proven path-resolution wires in the graph (file and member level).
     pub proven_edges: usize,
+    /// Proven manifest wires: one per pair of packages joined by a normal or build path dependency.
+    pub manifest_edges: usize,
     pub crate_graph_us: u64,
     /// Module trees, including reading and parsing every file in them.
     pub index_us: u64,
@@ -131,6 +133,8 @@ impl FileRefs {
 #[derive(Debug, Default)]
 pub struct RustPaths {
     pub(crate) files: HashMap<PathBuf, FileRefs>,
+    /// Path dependencies between the packages, from every dependency table of their manifests.
+    pub path_deps: Vec<PathDep>,
     pub stats: RustPathStats,
 }
 
@@ -150,6 +154,7 @@ pub fn analyze(project: &ExtractedProject) -> RustPaths {
     let mut stats = RustPathStats::default();
     let started = Instant::now();
     let graph = CrateGraph::from_manifests(&project.root_path, &manifests);
+    let path_deps = path_dependencies(&project.root_path, &manifests);
     stats.crate_graph_us = started.elapsed().as_micros() as u64;
 
     let started = Instant::now();
@@ -164,7 +169,7 @@ pub fn analyze(project: &ExtractedProject) -> RustPaths {
         files.par_iter().filter_map(|&f| Some((f.to_path_buf(), resolve_file(&index, &modules, f)?))).collect();
     stats.resolve_us = started.elapsed().as_micros() as u64;
     stats.files = resolved.len();
-    RustPaths { files: resolved.into_iter().collect(), stats }
+    RustPaths { files: resolved.into_iter().collect(), path_deps, stats }
 }
 
 /// The file of each module, by the module's declaration as R1 reports it.

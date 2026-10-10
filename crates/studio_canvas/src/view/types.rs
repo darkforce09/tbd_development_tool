@@ -86,6 +86,8 @@ pub fn edge_kind_color(kind: EdgeKind) -> Color32 {
         EdgeKind::Import => KIND_IMPORT,
         EdgeKind::Documentation => KIND_DOCUMENTATION,
         EdgeKind::Asset => KIND_ASSET,
+        // Slate like imports until the kind has its own colour (docs/VISUAL_LANGUAGE.md).
+        EdgeKind::Depends => KIND_IMPORT,
     }
 }
 
@@ -141,12 +143,21 @@ pub struct WireKinds {
     pub imports: bool,
     pub documentation: bool,
     pub assets: bool,
+    pub depends: bool,
 }
 
 impl Default for WireKinds {
     fn default() -> Self {
         // Documentation shows as chips on cards until its wires are turned on in the View menu.
-        Self { calls: true, type_uses: true, implements: true, imports: true, documentation: false, assets: true }
+        Self {
+            calls: true,
+            type_uses: true,
+            implements: true,
+            imports: true,
+            documentation: false,
+            assets: true,
+            depends: true,
+        }
     }
 }
 
@@ -160,6 +171,7 @@ impl WireKinds {
             (EdgeKind::Import, self.imports),
             (EdgeKind::Documentation, self.documentation),
             (EdgeKind::Asset, self.assets),
+            (EdgeKind::Depends, self.depends),
         ]
         .into_iter()
         .filter(|&(_, shown)| shown)

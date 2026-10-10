@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "User",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "email": { "type": "string", "format": "email" },
+    "joined": { "type": "string", "format": "date-time" },
+    "team": { "$ref": "team.schema.json" },
+    "address": { "$ref": "#/$defs/address" }
+  },
+  "required": ["id", "email", "team"],
+  "$defs": {
+    "address": {
+      "type": "object",
+      "properties": {
+        "city": { "type": "string" },
+        "zip": { "type": "string", "pattern": "^[0-9]{5}$" }
+      },
+      "required": ["city"]
+    }
+  }
+}

@@ -20,6 +20,7 @@ all = [
     "proven call app/src/store.rs#open -> app/src/upgraded.rs#upgraded",
     "proven call tools/src/lib.rs -> app/src/cross.rs",
     "proven call tools/src/lib.rs#helper -> app/src/cross.rs#cross",
+    "proven depends tools/Cargo.toml -> app/Cargo.toml",
     "proven import app/src/alpha.rs -> app/src/globs.rs",
     "proven import app/src/alpha.rs -> app/src/retargeted.rs",
     "proven import app/src/beta.rs -> app/src/globs.rs",

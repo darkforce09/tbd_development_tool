@@ -10,7 +10,7 @@ use studio_graph::Graph;
 /// 16-byte magic identifier and format version header
 pub const CACHE_MAGIC: &[u8; 16] = b"TBD_RKYV_V13\0\0\0\0";
 /// Bump whenever extraction or graph building changes output, so cached graphs are rebuilt.
-pub const EXTRACTOR_VERSION: u32 = 9;
+pub const EXTRACTOR_VERSION: u32 = 10;
 const HEADER_SIZE: usize = 32;
 
 /// Serializable wrapper combining the architecture graph and project metrics

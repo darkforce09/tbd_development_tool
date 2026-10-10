@@ -13,6 +13,9 @@
 //! `[target.'cfg(…)']` table, `optional = true`), or whose name points at different crates in different tables, is
 //! listed in [`CrateNode::gated_deps`]. Every binary also depends on its own package's library. The edition is
 //! `package.edition` (or the workspace's with `edition.workspace = true`), 2015 when absent. No process is spawned.
+//!
+//! [`path_dependencies`] lists, for the Code map's manifest wires, every path dependency between the packages, from
+//! every table (normal, build and dev), with the line of its entry.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
@@ -96,23 +99,7 @@ impl CrateGraph {
     /// Reads the given manifests (absolute, or relative to `project_root`); manifests without `[package]` (a
     /// virtual workspace root) add no crate. Unreadable or invalid manifests are skipped.
     pub fn from_manifests(project_root: &Path, manifests: &[PathBuf]) -> CrateGraph {
-        let mut roots: BTreeMap<PathBuf, Option<toml::Table>> = BTreeMap::new();
-        let mut packages = Vec::new();
-        let mut seen = BTreeSet::new();
-        for manifest in manifests {
-            let manifest = normalize(&project_root.join(manifest));
-            if !seen.insert(manifest.clone()) {
-                continue;
-            }
-            let Some(table) = read_table(&manifest) else { continue };
-            let Some(name) = table.get("package").and_then(|p| p.get("name")).and_then(|n| n.as_str()) else {
-                continue;
-            };
-            let dir = manifest.parent().map(Path::to_path_buf).unwrap_or_default();
-            let workspace = workspace_root(&manifest, &table, &mut roots);
-            packages.push(Package { name: name.to_string(), manifest, dir, table, workspace });
-        }
-        packages.sort_by(|a, b| a.manifest.cmp(&b.manifest));
+        let packages = read_packages(project_root, manifests);
 
         // Targets, then the order, then the dependency links (indices are only known after sorting).
         let mut crates = Vec::new();
@@ -222,6 +209,29 @@ impl CrateGraph {
     }
 }
 
+/// The packages among `manifests` (absolute, or relative to `project_root`), sorted by manifest path. Manifests
+/// without `[package]`, unreadable or invalid ones, and repeats are skipped.
+fn read_packages(project_root: &Path, manifests: &[PathBuf]) -> Vec<Package> {
+    let mut roots: BTreeMap<PathBuf, Option<toml::Table>> = BTreeMap::new();
+    let mut packages = Vec::new();
+    let mut seen = BTreeSet::new();
+    for manifest in manifests {
+        let manifest = normalize(&project_root.join(manifest));
+        if !seen.insert(manifest.clone()) {
+            continue;
+        }
+        let Some(table) = read_table(&manifest) else { continue };
+        let Some(name) = table.get("package").and_then(|p| p.get("name")).and_then(|n| n.as_str()) else {
+            continue;
+        };
+        let dir = manifest.parent().map(Path::to_path_buf).unwrap_or_default();
+        let workspace = workspace_root(&manifest, &table, &mut roots);
+        packages.push(Package { name: name.to_string(), manifest, dir, table, workspace });
+    }
+    packages.sort_by(|a, b| a.manifest.cmp(&b.manifest));
+    packages
+}
+
 fn read_table(manifest: &Path) -> Option<toml::Table> {
     std::fs::read_to_string(manifest).ok()?.parse::<toml::Table>().ok()
 }
@@ -283,45 +293,178 @@ fn package_edition(pkg: &Package) -> u16 {
 /// The dependency entries of a package (normal and target-specific; dev and build dependencies are not code the
 /// library or binaries compile against).
 fn package_deps(pkg: &Package) -> Vec<DepEntry> {
-    let mut tables: Vec<(&toml::Table, bool)> = Vec::new();
-    if let Some(t) = pkg.table.get("dependencies").and_then(|d| d.as_table()) {
-        tables.push((t, false));
-    }
-    if let Some(targets) = pkg.table.get("target").and_then(|t| t.as_table()) {
-        for spec in targets.values() {
-            if let Some(t) = spec.get("dependencies").and_then(|d| d.as_table()) {
-                tables.push((t, true));
-            }
+    let tables = dep_tables(pkg, DepKind::Normal);
+    tables
+        .iter()
+        .flat_map(|t| t.entries.iter().map(|(key, value)| dep_entry(pkg, key, value, t.target.is_some())))
+        .collect()
+}
+
+/// One dependency table of a manifest: its entries, the `[target.…]` key it sits under, and its name.
+struct DepTable<'a> {
+    entries: &'a toml::Table,
+    target: Option<&'a str>,
+    name: &'static str,
+}
+
+/// The tables of one kind: top level first, then each `[target.…]` table in key order.
+fn dep_tables(pkg: &Package, kind: DepKind) -> Vec<DepTable<'_>> {
+    let mut out = Vec::new();
+    for &name in kind.table_names() {
+        if let Some(entries) = pkg.table.get(name).and_then(|d| d.as_table()) {
+            out.push(DepTable { entries, target: None, name });
         }
     }
-    let ws_deps = pkg.workspace.as_ref().and_then(|(root, ws)| Some((root, ws.get("dependencies")?.as_table()?)));
-    let mut out = Vec::new();
-    for (table, in_target) in tables {
-        for (key, value) in table {
-            let mut package = value.get("package").and_then(|p| p.as_str()).map(str::to_string);
-            let mut path = value.get("path").and_then(|p| p.as_str()).map(|p| normalize(&pkg.dir.join(p)));
-            let mut optional = value.get("optional").and_then(|o| o.as_bool()) == Some(true);
-            if value.get("workspace").and_then(|w| w.as_bool()) == Some(true) {
-                if let Some((root, ws)) = ws_deps {
-                    if let Some(entry) = ws.get(key) {
-                        if package.is_none() {
-                            package = entry.get("package").and_then(|p| p.as_str()).map(str::to_string);
-                        }
-                        path = entry.get("path").and_then(|p| p.as_str()).map(|p| normalize(&root.join(p)));
-                        optional |= entry.get("optional").and_then(|o| o.as_bool()) == Some(true);
-                    }
+    if let Some(targets) = pkg.table.get("target").and_then(|t| t.as_table()) {
+        for (target, spec) in targets {
+            for &name in kind.table_names() {
+                if let Some(entries) = spec.get(name).and_then(|d| d.as_table()) {
+                    out.push(DepTable { entries, target: Some(target), name });
                 }
             }
-            let renamed = package.is_some();
-            let package = package.unwrap_or_else(|| key.clone());
-            let target = match path {
-                Some(dir) => DepTarget::Path { dir, package },
-                None => DepTarget::External { crate_name: package.replace('-', "_") },
-            };
-            out.push(DepEntry { key: key.replace('-', "_"), renamed, target, gated: in_target || optional });
         }
     }
     out
+}
+
+/// One dependency entry, with `workspace = true` resolved through the workspace root's `[workspace.dependencies]`.
+fn dep_entry(pkg: &Package, key: &str, value: &toml::Value, in_target: bool) -> DepEntry {
+    let mut package = value.get("package").and_then(|p| p.as_str()).map(str::to_string);
+    let mut path = value.get("path").and_then(|p| p.as_str()).map(|p| normalize(&pkg.dir.join(p)));
+    let mut optional = value.get("optional").and_then(|o| o.as_bool()) == Some(true);
+    if value.get("workspace").and_then(|w| w.as_bool()) == Some(true) {
+        let ws_entry = pkg.workspace.as_ref().and_then(|(root, ws)| Some((root, ws.get("dependencies")?.get(key)?)));
+        if let Some((root, entry)) = ws_entry {
+            if package.is_none() {
+                package = entry.get("package").and_then(|p| p.as_str()).map(str::to_string);
+            }
+            path = entry.get("path").and_then(|p| p.as_str()).map(|p| normalize(&root.join(p)));
+            optional |= entry.get("optional").and_then(|o| o.as_bool()) == Some(true);
+        }
+    }
+    let renamed = package.is_some();
+    let package = package.unwrap_or_else(|| key.to_string());
+    let target = match path {
+        Some(dir) => DepTarget::Path { dir, package },
+        None => DepTarget::External { crate_name: package.replace('-', "_") },
+    };
+    DepEntry { key: key.replace('-', "_"), renamed, target, gated: in_target || optional }
+}
+
+/// Which table of a manifest a dependency is declared in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DepKind {
+    /// `[dependencies]`.
+    Normal,
+    /// `[build-dependencies]`: the build script's.
+    Build,
+    /// `[dev-dependencies]`: tests', examples' and benches'.
+    Dev,
+}
+
+impl DepKind {
+    /// The table names cargo reads for the kind (the `_` spellings are cargo's older ones).
+    fn table_names(self) -> &'static [&'static str] {
+        match self {
+            DepKind::Normal => &["dependencies"],
+            DepKind::Build => &["build-dependencies", "build_dependencies"],
+            DepKind::Dev => &["dev-dependencies", "dev_dependencies"],
+        }
+    }
+}
+
+/// A path dependency of one loaded package on another, as its manifest declares it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PathDep {
+    /// The absolute manifest that declares the dependency.
+    pub manifest: PathBuf,
+    /// The absolute manifest of the package depended on.
+    pub target: PathBuf,
+    pub kind: DepKind,
+    /// The 1-based line of the entry in `manifest`, when the manifest's spans give it.
+    pub line: Option<usize>,
+}
+
+/// Every path dependency between the packages among `manifests` (absolute, or relative to `project_root`), from
+/// every dependency table (target-specific and optional entries included), sorted. A path to a folder that holds
+/// no loaded package, or a package of another name, links nothing; neither does a package naming itself.
+pub fn path_dependencies(project_root: &Path, manifests: &[PathBuf]) -> Vec<PathDep> {
+    let packages = read_packages(project_root, manifests);
+    let by_dir: BTreeMap<&Path, &Package> = packages.iter().map(|p| (p.dir.as_path(), p)).collect();
+    let mut out = BTreeSet::new();
+    for pkg in &packages {
+        let lines = DepLines::read(&pkg.manifest);
+        for kind in [DepKind::Normal, DepKind::Build, DepKind::Dev] {
+            for table in dep_tables(pkg, kind) {
+                for (key, value) in table.entries {
+                    let DepTarget::Path { dir, package } = dep_entry(pkg, key, value, false).target else { continue };
+                    let Some(dep) = by_dir.get(dir.as_path()).filter(|d| d.name == package && d.dir != pkg.dir) else {
+                        continue;
+                    };
+                    let line = lines.line(table.target, table.name, key);
+                    out.insert(PathDep { manifest: pkg.manifest.clone(), target: dep.manifest.clone(), kind, line });
+                }
+            }
+        }
+    }
+    out.into_iter().collect()
+}
+
+/// One dependency table, with the span of each entry's key.
+type EntrySpans = BTreeMap<toml::Spanned<String>, serde::de::IgnoredAny>;
+
+/// The dependency tables of a manifest, with the span of each entry.
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+struct TableSpans {
+    dependencies: EntrySpans,
+    #[serde(rename = "build-dependencies")]
+    build: EntrySpans,
+    #[serde(rename = "build_dependencies")]
+    build_old: EntrySpans,
+    #[serde(rename = "dev-dependencies")]
+    dev: EntrySpans,
+    #[serde(rename = "dev_dependencies")]
+    dev_old: EntrySpans,
+    target: BTreeMap<String, TableSpans>,
+}
+
+impl TableSpans {
+    fn table(&self, name: &str) -> Option<&EntrySpans> {
+        match name {
+            "dependencies" => Some(&self.dependencies),
+            "build-dependencies" => Some(&self.build),
+            "build_dependencies" => Some(&self.build_old),
+            "dev-dependencies" => Some(&self.dev),
+            "dev_dependencies" => Some(&self.dev_old),
+            _ => None,
+        }
+    }
+}
+
+/// Where each dependency entry of a manifest starts.
+#[derive(Default)]
+struct DepLines {
+    text: String,
+    spans: TableSpans,
+}
+
+impl DepLines {
+    fn read(manifest: &Path) -> DepLines {
+        let text = std::fs::read_to_string(manifest).unwrap_or_default();
+        let spans = toml::from_str(&text).unwrap_or_default();
+        DepLines { text, spans }
+    }
+
+    /// The 1-based line of entry `key` in table `name` (under `[target.<target>]` when given).
+    fn line(&self, target: Option<&str>, name: &str, key: &str) -> Option<usize> {
+        let tables = match target {
+            Some(t) => self.spans.target.get(t)?,
+            None => &self.spans,
+        };
+        let start = tables.table(name)?.keys().find(|k| k.get_ref() == key)?.span().start;
+        Some(self.text.get(..start)?.matches('\n').count() + 1)
+    }
 }
 
 /// The lib and bin targets of a package: (kind, crate name, absolute root file).
@@ -517,6 +660,55 @@ mod tests {
         assert_eq!(a.deps, vec![("b".to_string(), 1)]);
         assert_eq!(a.external_deps, vec![("opt".to_string(), "opt".to_string())]);
         assert_eq!(a.gated_deps, vec!["log".to_string(), "opt".to_string(), "twin".to_string()]);
+    }
+
+    #[test]
+    fn path_dependencies_come_from_every_table_with_their_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(
+            root,
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"a\", \"b\", \"c\", \"d\"]\n[workspace.dependencies]\nd = { path = \"d\" }\n",
+        );
+        write(
+            root,
+            "a/Cargo.toml",
+            "[package]\nname = \"a\"\n\n[dependencies]\nlog = \"0.4\"\nb = { path = \"../b\" }\nd.workspace = true\n\n\
+             [dependencies.c]\npath = \"../c\"\n\n[build_dependencies]\nb = { path = \"../b\" }\n\
+             [target.'cfg(unix)'.dev-dependencies]\nc = { path = \"../c\" }\nnone = { path = \"../missing\" }\n",
+        );
+        write(
+            root,
+            "b/Cargo.toml",
+            "[package]\nname = \"b\"\n[dependencies]\nself-b = { path = \".\", package = \"b\" }\n",
+        );
+        write(
+            root,
+            "c/Cargo.toml",
+            "[package]\nname = \"c\"\n[dev-dependencies]\nwrong = { path = \"../b\", package = \"x\" }\n",
+        );
+        write(root, "d/Cargo.toml", "[package]\nname = \"d\"\n");
+        let manifests: Vec<PathBuf> =
+            ["a", "b", "c", "d", ""].iter().map(|d| root.join(d).join("Cargo.toml")).collect();
+        let got: Vec<(String, String, DepKind, Option<usize>)> = path_dependencies(root, &manifests)
+            .into_iter()
+            .map(|d| {
+                let rel = |p: &Path| p.parent().unwrap().strip_prefix(root).unwrap().display().to_string();
+                (rel(&d.manifest), rel(&d.target), d.kind, d.line)
+            })
+            .collect();
+        let row = |a: &str, b: &str, kind, line| (a.to_string(), b.to_string(), kind, Some(line));
+        assert_eq!(
+            got,
+            vec![
+                row("a", "b", DepKind::Normal, 6),
+                row("a", "b", DepKind::Build, 13),
+                row("a", "c", DepKind::Normal, 9),
+                row("a", "c", DepKind::Dev, 15),
+                row("a", "d", DepKind::Normal, 7),
+            ]
+        );
     }
 
     #[test]

@@ -588,7 +588,15 @@ impl StudioApp {
             PaletteTarget::Tool { top, .. } if reveal => self.reveal_tool(&top),
             PaletteTarget::Tool { file, line, .. } => self.open_on_desk(&file, Some(line)),
             PaletteTarget::Setting { file, line } if !reveal => self.open_on_desk(&file, Some(line)),
-            PaletteTarget::Setting { .. } => self.canvas_state.fly_to(CameraTarget::Stop(Stop::Files)),
+            PaletteTarget::Setting { file, .. } => {
+                let canvas = &self.canvas_state;
+                let card = canvas
+                    .districts
+                    .files
+                    .as_ref()
+                    .and_then(|v| studio_canvas::districts::files::card_world_rect(&canvas.world, v, &file));
+                self.canvas_state.fly_to(card.map_or(CameraTarget::Stop(Stop::Files), CameraTarget::Rect));
+            }
             PaletteTarget::Step { group, .. } if reveal => self.reveal_pipeline_group(group),
             PaletteTarget::Step { file, line, .. } => self.open_on_desk(&file, Some(line)),
             PaletteTarget::Branch(name) => {
@@ -1020,6 +1028,7 @@ mod tests {
         };
         write("Cargo.toml", "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
         write("src/lib.rs", "pub fn alpha() {}\n\npub fn objective_hud() -> u32 {\n    1\n}\n");
+        write("node_modules/.package-lock.json", "{}\n");
         write("node_modules/pkg/index.js", "module.exports = 1;\n");
         Project { _dir: dir, root }
     }
@@ -1434,12 +1443,23 @@ mod tests {
         };
         let stop = |s| Some(CameraTarget::Stop(s));
 
-        // A setting opens at its line, or shows the Files district.
+        // A setting opens at its line, or shows its card in the Files district.
         let fact = entry_named(&app, EntryKind::Setting, "edition = 2021");
         assert_eq!(fact.detail, "Cargo.toml:7");
         assert_eq!(went(&mut app, EntryKind::Setting, "edition = 2021", false), stop(Stop::Desk));
         assert_eq!(desk_at(&app), (root.join("Cargo.toml"), Some(7)));
-        assert_eq!(went(&mut app, EntryKind::Setting, "edition = 2021", true), stop(Stop::Files));
+        let files = crate::app::districts::files_view(None, &BTreeMap::new(), Some(&settings));
+        app.canvas_state.districts.files = Some(Arc::new(files));
+        let world = app.canvas_state.world;
+        let card = Rect::from_min_size(
+            world.files.min + vec2(36.0 + 700.0 + 24.0, 112.0 + 460.0 + 24.0) * world.scale,
+            vec2(396.0, 70.0 + 2.0 * 22.0 + 16.0) * world.scale,
+        );
+        let Some(CameraTarget::Rect(landed)) = went(&mut app, EntryKind::Setting, "edition = 2021", true) else {
+            panic!("a setting with a card flies to the card")
+        };
+        assert!((landed.min - card.min).length() < 0.01 && (landed.max - card.max).length() < 0.01, "{landed:?}");
+        assert!(world.files.contains_rect(landed));
 
         // A route opens at its handler; a flow at its entry.
         went(&mut app, EntryKind::Route, "GET /api/objectives", false);
@@ -1460,6 +1480,23 @@ mod tests {
         assert_eq!(went(&mut app, EntryKind::Ticket, "T-12 Objective HUD", true), stop(Stop::Changes));
         assert_eq!(went(&mut app, EntryKind::Session, "brave-blue-fox", false), stop(Stop::Changes));
         assert_eq!(app.canvas_state.action_request, Some(CanvasAction::LightSession(Some("s1-full-id".into()))));
+    }
+
+    /// Shift+Enter on a setting whose card is not shown (no Files view yet, or no card for its
+    /// file) flies to the Files district.
+    #[test]
+    fn a_setting_without_a_card_reveals_the_files_district() {
+        let mut app = StudioApp::for_test();
+        let setting = || PaletteTarget::Setting { file: PathBuf::from("/p/Cargo.toml"), line: 7 };
+        let went = |app: &mut StudioApp| {
+            app.canvas_state.camera.pending = None;
+            app.route_target(setting(), true);
+            app.canvas_state.camera.pending.clone().map(|(t, _)| t)
+        };
+        assert_eq!(went(&mut app), Some(CameraTarget::Stop(Stop::Files)), "no Files view yet");
+        let files = crate::app::districts::files_view(None, &BTreeMap::new(), None);
+        app.canvas_state.districts.files = Some(Arc::new(files));
+        assert_eq!(went(&mut app), Some(CameraTarget::Stop(Stop::Files)), "no card for the file");
     }
 
     /// Runs frames the way the app draws them: keys, the title bar, the canvas, the dropdown.

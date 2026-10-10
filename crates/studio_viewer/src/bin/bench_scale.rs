@@ -20,7 +20,10 @@ const USAGE: &str =
   --palette        only benchmark the \u{2318}K palette: load the project as the app does, time the
                    index build, replay every prefix of 40 fixed queries cold; exits 1 if p95 is over
                    the target
-  --target-ms      p95 query target for --palette, in ms (default: 8)";
+  --target-ms      p95 query target for --palette, in ms (default: 8)
+  --sources        print how long each of the project's sources took to read, and what it said
+                   (the sources are always read with --real-only: the districts show them)
+  --world-report   print where every district sits in the world and how tall its content is, then exit";
 
 /// `--cpu-wires`: canvas frames paint wires with egui (the painter path) instead of preparing GPU
 /// instances.
@@ -33,6 +36,8 @@ struct BenchArgs {
     layout_report: bool,
     palette: bool,
     target_ms: f64,
+    sources: bool,
+    world_report: bool,
 }
 
 fn parse_args() -> Result<BenchArgs, String> {
@@ -42,6 +47,7 @@ fn parse_args() -> Result<BenchArgs, String> {
     let mut layout_report = false;
     let mut palette = false;
     let mut target_ms = palette::TARGET_MS;
+    let (mut sources, mut world_report) = (false, false);
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let mut number = |flag: &str| -> Result<f64, String> {
@@ -55,6 +61,8 @@ fn parse_args() -> Result<BenchArgs, String> {
             "--layout-report" => layout_report = true,
             "--palette" => palette = true,
             "--target-ms" => target_ms = number("--target-ms")?,
+            "--sources" => sources = true,
+            "--world-report" => world_report = true,
             "--cpu-wires" => CPU_WIRES.store(true, std::sync::atomic::Ordering::Relaxed),
             "-h" | "--help" => return Err(String::new()),
             flag if flag.starts_with('-') => return Err(format!("unknown option {flag}")),
@@ -66,7 +74,7 @@ fn parse_args() -> Result<BenchArgs, String> {
         Some(p) => p,
         None => std::env::current_dir().map_err(|e| format!("no project given and cwd unavailable: {e}"))?,
     };
-    Ok(BenchArgs { project, budget, real_only, layout_report, palette, target_ms })
+    Ok(BenchArgs { project, budget, real_only, layout_report, palette, target_ms, sources, world_report })
 }
 
 fn main() {
@@ -93,7 +101,7 @@ fn main() {
     println!("  Budget: {}\n", tracker.budget.describe());
 
     // Part 1: Real-world project benchmark
-    benchmark_real_project(&mut tracker, &args.project, args.layout_report);
+    benchmark_real_project(&mut tracker, &args);
     if args.real_only {
         tracker.print_timeline_summary();
         return;
@@ -112,7 +120,8 @@ fn main() {
     tracker.print_timeline_summary();
 }
 
-fn benchmark_real_project(tracker: &mut TimelineTracker, target_path: &std::path::Path, layout_report: bool) {
+fn benchmark_real_project(tracker: &mut TimelineTracker, args: &BenchArgs) {
+    let target_path = args.project.as_path();
     if !target_path.exists() {
         println!("[-] Target path does not exist: {}", target_path.display());
         return;
@@ -259,7 +268,7 @@ fn benchmark_real_project(tracker: &mut TimelineTracker, target_path: &std::path
         Some(stats.wire_count),
     );
 
-    if layout_report {
+    if args.layout_report {
         print_layout_report(&graph);
     }
 
@@ -293,8 +302,21 @@ fn benchmark_real_project(tracker: &mut TimelineTracker, target_path: &std::path
         Some(stats.wire_count),
     );
 
+    // 6b. The project's sources, read as the app reads them, and the districts' views of them.
+    let content = (args.real_only || args.sources || args.world_report).then(|| {
+        let read = content::read_sources(tracker, target_path, &graph, args.sources);
+        let views = content::build_views(tracker, &read, &graph);
+        let desk = content::desk_files(&scanned);
+        content::WorldContent { views, desk, root: read.root }
+    });
+    if args.world_report {
+        let views = content.as_ref().map(|c| c.views.clone()).unwrap_or_default();
+        content::print_world_report(&graph, views);
+        std::process::exit(0);
+    }
+
     // 7. Real canvas frames across zoom levels (frame budget verification)
-    benchmark_canvas_frames(tracker, &mut graph);
+    benchmark_canvas_frames(tracker, &mut graph, content);
 
     // 8. Geometry-only relayout: a card opening, a folder changing level.
     benchmark_relayout(tracker, &mut graph);
@@ -361,7 +383,7 @@ fn benchmark_relayout(tracker: &mut TimelineTracker, graph: &mut Graph) {
 
 /// Times real canvas frames: `CanvasView::show` in a headless egui context plus tessellation,
 /// which is the CPU work of one frame. GPU time is not included.
-fn benchmark_canvas_frames(tracker: &mut TimelineTracker, graph: &mut Graph) {
+fn benchmark_canvas_frames(tracker: &mut TimelineTracker, graph: &mut Graph, content: Option<content::WorldContent>) {
     const WARMUP: usize = 3;
     const FRAMES: usize = 30;
     println!("  Canvas frames, CPU only ({:.0} FPS budget):", tracker.budget.target_fps);
@@ -454,7 +476,7 @@ fn benchmark_canvas_frames(tracker: &mut TimelineTracker, graph: &mut Graph) {
             Some(stats.visible_wires),
         );
     }
-    benchmark_world_frames(tracker, &ctx, &mut state, graph, screen);
+    benchmark_world_frames(tracker, &ctx, &mut state, graph, screen, content);
     println!();
 }
 
@@ -471,60 +493,200 @@ fn canvas_frame(ctx: &egui::Context, state: &mut CanvasState, graph: &mut Graph,
     start.elapsed().as_secs_f64() * 1_000_000.0
 }
 
-/// A frame at every stop of the world, and the slowest frame of a flight across it.
+/// Frames timed per stage, after [`FRAME_WARMUP`] untimed ones.
+const STAGE_FRAMES: usize = 30;
+/// Frames drawn before timing starts; the first of them is reported on its own.
+const FRAME_WARMUP: usize = 3;
+
+/// CPU frame times of one stage, in µs.
+struct FrameTimes {
+    /// The first frame drawn (text laid out, caches cold).
+    first_us: f64,
+    samples: Vec<f64>,
+}
+
+/// Draws [`FRAME_WARMUP`] frames, then `frames` timed ones, 1/60 s apart.
+fn run_frames(
+    ctx: &egui::Context,
+    state: &mut CanvasState,
+    graph: &mut Graph,
+    screen: Rect,
+    time: &mut f64,
+    frames: usize,
+) -> FrameTimes {
+    let mut times = FrameTimes { first_us: 0.0, samples: Vec::with_capacity(frames) };
+    for i in 0..FRAME_WARMUP + frames {
+        *time += 1.0 / 60.0;
+        let us = canvas_frame(ctx, state, graph, screen, *time);
+        if i == 0 {
+            times.first_us = us;
+        }
+        if i >= FRAME_WARMUP {
+            times.samples.push(us);
+        }
+    }
+    times
+}
+
+/// Records a frame stage: p50, p95 and max, and PASS when p95 fits the frame budget.
+fn record_frames(tracker: &mut TimelineTracker, name: String, what: String, times: &FrameTimes, state: &CanvasState) {
+    let mut sorted = times.samples.clone();
+    sorted.sort_by(f64::total_cmp);
+    let p95 = palette::percentile(&sorted, 95.0);
+    let budget = tracker.budget.frame_budget_us();
+    let verdict = if p95 <= budget { "PASS" } else { "FAIL" };
+    tracker.record_stage(
+        name,
+        format!(
+            "{what} | first {:.2} ms | p50 {:.2} / p95 {:.2} / max {:.2} ms over {} frames | {verdict} {:.0} fps \
+             (p95 vs {:.2} ms)",
+            times.first_us / 1000.0,
+            palette::percentile(&sorted, 50.0) / 1000.0,
+            p95 / 1000.0,
+            sorted.last().copied().unwrap_or(0.0) / 1000.0,
+            sorted.len(),
+            tracker.budget.target_fps,
+            budget / 1000.0
+        ),
+        Some(1_000_000.0 / p95.max(0.1)),
+        Some(p95),
+        Some(state.frame_stats.visible_nodes),
+        Some(state.frame_stats.visible_wires),
+    );
+}
+
+/// A frame at every stop of the world and through a flight across it, with the districts showing
+/// what the project's sources read (when they were read), then the Desk with real cards.
 fn benchmark_world_frames(
     tracker: &mut TimelineTracker,
     ctx: &egui::Context,
     state: &mut CanvasState,
     graph: &mut Graph,
     screen: Rect,
+    content: Option<content::WorldContent>,
 ) {
     use studio_canvas::{CameraTarget, Stop};
+    let filled = content.is_some();
+    let mut desk = Vec::new();
+    if let Some(content) = content {
+        state.districts = content.views;
+        state.refresh_world();
+        state.desk.clear(Some(content.root));
+        desk = content.desk;
+    }
     let world = state.world;
     println!(
-        "    world: map {:.0} x {:.0}, districts at {:.1} world units per point, whole world {:.0} x {:.0}",
+        "    world: map {:.0} x {:.0}, districts at {:.1} world units per point, whole world {:.0} x {:.0}, {}",
         world.code.width(),
         world.code.height(),
         world.scale,
         world.bounds.width(),
-        world.bounds.height()
+        world.bounds.height(),
+        if filled { "districts filled from the sources" } else { "districts empty (no sources read)" }
     );
     let mut time = 1000.0;
     for stop in [Stop::World, Stop::Pipeline, Stop::Files, Stop::Code, Stop::Desk, Stop::Run, Stop::Changes] {
         state.jump_to(CameraTarget::Stop(stop));
-        let mut worst: f64 = 0.0;
-        for _ in 0..8 {
-            time += 1.0 / 60.0;
-            worst = worst.max(canvas_frame(ctx, state, graph, screen, time));
-        }
-        tracker.record_stage(
-            format!("World stop {}", stop.label()),
-            format!("zoom {:.4}, slowest of 8 frames {:.2} ms", state.transform.zoom, worst / 1000.0),
-            Some(1_000_000.0 / worst.max(0.1)),
-            Some(worst),
-            Some(state.frame_stats.visible_nodes),
-            Some(state.frame_stats.visible_wires),
-        );
+        let times = run_frames(ctx, state, graph, screen, &mut time, STAGE_FRAMES);
+        let what = format!("zoom {:.4}", state.transform.zoom);
+        record_frames(tracker, format!("World stop {}", stop.label()), what, &times, state);
     }
     // Files to Run crosses the whole map: the longest glide.
     state.jump_to(CameraTarget::Stop(Stop::Files));
     time += 1.0;
     canvas_frame(ctx, state, graph, screen, time);
     state.fly_to(CameraTarget::Stop(Stop::Run));
-    let (mut worst, mut frames): (f64, usize) = (0.0, 0);
-    while frames < 120 && (frames == 0 || state.camera.is_flying()) {
+    let mut flight = FrameTimes { first_us: 0.0, samples: Vec::new() };
+    while flight.samples.len() < 120 && (flight.samples.is_empty() || state.camera.is_flying()) {
         time += 1.0 / 60.0;
-        worst = worst.max(canvas_frame(ctx, state, graph, screen, time));
-        frames += 1;
+        flight.samples.push(canvas_frame(ctx, state, graph, screen, time));
     }
+    flight.first_us = flight.samples[0];
+    record_frames(tracker, "World flight Files to Run".into(), "every frame of the glide".into(), &flight, state);
+    if !desk.is_empty() {
+        benchmark_desk(tracker, ctx, state, graph, screen, &desk, &mut time);
+    }
+}
+
+/// Where the Desk's frames look, in its local units from its top-left: past the navigator, over
+/// the first cards.
+const DESK_FOCUS: [f32; 2] = [1280.0, 0.5];
+
+/// Opens `files` on the Desk, waits for their reads as the app does (one thread each), then times
+/// frames at the Desk's stop and at fixed zooms on its cards.
+fn benchmark_desk(
+    tracker: &mut TimelineTracker,
+    ctx: &egui::Context,
+    state: &mut CanvasState,
+    graph: &mut Graph,
+    screen: Rect,
+    files: &[PathBuf],
+    time: &mut f64,
+) {
+    use studio_canvas::{CameraTarget, DeskRequest, Stop};
+    let t = Instant::now();
+    for file in files {
+        state.desk.open(file, None);
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    for request in std::mem::take(&mut state.desk.requests) {
+        if let DeskRequest::Read { card, path } = request {
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send((card, studio_viewer::app::desk_io::read_for_desk(&path)));
+            });
+        }
+    }
+    drop(tx);
+    for (card, content) in rx {
+        state.desk.fill(card, content);
+    }
+    let bytes: u64 = files.iter().filter_map(|f| std::fs::metadata(f).ok()).map(|m| m.len()).sum();
+    let shown: Vec<String> =
+        state.desk.cards.iter().map(|c| format!("{} ({})", c.rel, content_kind(&c.content))).collect();
     tracker.record_stage(
-        "World flight Files to Run",
-        format!("{frames} frames, slowest {:.2} ms", worst / 1000.0),
-        Some(1_000_000.0 / worst.max(0.1)),
-        Some(worst),
+        "Desk: 8 cards read",
+        format!(
+            "{} cards, {} KB read in {:.1} ms: {}",
+            state.desk.cards.len(),
+            bytes / 1024,
+            t.elapsed().as_secs_f64() * 1000.0,
+            shown.join(", ")
+        ),
         None,
+        None,
+        Some(state.desk.cards.len()),
         None,
     );
+
+    state.jump_to(CameraTarget::Stop(Stop::Desk));
+    let times = run_frames(ctx, state, graph, screen, time, STAGE_FRAMES);
+    let what =
+        format!("8 cards, zoom {:.4} (local {:.2})", state.transform.zoom, state.transform.zoom * state.world.scale);
+    record_frames(tracker, "Desk stop, 8 cards".into(), what, &times, state);
+    let world = state.world;
+    let focus = world.desk.min + egui::vec2(DESK_FOCUS[0] * world.scale, world.desk.height() * DESK_FOCUS[1]);
+    let skeleton = studio_canvas::desk::view::SKELETON_ZOOM;
+    for local in [skeleton - 0.01, skeleton + 0.01, 1.0, 2.0] {
+        state.transform.center_on_world_pos(focus, screen, Some(local / world.scale));
+        let times = run_frames(ctx, state, graph, screen, time, STAGE_FRAMES);
+        let what = format!("zoom {:.4} (local {:.2})", state.transform.zoom, state.transform.zoom * world.scale);
+        record_frames(tracker, format!("Desk 8 cards at {local:.2}"), what, &times, state);
+    }
+}
+
+/// How a Desk card shows its file, in a word.
+fn content_kind(content: &studio_canvas::CardContent) -> &'static str {
+    use studio_canvas::CardContent;
+    match content {
+        CardContent::Loading => "loading",
+        CardContent::Code(_) => "code",
+        CardContent::TooLarge(_) => "too large",
+        CardContent::Binary(_) => "binary",
+        CardContent::Unreadable(_) => "unreadable",
+        CardContent::Markdown(_) => "markdown",
+        CardContent::Plan(_) => "plan",
+    }
 }
 
 /// Prints the overall size and aspect of the layout, and the folders that make it that size.
@@ -1370,5 +1532,455 @@ mod palette {
             assert_eq!(per_kind(Scope::All)(EntryKind::Symbol), 8);
             assert_eq!(per_kind(Scope::All)(EntryKind::Branch), 5);
         }
+    }
+}
+
+/// The districts' content: the project's sources read the way the app reads them (`--sources`),
+/// the districts' views built from them, the files the Desk opens, and `--world-report`.
+mod content {
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use studio_canvas::{CanvasState, DistrictViews, Stop};
+    use studio_graph::{Graph, NodeArchetype};
+    use studio_parser::RustProject;
+    use studio_sources::{
+        agents_job, disk_job, history_job, packages_job, part_commits_job, pipeline_job, settings_job, tickets_job,
+        tools_job, AgentIndex, GitDisk, GitHistory, JobContext, JobError, Packages, Pipeline, Settings, SourceEvent,
+        SourceHub, SourceKind, SourceState, TicketIndex, Tools, Worktree,
+    };
+    use studio_viewer::app::districts::{changes_view, district_notes, files_view, pipeline_view, run_view};
+    use studio_viewer::telemetry::TimelineTracker;
+
+    /// How long the bench waits for every source to finish.
+    const TIMEOUT: Duration = Duration::from_secs(300);
+    /// Builds timed per district view.
+    const VIEW_BUILDS: usize = 20;
+    /// Cards the Desk opens.
+    pub const DESK_CARDS: usize = 8;
+
+    /// What the world stages paint.
+    pub struct WorldContent {
+        pub views: DistrictViews,
+        /// The files the Desk opens.
+        pub desk: Vec<PathBuf>,
+        /// The canonical project root.
+        pub root: PathBuf,
+    }
+
+    /// One job: from its start to its last word, and that word.
+    pub struct JobTime {
+        pub name: &'static str,
+        pub kind: SourceKind,
+        pub ms: f64,
+        pub state: SourceState,
+    }
+
+    /// What the sources read, as the app keeps it.
+    #[derive(Default)]
+    pub struct Read {
+        pub root: PathBuf,
+        pub status: BTreeMap<SourceKind, SourceState>,
+        pub packages: Option<Arc<Packages>>,
+        pub tools: Option<Arc<Tools>>,
+        pub disk: Option<Arc<GitDisk>>,
+        pub sizes: BTreeMap<PathBuf, u64>,
+        pub settings: Option<Arc<Settings>>,
+        pub pipeline: Option<Arc<Pipeline>>,
+        pub history: Option<Arc<GitHistory>>,
+        history_elapsed: Duration,
+        pub agents: Option<Arc<AgentIndex>>,
+        pub tickets: Option<Arc<TicketIndex>>,
+        pub jobs: Vec<JobTime>,
+        /// Jobs still running at the timeout.
+        pub unfinished: Vec<&'static str>,
+        pipeline_started: bool,
+        follow_ups: [bool; 3],
+    }
+
+    /// The jobs running on a hub, oldest first.
+    struct Jobs<'a> {
+        hub: &'a SourceHub,
+        running: Vec<(&'static str, SourceKind, Instant)>,
+    }
+
+    impl Jobs<'_> {
+        fn spawn<F>(&mut self, name: &'static str, kind: SourceKind, job: F)
+        where
+            F: FnOnce(&JobContext) -> Result<(), JobError> + Send + 'static,
+        {
+            self.running.push((name, kind, Instant::now()));
+            self.hub.spawn(kind, job);
+        }
+
+        /// The oldest running job of `kind` has finished: its name and time.
+        fn finish(&mut self, kind: SourceKind) -> Option<(&'static str, Duration)> {
+            let at = self.running.iter().position(|(_, k, _)| *k == kind)?;
+            let (name, _, started) = self.running.remove(at);
+            Some((name, started.elapsed()))
+        }
+    }
+
+    /// Reads every source with the jobs, order and follow-ups of `StudioApp::poll_sources`
+    /// (the first layout is already done here, so the follow-ups that wait for it start as soon
+    /// as git has answered), until every job has finished. Commit pages are read only when asked
+    /// for, so none is read here.
+    pub fn read_sources(tracker: &mut TimelineTracker, project: &Path, graph: &Graph, print: bool) -> Read {
+        let root = project.canonicalize().unwrap_or_else(|_| project.to_path_buf());
+        let hub = SourceHub::new(root.clone(), || {});
+        let mut jobs = Jobs { hub: &hub, running: Vec::new() };
+        let mut read = Read { root, ..Default::default() };
+        let started = Instant::now();
+        let manifests = paths_of(graph, |title| title == "Cargo.toml");
+        let json = paths_of(graph, |title| title.ends_with(".json"));
+        jobs.spawn("packages", SourceKind::Packages, packages_job(manifests.clone()));
+        jobs.spawn("disk", SourceKind::Disk, disk_job());
+        jobs.spawn("settings", SourceKind::Settings, settings_job(manifests, json));
+        jobs.spawn("git history", SourceKind::Git, history_job());
+        while !jobs.running.is_empty() && started.elapsed() < TIMEOUT {
+            let events = hub.drain();
+            if events.is_empty() {
+                std::thread::sleep(Duration::from_millis(2));
+                continue;
+            }
+            for event in events {
+                read.take(event, &mut jobs, graph);
+            }
+            read.follow_up(&mut jobs);
+        }
+        read.unfinished = jobs.running.iter().map(|(name, ..)| *name).collect();
+        let total_ms = started.elapsed().as_secs_f64() * 1000.0;
+        if print {
+            read.print_jobs(total_ms);
+        }
+        tracker.record_stage("Sources read", read.summary(total_ms), None, None, None, None);
+        read
+    }
+
+    impl Read {
+        /// Takes in one event as `poll_sources` does, starting the jobs that wait on it.
+        fn take(&mut self, event: SourceEvent, jobs: &mut Jobs, graph: &Graph) {
+            match event {
+                SourceEvent::Status { source, state } => {
+                    if state != SourceState::Running {
+                        if let Some((name, elapsed)) = jobs.finish(source) {
+                            if name == "git history" {
+                                self.history_elapsed = elapsed;
+                            }
+                            let ms = elapsed.as_secs_f64() * 1000.0;
+                            self.jobs.push(JobTime { name, kind: source, ms, state: state.clone() });
+                        }
+                    }
+                    let missing = matches!(state, SourceState::Unavailable(_) | SourceState::Failed(_));
+                    // Without Cargo packages the tools still read npm, make, just and workflows.
+                    if missing && source == SourceKind::Packages {
+                        jobs.spawn("tools", SourceKind::Tools, tools_job(Arc::default(), project_files(graph)));
+                    }
+                    // Without tools the pipeline still reads tags and routes.
+                    if missing && source == SourceKind::Tools && !self.pipeline_started {
+                        self.start_pipeline(jobs, Arc::default(), graph);
+                    }
+                    self.status.insert(source, state);
+                }
+                SourceEvent::Packages(packages) => {
+                    jobs.spawn("tools", SourceKind::Tools, tools_job(packages.clone(), project_files(graph)));
+                    self.packages = Some(packages);
+                }
+                SourceEvent::Tools(tools) => {
+                    if !self.pipeline_started {
+                        self.start_pipeline(jobs, tools.clone(), graph);
+                    }
+                    self.tools = Some(tools);
+                }
+                SourceEvent::Pipeline(pipeline) => self.pipeline = Some(pipeline),
+                SourceEvent::GitDisk(disk) => self.disk = Some(disk),
+                SourceEvent::FolderSize(path, bytes) => {
+                    self.sizes.insert(path, bytes);
+                }
+                SourceEvent::GitHistory(history) => self.history = Some(history),
+                SourceEvent::Tickets(tickets) => self.tickets = Some(tickets),
+                SourceEvent::Agents(agents) => self.agents = Some(agents),
+                SourceEvent::Settings(settings) => self.settings = Some(settings),
+                SourceEvent::PartCommits(_) | SourceEvent::CommitFiles(..) => {}
+            }
+        }
+
+        fn start_pipeline(&mut self, jobs: &mut Jobs, tools: Arc<Tools>, graph: &Graph) {
+            self.pipeline_started = true;
+            let packages = self.packages.clone().unwrap_or_default();
+            jobs.spawn("pipeline", SourceKind::Pipeline, pipeline_job(packages, tools, file_list(graph)));
+        }
+
+        /// Tickets and agent sessions once git has answered; part commits once there is a history.
+        fn follow_up(&mut self, jobs: &mut Jobs) {
+            let failed =
+                matches!(self.status.get(&SourceKind::Git), Some(SourceState::Unavailable(_) | SourceState::Failed(_)));
+            let answered = self.history.is_some() || failed;
+            let [tickets, agents, part_commits] = &mut self.follow_ups;
+            if answered && !*tickets {
+                *tickets = true;
+                jobs.spawn("tickets", SourceKind::Tickets, tickets_job());
+            }
+            if answered && !*agents {
+                *agents = true;
+                let worktrees = self.history.as_ref().map_or(&[][..], |h| &h.worktrees[..]);
+                jobs.spawn("agent sessions", SourceKind::Agents, agents_job(agent_roots(&self.root, worktrees)));
+            }
+            if self.history.is_some() && !*part_commits {
+                *part_commits = true;
+                jobs.spawn("git part commits", SourceKind::Git, part_commits_job());
+            }
+        }
+
+        /// The states as the Changes district reads them: git is ready once the history is in.
+        fn changes_status(&self) -> BTreeMap<SourceKind, SourceState> {
+            let mut status = self.status.clone();
+            if self.history.is_some() {
+                status.insert(SourceKind::Git, SourceState::Ready { elapsed: self.history_elapsed });
+            }
+            status
+        }
+
+        fn print_jobs(&self, total_ms: f64) {
+            println!("  Sources, in the order they finished ({total_ms:.0} ms until the last):");
+            for job in &self.jobs {
+                println!(
+                    "    {:<18} {:<15} {:>9.1} ms  {}",
+                    job.name,
+                    job.kind.label(),
+                    job.ms,
+                    state_text(&job.state)
+                );
+            }
+            for name in &self.unfinished {
+                println!("    {name:<18} still running after {} s", TIMEOUT.as_secs());
+            }
+        }
+
+        fn summary(&self, total_ms: f64) -> String {
+            let count = |n: Option<usize>| n.map_or("-".to_string(), |n| n.to_string());
+            format!(
+                "{} jobs in {total_ms:.0} ms ({} unfinished): packages {}, tools {}, pipeline steps {}, commits {}, \
+                 sessions {}, tickets {}, settings cards {}, sizes {}",
+                self.jobs.len(),
+                self.unfinished.len(),
+                count(self.packages.as_ref().map(|p| p.packages.len())),
+                count(self.tools.as_ref().map(|t| t.tools.len())),
+                count(self.pipeline.as_ref().map(|p| p.steps.len())),
+                count(self.history.as_ref().map(|h| h.commit_count)),
+                count(self.agents.as_ref().map(|a| a.sessions.len())),
+                count(self.tickets.as_ref().map(|t| t.tickets.len())),
+                count(self.settings.as_ref().map(|s| s.sheets.len())),
+                self.sizes.len()
+            )
+        }
+    }
+
+    fn state_text(state: &SourceState) -> String {
+        match state {
+            SourceState::Running => "running".to_string(),
+            SourceState::Ready { elapsed } => format!("ready (job {:.1} ms)", elapsed.as_secs_f64() * 1000.0),
+            SourceState::Unavailable(why) => format!("unavailable: {why}"),
+            SourceState::Failed(why) => format!("FAILED: {why}"),
+        }
+    }
+
+    /// Paths of the cards whose title passes `keep`, as the app hands them to packages and
+    /// settings.
+    fn paths_of(graph: &Graph, keep: impl Fn(&str) -> bool) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = graph
+            .nodes
+            .values()
+            .filter(|n| keep(&n.title))
+            .filter_map(|n| n.file_path.as_ref().map(PathBuf::from))
+            .collect();
+        paths.sort();
+        paths
+    }
+
+    /// Every path a node points at, sorted and unique: what the tools job gets.
+    fn project_files(graph: &Graph) -> Vec<PathBuf> {
+        let mut files: Vec<PathBuf> =
+            graph.nodes.values().filter_map(|n| n.file_path.as_ref().map(PathBuf::from)).collect();
+        files.sort();
+        files.dedup();
+        files
+    }
+
+    /// Every file card's path, sorted and unique: what the pipeline job gets.
+    fn file_list(graph: &Graph) -> Vec<PathBuf> {
+        let mut files: Vec<PathBuf> = graph
+            .nodes
+            .values()
+            .filter(|n| n.archetype == NodeArchetype::File)
+            .filter_map(|n| n.file_path.as_ref().map(PathBuf::from))
+            .collect();
+        files.sort();
+        files.dedup();
+        files
+    }
+
+    /// The project root, then the project's folder in every other worktree, each once.
+    fn agent_roots(root: &Path, worktrees: &[Worktree]) -> Vec<PathBuf> {
+        let prefix = worktrees
+            .iter()
+            .filter_map(|w| root.strip_prefix(&w.path).ok().map(|rel| (w.path.components().count(), rel)))
+            .max_by_key(|(depth, _)| *depth)
+            .map(|(_, rel)| rel.to_path_buf())
+            .unwrap_or_default();
+        let mut roots = vec![root.to_path_buf()];
+        for worktree in worktrees {
+            let path = if prefix.as_os_str().is_empty() { worktree.path.clone() } else { worktree.path.join(&prefix) };
+            if !roots.contains(&path) {
+                roots.push(path);
+            }
+        }
+        roots
+    }
+
+    /// Runs `build` [`VIEW_BUILDS`] times: the last result, the median and the slowest, in ms.
+    fn time_builds<T>(mut build: impl FnMut() -> T) -> (T, f64, f64) {
+        let mut times = Vec::with_capacity(VIEW_BUILDS);
+        let mut last = None;
+        for _ in 0..VIEW_BUILDS {
+            let t = Instant::now();
+            last = Some(std::hint::black_box(build()));
+            times.push(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        times.sort_by(f64::total_cmp);
+        (last.expect("at least one build"), times[times.len() / 2], times[times.len() - 1])
+    }
+
+    /// Times each district's view build on what the sources read, and returns the views with
+    /// the districts' notes, as `StudioApp::apply_sources` sets them.
+    pub fn build_views(tracker: &mut TimelineTracker, read: &Read, graph: &Graph) -> DistrictViews {
+        let mut views = DistrictViews::default();
+        let record = |tracker: &mut TimelineTracker, name: &str, median: f64, max: f64, what: String| {
+            tracker.record_stage(
+                format!("View build: {name}"),
+                format!("median {median:.3} ms, max {max:.3} ms over {VIEW_BUILDS} builds; {what}"),
+                None,
+                None,
+                None,
+                None,
+            );
+        };
+        let (files, median, max) =
+            time_builds(|| files_view(read.disk.as_deref(), &read.sizes, read.settings.as_deref()));
+        record(tracker, "files", median, max, format!("{} settings cards", files.cards.len()));
+        views.files = Some(Arc::new(files));
+        if let Some(tools) = &read.tools {
+            let (run, median, max) = time_builds(|| run_view(tools, read.packages.as_deref(), graph, &read.status));
+            record(tracker, "run", median, max, format!("{} tools, {} packages", run.tools.len(), run.packages.len()));
+            views.run = Some(Arc::new(run));
+        }
+        let status = read.changes_status();
+        let now =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+        let commit_files = BTreeMap::new();
+        let (changes, median, max) = time_builds(|| {
+            changes_view(
+                read.history.as_deref(),
+                read.agents.as_deref(),
+                read.tickets.as_deref(),
+                &commit_files,
+                &status,
+                now,
+            )
+        });
+        let what = format!("{} worktree rows, {} branches", changes.rows.len(), changes.branches.len());
+        record(tracker, "changes", median, max, what);
+        views.changes = Some(Arc::new(changes));
+        if let Some(pipeline) = &read.pipeline {
+            let (view, median, max) = time_builds(|| pipeline_view(pipeline));
+            record(tracker, "pipeline", median, max, format!("{} groups", view.groups.len()));
+            views.pipeline = Some(Arc::new(view));
+        }
+        views.notes = district_notes(&read.status);
+        views
+    }
+
+    /// The files the Desk opens: the [`DESK_CARDS`] largest text files the Desk shows as text,
+    /// from the first package (by folder) on, then the files outside every package; ties by path.
+    pub fn desk_files(project: &RustProject) -> Vec<PathBuf> {
+        let mut groups: Vec<&studio_parser::CrateInfo> = project.crates.iter().collect();
+        groups.sort_by(|a, b| (!a.is_package(), &a.root_path, &a.name).cmp(&(!b.is_package(), &b.root_path, &b.name)));
+        let mut chosen = Vec::new();
+        for group in groups {
+            let mut files: Vec<(u64, &PathBuf)> = group
+                .source_files
+                .iter()
+                .filter_map(|f| std::fs::metadata(f).ok().map(|m| (m.len(), f)))
+                .filter(|(len, _)| *len <= studio_viewer::app::desk_io::MAX_DESK_BYTES)
+                .collect();
+            files.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
+            for (_, file) in files {
+                if chosen.len() == DESK_CARDS {
+                    return chosen;
+                }
+                if !chosen.contains(file) {
+                    chosen.push(file.clone());
+                }
+            }
+        }
+        chosen
+    }
+
+    /// `--world-report`: where every district sits and how tall the content that sizes it is.
+    pub fn print_world_report(graph: &Graph, views: DistrictViews) {
+        let mut state = CanvasState::default();
+        state.refresh_scene(graph);
+        state.districts = views;
+        state.refresh_world();
+        let world = state.world;
+        let width = studio_canvas::WorldLayout::centre_width_local(world.code);
+        println!("\n  WORLD REPORT");
+        println!("    scale {:.3} world units per local unit; centre column {width:.0} local units wide", world.scale);
+        let rect = |name: &str, r: egui::Rect| {
+            println!(
+                "    {name:<10} min ({:>10.0}, {:>10.0})  size {:>9.0} x {:>9.0}  local {:>7.0} x {:>7.0}",
+                r.min.x,
+                r.min.y,
+                r.width(),
+                r.height(),
+                r.width() / world.scale,
+                r.height() / world.scale
+            );
+        };
+        rect("code", world.code);
+        rect("code cell", world.code_cell);
+        for stop in [Stop::Pipeline, Stop::Files, Stop::Desk, Stop::Run, Stop::Changes] {
+            rect(stop.label(), world.rect(stop));
+        }
+        rect("bounds", world.bounds);
+        let extents = state.district_extents(width);
+        println!("    extents: pipeline {:?}, changes {:?} (local units)", extents.pipeline, extents.changes);
+        match state.pipeline_layout(width) {
+            Some(layout) => println!("    pipeline layout: {:.0} high, {} groups", layout.height, layout.groups.len()),
+            None => println!("    pipeline layout: none (no pipeline view)"),
+        }
+        match state.districts.files.clone() {
+            Some(view) => {
+                let rows = state.files_tree(graph);
+                let size = world.files.size() / world.scale;
+                let parts = studio_canvas::districts::files::layout(size, &view, rows.len());
+                let bottom =
+                    parts.cards.iter().map(|c| c.rect.max.y).fold(parts.tree.max.y.max(parts.map.max.y), f32::max);
+                println!(
+                    "    files layout: content {bottom:.0} high in a district {:.0} high; {} of {} tree rows shown, {} cards",
+                    size.y,
+                    parts.rows.len(),
+                    rows.len(),
+                    parts.cards.len()
+                );
+            }
+            None => println!("    files layout: none (no files view)"),
+        }
+        for (stop, note) in &state.districts.notes {
+            println!("    note on {}: {note}", stop.label());
+        }
+        println!();
     }
 }
