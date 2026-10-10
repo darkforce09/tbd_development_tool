@@ -5,7 +5,10 @@ pub mod members;
 use crate::extractor::ExtractedProject;
 use studio_graph::Graph;
 
-pub use files::{build_files_graph, build_skeleton_files_graph, folder_cluster_id, materialize_folder};
+pub use files::{
+    apply_folder_totals, build_files_graph, build_skeleton_files_graph, first_sentence, folder_cluster_id,
+    heavy_folder_totals, materialize_folder, summarize_folders,
+};
 
 #[derive(Debug, Clone, Default, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 #[rkyv(derive(Debug))]

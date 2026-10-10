@@ -5,16 +5,15 @@ use studio_graph::{EdgeId, FolderDetail, Graph};
 use studio_ui::{paint_group_cluster, paint_pin_socket, with_alpha, GroupClusterProps, SocketVisualState};
 
 use crate::gpu::{CanvasFrame, CanvasLayer, CanvasPaint, CardLayer, SceneUniforms};
-use crate::grid::paint_infinite_grid;
-use crate::interaction::InteractionMode;
 use crate::scene::{
     self, build_card_layer, build_overlay, curve_ends, world_control_points, WireInstance, CARD_LAYER_ZOOM, CYCLE_BOX,
     FOLDER_LAYER_ZOOM, GATE_MIN_ZOOM, WIRE_ACTIVE, WIRE_HIGHLIGHT,
 };
-use crate::wire::{paint_pending_wire, paint_wire_badge_and_label};
+use crate::wire::paint_wire_badge_and_label;
 
+use super::gate::InputGate;
 use super::render_nodes::is_dimmed;
-use super::types::{data_type_color, CanvasState};
+use super::types::CanvasState;
 
 /// Smallest on-screen folder, in points, that gets its name drawn while the GPU draws frames.
 const FOLDER_LABEL_MIN: [f32; 2] = [80.0, 12.0];
@@ -75,13 +74,11 @@ fn highlighted_edges(state: &CanvasState, graph: &Graph) -> Vec<(EdgeId, u32)> {
     out
 }
 
-/// The far-zoom card layer, rebuilt only when the scene, search, filters or selection change.
+/// The far-zoom card layer, rebuilt only when the scene or the selection change.
 fn card_layer(state: &mut CanvasState, graph: &Graph) -> CardLayer {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     state.scene.revision.hash(&mut hasher);
-    state.search_filter.hash(&mut hasher);
-    state.category_filter.hash(&mut hasher);
     state.selected_nodes.hash(&mut hasher);
     let key = hasher.finish();
     if let Some((k, layer)) = &state.card_layer {
@@ -89,8 +86,7 @@ fn card_layer(state: &mut CanvasState, graph: &Graph) -> CardLayer {
             return layer.clone();
         }
     }
-    let query = state.search_filter.trim().to_lowercase();
-    let dimmed = |n: &studio_graph::Node| is_dimmed(n, &query, &state.category_filter, state.trace_nodes.as_ref());
+    let dimmed = |n: &studio_graph::Node| is_dimmed(n, state.trace_nodes.as_ref());
     let boxes = build_card_layer(graph, dimmed, &state.selected_nodes);
     let layer = CardLayer { revision: scene::next_revision(), boxes: Arc::new(boxes) };
     state.card_layer = Some((key, layer.clone()));
@@ -105,7 +101,7 @@ fn gpu_layer(painter: &Painter, frame: &Arc<CanvasFrame>, layer: CanvasLayer, re
 /// Paints the grid, folders, cycle boxes, wires and gates. With a GPU `frame` the static parts are
 /// drawn by the GPU and egui only adds legible text; without one everything is painted here.
 /// Returns the folder detail level picked by a click, if any, and the number of wire instances
-/// drawn.
+/// drawn. The folders' detail buttons go into `interactive_rects`.
 #[allow(clippy::too_many_arguments)]
 pub fn render_background_and_wires(
     painter: &Painter,
@@ -113,8 +109,8 @@ pub fn render_background_and_wires(
     graph: &Graph,
     rect: Rect,
     visible_world_rect: Rect,
-    pointer_pos: Pos2,
-    pointer_clicked: bool,
+    gate: &InputGate,
+    interactive_rects: &mut Vec<Rect>,
     frame: Option<&Arc<CanvasFrame>>,
 ) -> (Option<(String, FolderDetail)>, usize) {
     let zoom = state.transform.zoom;
@@ -125,9 +121,6 @@ pub fn render_background_and_wires(
         )
     };
     let scene = &state.scene;
-
-    // Layer A: Infinite dot grid
-    paint_infinite_grid(painter, rect, &state.transform);
 
     // Layer A-2: Folders. From far away the GPU draws the frames and egui only the names that fit.
     let gpu_folders = frame.is_some_and(|f| f.folders);
@@ -163,8 +156,9 @@ pub fn render_background_and_wires(
         if map_labels {
             studio_ui::paint_folder_map_label(painter, r, &cluster.label, cluster.depth, cluster.is_collapsed());
         }
-        if pointer_clicked {
-            if let Some(i) = layout.detail_buttons.iter().position(|r| r.contains(pointer_pos)) {
+        interactive_rects.extend(layout.detail_buttons.iter().copied());
+        if let Some(click) = gate.click() {
+            if let Some(i) = layout.detail_buttons.iter().position(|r| r.contains(click)) {
                 folder_detail = Some((cluster.id.clone(), FolderDetail::ALL[i]));
             }
         }
@@ -267,30 +261,13 @@ pub fn render_background_and_wires(
             for gate in &scene.gates {
                 let p = state.transform.world_to_screen(Pos2::from(gate.center));
                 if visible.contains(p) {
-                    let socket = SocketVisualState { is_hovered: false, is_connected: true, is_snapped: false };
+                    let socket = SocketVisualState { is_hovered: false, is_connected: true };
                     let [r, g, b, a] = gate.fill;
                     paint_pin_socket(painter, p, Color32::from_rgba_unmultiplied(r, g, b, a), socket, zoom * 0.8);
                 }
             }
         }
         None => {}
-    }
-
-    // Layer C: Pending connection wire preview
-    if let InteractionMode::Connecting {
-        from_node,
-        from_port,
-        start_screen_pos,
-        current_screen_pos,
-        snapped_target,
-        ..
-    } = &state.interaction
-    {
-        let wire_color = graph
-            .find_port(*from_node, *from_port)
-            .map(|p| data_type_color(&p.data_type))
-            .unwrap_or(studio_ui::color_tokens::WIRE_ACTIVE);
-        paint_pending_wire(painter, *start_screen_pos, *current_screen_pos, wire_color, snapped_target.is_some(), zoom);
     }
 
     (folder_detail, drawn_wires)

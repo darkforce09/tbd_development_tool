@@ -64,7 +64,32 @@ pub fn extract_code_file(lang: CodeLang, file_path: &Path, rel_path: &Path, cont
 
     let collected = collect(lang, root, content);
     assemble(lang, &mut file, collected, content);
+    file.tests = count_named_tests(lang, file_path, &file);
     file
+}
+
+/// Tests found by name, the way pytest and `go test` find them: `test*` functions in Python files
+/// named `test_*.py` or `*_test.py` (methods of `Test*` classes included), `Test*` functions in Go
+/// files named `*_test.go`.
+fn count_named_tests(lang: CodeLang, path: &Path, file: &ExtractedFile) -> usize {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    let functions = || file.functions.iter().chain(file.impls.iter().flat_map(|i| i.methods.iter()));
+    match lang {
+        CodeLang::Python if name.starts_with("test_") || name.ends_with("_test.py") => {
+            let in_test_class = |f: &&FunctionItem| {
+                file.impls
+                    .iter()
+                    .any(|i| i.target_type.starts_with("Test") && i.methods.iter().any(|m| m.line == f.line))
+            };
+            functions().filter(|f| f.name.starts_with("test") && (!f.is_method || in_test_class(f))).count()
+        }
+        CodeLang::Go if name.ends_with("_test.go") => functions()
+            .filter(|f| {
+                !f.is_method && f.name.strip_prefix("Test").is_some_and(|rest| !rest.starts_with(char::is_lowercase))
+            })
+            .count(),
+        _ => 0,
+    }
 }
 
 thread_local! {
@@ -336,6 +361,7 @@ fn assemble(lang: CodeLang, file: &mut ExtractedFile, collected: Collected, src:
 
     for (i, (kind, def)) in defs.iter().enumerate() {
         let line = line_of(def.range.start);
+        let line_end = line_of(def.range.end.saturating_sub(1).max(def.range.start));
         let source_code = snippet(src, &line_starts, def.source_start, def.range.end);
         match kind {
             Kind::Class => {
@@ -347,6 +373,7 @@ fn assemble(lang: CodeLang, file: &mut ExtractedFile, collected: Collected, src:
                         variants: fields.into_iter().map(|f| f.name).collect(),
                         docs: def.docs.clone(),
                         line,
+                        line_end,
                         source_code,
                     });
                     continue;
@@ -358,6 +385,7 @@ fn assemble(lang: CodeLang, file: &mut ExtractedFile, collected: Collected, src:
                     derives: def.bases.clone(),
                     docs: def.docs.clone(),
                     line,
+                    line_end,
                     source_code,
                 });
             }
@@ -367,6 +395,7 @@ fn assemble(lang: CodeLang, file: &mut ExtractedFile, collected: Collected, src:
                 variants: def.variants.clone(),
                 docs: def.docs.clone(),
                 line,
+                line_end,
                 source_code,
             }),
             Kind::Iface => file.traits.push(TraitItem {
@@ -375,6 +404,7 @@ fn assemble(lang: CodeLang, file: &mut ExtractedFile, collected: Collected, src:
                 methods: iface_methods.remove(&i).unwrap_or_default(),
                 docs: def.docs.clone(),
                 line,
+                line_end,
                 source_code,
             }),
             Kind::Impl | Kind::Func | Kind::Field => {}
@@ -428,6 +458,7 @@ fn function_item(lang: CodeLang, def: &Def, src: &str, line: usize, line_starts:
         calls: Vec::new(),
         docs: def.docs.clone(),
         line,
+        line_end: line_starts.partition_point(|&s| s <= def.range.end.saturating_sub(1).max(def.range.start)),
         source_code: snippet(src, line_starts, def.source_start, def.range.end),
     }
 }

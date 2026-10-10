@@ -27,14 +27,15 @@ impl StudioApp {
         let Some(cluster) = self.graph.clusters.iter_mut().find(|c| c.id == cluster_id) else { return };
         let Some(lazy) = cluster.lazy.clone() else { return };
 
-        cluster.subtitle = Some(format!("loading {} files…", lazy.file_count));
+        let files = lazy.totals.map(|t| format!(" {} files", t.file_count)).unwrap_or_default();
+        cluster.subtitle = Some(format!("loading{files}…"));
         let label = cluster.label.clone();
         let (tx, rx) = channel();
         let path = PathBuf::from(&lazy.abs_path);
         std::thread::spawn(move || {
             let _ = tx.send(load_folder_contents(&path));
         });
-        self.canvas_state.status_message = Some(format!("Loading {label} ({} files)…", lazy.file_count));
+        self.canvas_state.status_message = Some(format!("Loading {label}{files}…"));
         self.folder_loads.push(FolderLoad { cluster_id, label, detail, rx });
     }
 

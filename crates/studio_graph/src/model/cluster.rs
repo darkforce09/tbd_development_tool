@@ -23,6 +23,9 @@ pub struct GroupCluster {
     /// Folder whose contents are not loaded yet (shown collapsed with totals).
     #[serde(default)]
     pub lazy: Option<LazyFolder>,
+    /// What the folder is for: the first sentence of its README.
+    #[serde(default)]
+    pub about: Option<String>,
 }
 
 /// The three detail levels of a folder (docs/VISUAL_LANGUAGE.md L5).
@@ -52,15 +55,26 @@ impl FolderDetail {
     }
 }
 
-/// A folder listed with totals but not materialized (version control, gitignored, build caches,
+/// What a folder holds, counted without following links.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize,
+)]
+#[rkyv(derive(Debug))]
+pub struct FolderTotals {
+    pub file_count: u64,
+    pub dir_count: u64,
+    pub total_bytes: u64,
+}
+
+/// A folder listed but not materialized (version control, gitignored, build caches,
 /// dependencies). Expanding it loads its contents.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize)]
 #[rkyv(derive(Debug))]
 pub struct LazyFolder {
     pub abs_path: String,
-    pub file_count: u64,
-    pub dir_count: u64,
-    pub total_bytes: u64,
+    /// Counted after the first layout, so a huge build folder never delays opening a project;
+    /// `None` until then.
+    pub totals: Option<FolderTotals>,
     /// Why it starts collapsed, e.g. "gitignored".
     pub reason: String,
 }
@@ -91,6 +105,7 @@ impl GroupCluster {
             detail: FolderDetail::Open,
             depth: 0,
             lazy: None,
+            about: None,
         }
     }
 }

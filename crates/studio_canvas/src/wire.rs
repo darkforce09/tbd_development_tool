@@ -1,7 +1,4 @@
-use egui::{
-    epaint::{CircleShape, CubicBezierShape},
-    Color32, Painter, Pos2, Stroke, Vec2,
-};
+use egui::{epaint::CircleShape, Color32, Painter, Pos2, Stroke, Vec2};
 use studio_ui::{color_tokens::*, with_alpha};
 
 /// Evaluates a point along a cubic Bezier curve at parameter `t` in [0, 1].
@@ -230,37 +227,6 @@ pub fn paint_wire_badge_and_label(
             TEXT_SECONDARY,
         );
     }
-}
-
-/// Paints a pending wire preview when dragging from a socket.
-pub fn paint_pending_wire(painter: &Painter, start: Pos2, target: Pos2, color: Color32, is_snapped: bool, zoom: f32) {
-    let (c1, c2) = compute_bezier_control_points(start, target, zoom);
-
-    let wire_color = if is_snapped { color } else { with_alpha(color, 200) };
-
-    // Soft glow
-    painter.add(CubicBezierShape::from_points_stroke(
-        [start, c1, c2, target],
-        false,
-        Color32::TRANSPARENT,
-        Stroke::new((5.0 * zoom).clamp(2.0, 9.0), with_alpha(wire_color, 60)),
-    ));
-
-    // Core stroke
-    painter.add(CubicBezierShape::from_points_stroke(
-        [start, c1, c2, target],
-        false,
-        Color32::TRANSPARENT,
-        Stroke::new((2.4 * zoom).clamp(1.2, 5.0), wire_color),
-    ));
-
-    // Target indicator dot
-    painter.add(CircleShape {
-        center: target,
-        radius: (if is_snapped { 6.0 } else { 4.0 } * zoom).clamp(2.0, 8.0),
-        fill: if is_snapped { wire_color } else { Color32::WHITE },
-        stroke: Stroke::new((1.5 * zoom).clamp(1.0, 3.0), Color32::BLACK),
-    });
 }
 
 /// Calculates minimum distance from a query point to a cubic Bezier curve.

@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 use studio_graph::Graph;
 
 /// 16-byte magic identifier and format version header
-pub const CACHE_MAGIC: &[u8; 16] = b"TBD_RKYV_V10\0\0\0\0";
+pub const CACHE_MAGIC: &[u8; 16] = b"TBD_RKYV_V12\0\0\0\0";
 /// Bump whenever extraction or graph building changes output, so cached graphs are rebuilt.
-pub const EXTRACTOR_VERSION: u32 = 7;
+pub const EXTRACTOR_VERSION: u32 = 8;
 const HEADER_SIZE: usize = 32;
 
 /// Serializable wrapper combining the architecture graph and project metrics
@@ -88,15 +88,11 @@ pub fn compute_workspace_fingerprint(project_root: &Path) -> u64 {
     }
     EXTRACTOR_VERSION.hash(&mut hasher);
 
-    // 1. Hash Git HEAD / ref if present (instant git tree fingerprint)
-    let git_head = project_root.join(".git/HEAD");
-    if let Ok(head_str) = std::fs::read_to_string(&git_head) {
-        head_str.hash(&mut hasher);
-        let ref_path = head_str.trim().trim_start_matches("ref: ").trim();
-        let git_ref = project_root.join(".git").join(ref_path);
-        if let Ok(ref_content) = std::fs::read_to_string(&git_ref) {
-            ref_content.hash(&mut hasher);
-        }
+    // 1. The commit checked out, read from git's files: works in linked worktrees, with packed
+    //    refs, and for a project folder inside a larger checkout.
+    if let Some(head) = crate::git_head::read_head(project_root) {
+        head.branch.hash(&mut hasher);
+        head.commit.hash(&mut hasher);
     }
 
     // 2. Hash key workspace manifests
@@ -331,5 +327,37 @@ mod tests {
 
         // Clean up
         let _ = clear_project_cache(&temp_proj);
+    }
+
+    #[test]
+    fn a_linked_worktree_gets_a_cache_hit_until_its_branch_moves() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("lib.rs"), "pub fn a() {}").unwrap();
+        let git = |args: &[&str], cwd: &Path| {
+            std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .is_ok_and(|o| o.status.success())
+        };
+        if !(git(&["init", "-q", "-b", "main"], &repo)
+            && git(&["add", "."], &repo)
+            && git(&["commit", "-qm", "one"], &repo))
+        {
+            return; // no git here
+        }
+        let wt = dir.path().join("wt");
+        assert!(git(&["worktree", "add", "-q", "-b", "feature", wt.to_str().unwrap()], &repo));
+
+        let stats = ProjectStats { project_name: "wt".to_string(), ..Default::default() };
+        save_project_cache(&wt, &Graph::new(), &stats).unwrap();
+        assert!(load_project_cache(&wt).unwrap().is_some(), "the worktree's own cache is hit");
+
+        assert!(git(&["commit", "-q", "--allow-empty", "-m", "two"], &wt));
+        assert!(load_project_cache(&wt).unwrap().is_none(), "a new commit on its branch invalidates it");
+        let _ = clear_project_cache(&wt);
     }
 }

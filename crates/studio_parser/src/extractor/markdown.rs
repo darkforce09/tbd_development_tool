@@ -37,6 +37,7 @@ pub fn extract_markdown_file(file_path: &Path, rel_path: &Path, content: &str) -
                     calls: Vec::new(),
                     docs: format!("{} code block ({} lines)", lang_label, code_block_lines.len()),
                     line: code_block_start_line,
+                    line_end: line_num,
                     source_code: code_content,
                 });
                 in_code_block = false;
@@ -70,6 +71,7 @@ pub fn extract_markdown_file(file_path: &Path, rel_path: &Path, content: &str) -
                         derives: vec![level_tag],
                         docs: format!("Heading level {}", hash_count),
                         line: line_num,
+                        line_end: line_num,
                         source_code: raw_line.to_string(),
                     });
                 }
@@ -91,6 +93,7 @@ pub fn extract_markdown_file(file_path: &Path, rel_path: &Path, content: &str) -
         impls: Vec::new(),
         uses: Vec::new(),
         links,
+        tests: 0,
         parse_error: None,
         language: super::lang::SourceLang::Markdown,
     }
@@ -137,6 +140,7 @@ fn extract_links_from_line(line: &str, line_num: usize, links: &mut Vec<LinkItem
                                 label: if label.is_empty() { target_file_name } else { label.to_string() },
                                 target: clean_target.to_string(),
                                 line: line_num,
+                                line_end: line_num,
                                 source_code: line.to_string(),
                             });
                         }

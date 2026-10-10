@@ -165,7 +165,9 @@ fn rewire_member_edges(
             continue;
         }
         if let Some(doc_in) = graph.nodes.get(&target).and_then(|n| n.doc_port()) {
-            graph.connect_kind(node_id, link_out, target, doc_in, EdgeKind::Documentation);
+            if let Some(id) = graph.connect_kind(node_id, link_out, target, doc_in, EdgeKind::Documentation) {
+                graph.set_provenance(id, studio_graph::Provenance::proven(studio_graph::Basis::DocLink));
+            }
         }
     }
 }

@@ -60,30 +60,36 @@ pub fn build_member_nodes(file: &ExtractedFile) -> Vec<FileMemberNode> {
             (NodeArchetype::Struct, vis.to_string(), format!("struct {} ({} fields)", s.name, s.fields.len()))
         };
 
-        member_nodes.push(FileMemberNode::new(
-            format!("struct:{}", s.name),
-            &s.name,
-            archetype,
-            vis,
-            sig,
-            s.line,
-            &s.source_code,
-            if s.docs.is_empty() { None } else { Some(s.docs.clone()) },
-        ));
+        member_nodes.push(
+            FileMemberNode::new(
+                format!("struct:{}", s.name),
+                &s.name,
+                archetype,
+                vis,
+                sig,
+                s.line,
+                &s.source_code,
+                if s.docs.is_empty() { None } else { Some(s.docs.clone()) },
+            )
+            .with_line_end(s.line_end),
+        );
     }
 
     for e in &file.enums {
         let vis = if e.visibility.is_public() { "pub" } else { "" };
-        member_nodes.push(FileMemberNode::new(
-            format!("enum:{}", e.name),
-            &e.name,
-            NodeArchetype::Enum,
-            vis,
-            format!("enum {} ({} variants)", e.name, e.variants.len()),
-            e.line,
-            &e.source_code,
-            if e.docs.is_empty() { None } else { Some(e.docs.clone()) },
-        ));
+        member_nodes.push(
+            FileMemberNode::new(
+                format!("enum:{}", e.name),
+                &e.name,
+                NodeArchetype::Enum,
+                vis,
+                format!("enum {} ({} variants)", e.name, e.variants.len()),
+                e.line,
+                &e.source_code,
+                if e.docs.is_empty() { None } else { Some(e.docs.clone()) },
+            )
+            .with_line_end(e.line_end),
+        );
     }
 
     for t in &file.traits {
@@ -92,16 +98,19 @@ pub fn build_member_nodes(file: &ExtractedFile) -> Vec<FileMemberNode> {
             SourceLang::Code(lang) => lang.interface_label(),
             _ => "trait",
         };
-        member_nodes.push(FileMemberNode::new(
-            format!("trait:{}", t.name),
-            &t.name,
-            NodeArchetype::Trait,
-            vis,
-            format!("{} {} ({} methods)", kind_label, t.name, t.methods.len()),
-            t.line,
-            &t.source_code,
-            if t.docs.is_empty() { None } else { Some(t.docs.clone()) },
-        ));
+        member_nodes.push(
+            FileMemberNode::new(
+                format!("trait:{}", t.name),
+                &t.name,
+                NodeArchetype::Trait,
+                vis,
+                format!("{} {} ({} methods)", kind_label, t.name, t.methods.len()),
+                t.line,
+                &t.source_code,
+                if t.docs.is_empty() { None } else { Some(t.docs.clone()) },
+            )
+            .with_line_end(t.line_end),
+        );
     }
 
     for f in &file.functions {
@@ -117,16 +126,19 @@ pub fn build_member_nodes(file: &ExtractedFile) -> Vec<FileMemberNode> {
             (NodeArchetype::Function, vis.to_string(), format!("{}{}({}){}", prefix, f.name, params_sig, ret_sig))
         };
 
-        member_nodes.push(FileMemberNode::new(
-            format!("fn:{}", f.name),
-            &f.name,
-            archetype,
-            vis,
-            sig,
-            f.line,
-            &f.source_code,
-            if f.docs.is_empty() { None } else { Some(f.docs.clone()) },
-        ));
+        member_nodes.push(
+            FileMemberNode::new(
+                format!("fn:{}", f.name),
+                &f.name,
+                archetype,
+                vis,
+                sig,
+                f.line,
+                &f.source_code,
+                if f.docs.is_empty() { None } else { Some(f.docs.clone()) },
+            )
+            .with_line_end(f.line_end),
+        );
     }
 
     for imp in &file.impls {
@@ -142,30 +154,36 @@ pub fn build_member_nodes(file: &ExtractedFile) -> Vec<FileMemberNode> {
                 m.inputs.iter().map(|p| format!("{}: {}", p.name, p.type_str)).collect::<Vec<_>>().join(", ");
             let ret_sig = m.output.as_ref().map(|o| format!(" -> {}", o)).unwrap_or_default();
             let prefix = fn_prefix(file, m.is_async);
-            member_nodes.push(FileMemberNode::new(
-                format!("method:{}::{}", imp.target_type, m.name),
-                format!("{}::{}", imp.target_type, m.name),
-                NodeArchetype::Function,
-                vis,
-                format!("{}{}({}){}", prefix, m.name, params_sig, ret_sig),
-                m.line,
-                &m.source_code,
-                if m.docs.is_empty() { None } else { Some(m.docs.clone()) },
-            ));
+            member_nodes.push(
+                FileMemberNode::new(
+                    format!("method:{}::{}", imp.target_type, m.name),
+                    format!("{}::{}", imp.target_type, m.name),
+                    NodeArchetype::Function,
+                    vis,
+                    format!("{}{}({}){}", prefix, m.name, params_sig, ret_sig),
+                    m.line,
+                    &m.source_code,
+                    if m.docs.is_empty() { None } else { Some(m.docs.clone()) },
+                )
+                .with_line_end(m.line_end),
+            );
         }
     }
 
     for link in &file.links {
-        member_nodes.push(FileMemberNode::new(
-            link_member_id(link),
-            &link.label,
-            NodeArchetype::Link,
-            "LNK",
-            format!("[{}]({})", link.label, link.target),
-            link.line,
-            &link.source_code,
-            None,
-        ));
+        member_nodes.push(
+            FileMemberNode::new(
+                link_member_id(link),
+                &link.label,
+                NodeArchetype::Link,
+                "LNK",
+                format!("[{}]({})", link.label, link.target),
+                link.line,
+                &link.source_code,
+                None,
+            )
+            .with_line_end(link.line_end),
+        );
     }
 
     member_nodes.sort_by_key(|m| m.line_number);

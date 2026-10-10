@@ -43,9 +43,9 @@ pub enum DirKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeavyInfo {
     pub reason: HeavyReason,
-    pub file_count: u64,
-    pub dir_count: u64,
-    pub total_bytes: u64,
+    /// Filled in by [`measure_heavy_dirs`], after the first layout: counting a build cache can
+    /// take seconds.
+    pub totals: Option<studio_graph::FolderTotals>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,7 +128,6 @@ pub fn scan_tree(root: &Path, opts: ScanOptions) -> ProjectTree {
     };
     let mut dir_ids: std::collections::HashMap<PathBuf, DirId> = std::collections::HashMap::new();
     dir_ids.insert(PathBuf::new(), 0);
-    let mut heavy_paths: Vec<(DirId, PathBuf, HeavyReason)> = Vec::new();
     let mut pending_files: Vec<(PathBuf, DirId, Option<PathBuf>)> = Vec::new();
 
     let mut walker = WalkDir::new(root).follow_links(false).sort_by_file_name().into_iter();
@@ -178,13 +177,15 @@ pub fn scan_tree(root: &Path, opts: ScanOptions) -> ProjectTree {
 
         if file_type.is_dir() {
             let id = tree.dirs.len();
-            let heavy = heavy_reason(path, &rel, &ignored_dirs);
-            tree.dirs.push(DirNode { rel: rel.clone(), parent: Some(parent), kind: DirKind::Normal });
-            dir_ids.insert(rel.clone(), id);
-            if let Some(reason) = heavy {
-                heavy_paths.push((id, path.to_path_buf(), reason));
-                walker.skip_current_dir();
-            }
+            let kind = match heavy_reason(path, &rel, &ignored_dirs) {
+                Some(reason) => {
+                    walker.skip_current_dir();
+                    DirKind::Heavy(HeavyInfo { reason, totals: None })
+                }
+                None => DirKind::Normal,
+            };
+            tree.dirs.push(DirNode { rel: rel.clone(), parent: Some(parent), kind });
+            dir_ids.insert(rel, id);
         } else if file_type.is_symlink() {
             let target = std::fs::read_link(path).unwrap_or_default();
             pending_files.push((rel, parent, Some(target)));
@@ -209,18 +210,29 @@ pub fn scan_tree(root: &Path, opts: ScanOptions) -> ProjectTree {
         .collect();
     tree.files.extend(classified);
     tree.files.sort_by(|a, b| a.rel.cmp(&b.rel));
+    tree
+}
 
-    let totals: Vec<(DirId, HeavyInfo)> = heavy_paths
+/// Counts what every heavy folder holds, in parallel. Kept out of [`scan_tree`] so the first
+/// layout never waits on a build cache.
+pub fn measure_heavy_dirs(tree: &mut ProjectTree) {
+    let pending: Vec<(DirId, PathBuf)> = tree
+        .heavy_dirs()
+        .filter(|(_, _, info)| info.totals.is_none())
+        .map(|(id, dir, _)| (id, tree.root.join(&dir.rel)))
+        .collect();
+    let totals: Vec<(DirId, studio_graph::FolderTotals)> = pending
         .into_par_iter()
-        .map(|(id, path, reason)| {
+        .map(|(id, path)| {
             let (file_count, dir_count, total_bytes) = count_subtree(&path);
-            (id, HeavyInfo { reason, file_count, dir_count, total_bytes })
+            (id, studio_graph::FolderTotals { file_count, dir_count, total_bytes })
         })
         .collect();
-    for (id, info) in totals {
-        tree.dirs[id].kind = DirKind::Heavy(info);
+    for (id, measured) in totals {
+        if let DirKind::Heavy(info) = &mut tree.dirs[id].kind {
+            info.totals = Some(measured);
+        }
     }
-    tree
 }
 
 /// Hashes the shape of the tree cheaply, for cache invalidation: every visible folder and file
@@ -409,12 +421,14 @@ mod tests {
     }
 
     #[test]
-    fn heavy_folders_carry_counts() {
+    fn heavy_folders_are_counted_after_the_scan() {
         let dir = fixture();
-        let tree = scan_tree(dir.path(), ScanOptions::default());
+        let mut tree = scan_tree(dir.path(), ScanOptions::default());
+        assert!(tree.heavy_dirs().all(|(_, _, info)| info.totals.is_none()), "the scan itself never counts them");
+        measure_heavy_dirs(&mut tree);
         let heavy: Vec<(String, HeavyReason, u64)> = tree
             .heavy_dirs()
-            .map(|(_, d, info)| (d.rel.to_string_lossy().to_string(), info.reason, info.file_count))
+            .map(|(_, d, info)| (d.rel.to_string_lossy().to_string(), info.reason, info.totals.unwrap().file_count))
             .collect();
         assert!(heavy.contains(&("node_modules".to_string(), HeavyReason::Dependencies, 2)), "{heavy:?}");
         assert!(heavy.contains(&("target".to_string(), HeavyReason::BuildCache, 2)), "{heavy:?}");
@@ -434,9 +448,11 @@ mod tests {
         if !git_ok {
             return;
         }
-        let tree = scan_tree(dir.path(), ScanOptions::default());
+        let mut tree = scan_tree(dir.path(), ScanOptions::default());
+        measure_heavy_dirs(&mut tree);
         let secret = tree.dirs.iter().find(|d| d.rel == Path::new("secret")).unwrap();
-        assert!(matches!(&secret.kind, DirKind::Heavy(i) if i.reason == HeavyReason::GitIgnored && i.file_count == 1));
+        assert!(matches!(&secret.kind,
+            DirKind::Heavy(i) if i.reason == HeavyReason::GitIgnored && i.totals.is_some_and(|t| t.file_count == 1)));
         let git = tree.dirs.iter().find(|d| d.rel == Path::new(".git")).unwrap();
         assert!(matches!(&git.kind, DirKind::Heavy(i) if i.reason == HeavyReason::VersionControl));
 

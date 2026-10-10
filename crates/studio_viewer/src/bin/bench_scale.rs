@@ -114,14 +114,9 @@ fn benchmark_real_project(tracker: &mut TimelineTracker, target_path: &std::path
         None,
     );
 
-    for k in &scanned.crates {
-        if matches!(
-            k.name.as_str(),
-            "apps: mod" | "documentation" | ".ai" | "assets" | "contracts" | "deploy" | ".cursor" | ".github"
-        ) {
-            println!("      • Subsystem {:<18} -> {} files", format!("'{}'", k.name), k.source_files.len());
-        }
-    }
+    let packages = scanned.crates.iter().filter(|c| c.is_package()).count();
+    let outside: usize = scanned.crates.iter().filter(|c| !c.is_package()).map(|c| c.source_files.len()).sum();
+    println!("      • {packages} packages; {outside} text files outside every package");
 
     // 1b. Tier 1 Instant Skeleton Startup (< 400ms)
     let t_skel = Instant::now();
@@ -140,6 +135,16 @@ fn benchmark_real_project(tracker: &mut TimelineTracker, target_path: &std::path
         None,
         Some(skel_stats.node_count),
         None,
+    );
+
+    // 1c. Heavy folders are counted after the first layout, off its path.
+    let t_heavy = Instant::now();
+    let mut measured = scanned.tree.clone();
+    studio_parser::tree::measure_heavy_dirs(&mut measured);
+    println!(
+        "      • {} heavy folders counted in {:?}, after the first layout",
+        measured.heavy_dirs().count(),
+        t_heavy.elapsed()
     );
 
     // 2. Parallel AST Extraction (Rayon)
@@ -421,7 +426,77 @@ fn benchmark_canvas_frames(tracker: &mut TimelineTracker, graph: &mut Graph) {
             Some(stats.visible_wires),
         );
     }
+    benchmark_world_frames(tracker, &ctx, &mut state, graph, screen);
     println!();
+}
+
+/// One CPU frame of the canvas at `time`, in microseconds.
+fn canvas_frame(ctx: &egui::Context, state: &mut CanvasState, graph: &mut Graph, screen: Rect, time: f64) -> f64 {
+    let start = Instant::now();
+    let raw = egui::RawInput { screen_rect: Some(screen), time: Some(time), ..Default::default() };
+    let output = ctx.run_ui(raw, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
+            CanvasView::new(state, graph).show(ui);
+        });
+    });
+    let _ = ctx.tessellate(output.shapes, output.pixels_per_point);
+    start.elapsed().as_secs_f64() * 1_000_000.0
+}
+
+/// A frame at every stop of the world, and the slowest frame of a flight across it.
+fn benchmark_world_frames(
+    tracker: &mut TimelineTracker,
+    ctx: &egui::Context,
+    state: &mut CanvasState,
+    graph: &mut Graph,
+    screen: Rect,
+) {
+    use studio_canvas::{CameraTarget, Stop};
+    let world = state.world;
+    println!(
+        "    world: map {:.0} x {:.0}, districts at {:.1} world units per point, whole world {:.0} x {:.0}",
+        world.code.width(),
+        world.code.height(),
+        world.scale,
+        world.bounds.width(),
+        world.bounds.height()
+    );
+    let mut time = 1000.0;
+    for stop in [Stop::World, Stop::Pipeline, Stop::Files, Stop::Code, Stop::Desk, Stop::Run, Stop::Changes] {
+        state.jump_to(CameraTarget::Stop(stop));
+        let mut worst: f64 = 0.0;
+        for _ in 0..8 {
+            time += 1.0 / 60.0;
+            worst = worst.max(canvas_frame(ctx, state, graph, screen, time));
+        }
+        tracker.record_stage(
+            format!("World stop {}", stop.label()),
+            format!("zoom {:.4}, slowest of 8 frames {:.2} ms", state.transform.zoom, worst / 1000.0),
+            Some(1_000_000.0 / worst.max(0.1)),
+            Some(worst),
+            Some(state.frame_stats.visible_nodes),
+            Some(state.frame_stats.visible_wires),
+        );
+    }
+    // Files to Run crosses the whole map: the longest glide.
+    state.jump_to(CameraTarget::Stop(Stop::Files));
+    time += 1.0;
+    canvas_frame(ctx, state, graph, screen, time);
+    state.fly_to(CameraTarget::Stop(Stop::Run));
+    let (mut worst, mut frames): (f64, usize) = (0.0, 0);
+    while frames < 120 && (frames == 0 || state.camera.is_flying()) {
+        time += 1.0 / 60.0;
+        worst = worst.max(canvas_frame(ctx, state, graph, screen, time));
+        frames += 1;
+    }
+    tracker.record_stage(
+        "World flight Files to Run",
+        format!("{frames} frames, slowest {:.2} ms", worst / 1000.0),
+        Some(1_000_000.0 / worst.max(0.1)),
+        Some(worst),
+        None,
+        None,
+    );
 }
 
 /// Prints the overall size and aspect of the layout, and the folders that make it that size.
@@ -614,10 +689,7 @@ fn benchmark_extreme_scale(tracker: &mut TimelineTracker) {
         NodeArchetype::Enum,
         NodeArchetype::Trait,
         NodeArchetype::Module,
-        NodeArchetype::Ingress,
-        NodeArchetype::Compute,
-        NodeArchetype::State,
-        NodeArchetype::Egress,
+        NodeArchetype::File,
     ];
 
     let mut node_ids = Vec::with_capacity(target_nodes);

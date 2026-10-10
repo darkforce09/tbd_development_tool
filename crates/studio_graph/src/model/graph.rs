@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use super::cluster::GroupCluster;
-use super::edge::{Edge, EdgeKind};
+use super::edge::{Edge, EdgeKind, Provenance};
 use super::node::Node;
 use super::types::{DataType, EdgeId, FileContent, NodeArchetype, NodeId, Port, PortDirection, PortId};
 
@@ -339,6 +339,7 @@ impl Graph {
             member_nodes: Vec::new(),
             content: FileContent::Code,
             size_bytes: None,
+            test_count: 0,
         };
 
         let arch_idx = archetype.index();
@@ -447,11 +448,29 @@ impl Graph {
         source_line: Option<usize>,
     ) -> Option<EdgeId> {
         let edge_id = EdgeId(self.next_raw_id());
-        let edge = Edge { id: edge_id, from_node, from_port, to_node, to_port, kind, label, step_number, source_line };
+        let edge = Edge {
+            id: edge_id,
+            from_node,
+            from_port,
+            to_node,
+            to_port,
+            kind,
+            label,
+            step_number,
+            source_line,
+            provenance: Provenance::default(),
+        };
         self.index_edge(&edge);
         self.edge_indices.insert(edge_id, self.edges.len());
         self.edges.push(edge);
         Some(edge_id)
+    }
+
+    /// Records where a wire comes from and how sure it is.
+    pub fn set_provenance(&mut self, id: EdgeId, provenance: Provenance) {
+        if let Some(&i) = self.edge_indices.get(&id) {
+            self.edges[i].provenance = provenance;
+        }
     }
 
     /// Removes every wire into an input port. Returns how many were removed.

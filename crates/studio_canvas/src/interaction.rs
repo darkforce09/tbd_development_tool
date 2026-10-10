@@ -1,35 +1,13 @@
-use egui::Pos2;
 use studio_graph::{EdgeId, NodeId, PortId};
 
-/// Tracks the active user interaction mode on the canvas.
-#[derive(Debug, Clone, PartialEq, Default)]
+/// What the pointer is doing on the canvas. Nothing the pointer does changes the map's data:
+/// cards stay where the layout puts them and wires come from the code (docs/ROADMAP.md S1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InteractionMode {
     #[default]
     Idle,
-    /// Mouse pressed down on a node panel; waiting for hold-and-drag threshold (>= 4px) or release (single click).
-    PendingNodeDrag {
-        node_id: NodeId,
-        press_start_screen: Pos2,
-        press_start_world: Pos2,
-        is_shift: bool,
-    },
-    DraggingNodes {
-        node_ids: Vec<NodeId>,
-        drag_start_world: Pos2,
-        initial_positions: Vec<[f32; 2]>,
-    },
-    Connecting {
-        from_node: NodeId,
-        from_port: PortId,
-        is_output: bool,
-        start_screen_pos: Pos2,
-        current_screen_pos: Pos2,
-        snapped_target: Option<(NodeId, PortId)>,
-    },
-    Panning {
-        start_pointer: Pos2,
-        has_panned: bool,
-    },
+    /// The view is being dragged, with any button.
+    Panning,
 }
 
 /// Tracks elements currently hovered by the mouse pointer.

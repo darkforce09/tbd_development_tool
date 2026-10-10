@@ -110,12 +110,6 @@ pub struct EdgeId(pub u64);
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize)]
 #[rkyv(derive(Debug, PartialEq, Eq, Hash))]
 pub enum DataType {
-    Audio,
-    Vision,
-    Text,
-    State,
-    Flow,
-    Composite,
     RustType(String),
     RustFlow,
     /// A documentation port: documentation that describes the node links in here.
@@ -125,12 +119,6 @@ pub enum DataType {
 impl DataType {
     pub fn display_name(&self) -> &str {
         match self {
-            DataType::Audio => "AudioPacket",
-            DataType::Vision => "ArchivedFrame",
-            DataType::Text => "SubtitleText",
-            DataType::State => "StateStore",
-            DataType::Flow => "Trigger",
-            DataType::Composite => "CompositeFrame",
             DataType::RustType(name) => name.as_str(),
             DataType::RustFlow => "Flow",
             DataType::Documentation => "Documentation",
@@ -172,23 +160,19 @@ pub struct Port {
 )]
 #[rkyv(derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash))]
 pub enum NodeArchetype {
-    Ingress = 0,
-    Compute = 1,
-    State = 2,
-    Egress = 3,
-    Module = 4,
-    Function = 5,
-    Struct = 6,
-    Enum = 7,
-    Trait = 8,
-    File = 9,
+    Module = 0,
+    Function = 1,
+    Struct = 2,
+    Enum = 3,
+    Trait = 4,
+    File = 5,
     /// A link inside a documentation file.
-    Link = 10,
+    Link = 6,
 }
 
 impl NodeArchetype {
     /// Number of variants, for per-archetype tables.
-    pub const COUNT: usize = 11;
+    pub const COUNT: usize = 7;
 
     #[inline]
     pub fn index(&self) -> usize {
@@ -197,10 +181,6 @@ impl NodeArchetype {
 
     pub fn label(&self) -> &'static str {
         match self {
-            NodeArchetype::Ingress => "INGRESS",
-            NodeArchetype::Compute => "COMPUTE",
-            NodeArchetype::State => "STATE",
-            NodeArchetype::Egress => "EGRESS",
             NodeArchetype::Module => "MODULE",
             NodeArchetype::Function => "FUNCTION",
             NodeArchetype::Struct => "STRUCT",
@@ -220,7 +200,10 @@ pub struct FileMemberNode {
     pub archetype: NodeArchetype,
     pub visibility: String,
     pub signature: String,
+    /// First line of the item, 1-based.
     pub line_number: usize,
+    /// Last line of the item, 1-based; equal to `line_number` for a one-line item.
+    pub line_end: usize,
     pub source_code: String,
     pub doc_comment: Option<String>,
     pub in_port_id: Option<PortId>,
@@ -239,6 +222,9 @@ impl FileMemberNode {
         source_code: impl Into<String>,
         doc_comment: Option<String>,
     ) -> Self {
+        let source_code = source_code.into();
+        // Until told otherwise the item spans its own source text.
+        let line_end = line_number + source_code.lines().count().saturating_sub(1);
         Self {
             id: id.into(),
             name: name.into(),
@@ -246,11 +232,18 @@ impl FileMemberNode {
             visibility: visibility.into(),
             signature: signature.into(),
             line_number,
-            source_code: source_code.into(),
+            line_end,
+            source_code,
             doc_comment,
             in_port_id: None,
             out_port_id: None,
         }
+    }
+
+    /// Sets the item's last line, 1-based.
+    pub fn with_line_end(mut self, line_end: usize) -> Self {
+        self.line_end = line_end.max(self.line_number);
+        self
     }
 
     pub fn with_ports(mut self, in_port: Option<PortId>, out_port: Option<PortId>) -> Self {

@@ -28,7 +28,12 @@ pub fn extract_project(project: &RustProject) -> ExtractedProject {
                 })
                 .collect();
 
-            ExtractedCrate { name: krate.name.clone(), root_path: krate.root_path.clone(), files: extracted_files }
+            ExtractedCrate {
+                name: krate.name.clone(),
+                root_path: krate.root_path.clone(),
+                manifest_path: krate.manifest_path.clone(),
+                files: extracted_files,
+            }
         })
         .collect();
 
@@ -86,6 +91,8 @@ pub fn extract_source(file_path: &Path, rel_path: &Path, content: &str) -> Extra
     let mut uses = Vec::new();
 
     let content_lines: Vec<&str> = content.lines().collect();
+    let mut counter = TestCounter(0);
+    counter.visit_file(&syn_file);
 
     for item in syn_file.items {
         match item {
@@ -122,9 +129,72 @@ pub fn extract_source(file_path: &Path, rel_path: &Path, content: &str) -> Extra
         impls,
         uses,
         links: Vec::new(),
+        tests: counter.0,
         parse_error: None,
         language: super::lang::SourceLang::Rust,
     }
+}
+
+/// Counts test functions at any depth (inline modules, nested functions), by attribute, the way
+/// the test harness finds them: `#[test]`, `#[tokio::test]`, `#[rstest]`, `#[wasm_bindgen_test]`,
+/// and one per `#[test_case(..)]`. Tests written inside a macro call (`proptest! { #[test] .. }`)
+/// are counted from its tokens. Comments and strings are never tokens, so they never count;
+/// `macro_rules!` templates are not tests until used, so they do not count either.
+struct TestCounter(usize);
+
+const TEST_ATTRIBUTES: &[&str] = &["test", "rstest", "wasm_bindgen_test", "quickcheck"];
+
+impl<'ast> Visit<'ast> for TestCounter {
+    fn visit_item_fn(&mut self, f: &'ast syn::ItemFn) {
+        let last = |a: &syn::Attribute| a.path().segments.last().map(|s| s.ident.to_string()).unwrap_or_default();
+        let cases = f.attrs.iter().filter(|a| last(a) == "test_case").count();
+        let marked = f.attrs.iter().any(|a| TEST_ATTRIBUTES.contains(&last(a).as_str()));
+        self.0 += if cases > 0 { cases } else { usize::from(marked) };
+        syn::visit::visit_item_fn(self, f);
+    }
+
+    fn visit_macro(&mut self, m: &'ast syn::Macro) {
+        if !m.path.is_ident("macro_rules") {
+            self.0 += test_attributes_in(m.tokens.clone());
+        }
+    }
+}
+
+/// `#[test]`-style attributes in a token stream, at any depth.
+fn test_attributes_in(tokens: proc_macro2::TokenStream) -> usize {
+    use proc_macro2::{Delimiter, TokenTree};
+    let mut count = 0;
+    let mut after_hash = false;
+    for token in tokens {
+        match &token {
+            TokenTree::Punct(p) if p.as_char() == '#' => {
+                after_hash = true;
+                continue;
+            }
+            TokenTree::Group(g) if after_hash && g.delimiter() == Delimiter::Bracket => {
+                // The attribute's path ends at its arguments, if any.
+                let last = g
+                    .stream()
+                    .into_iter()
+                    .take_while(|t| {
+                        !matches!(t, TokenTree::Group(_)) && !matches!(t, TokenTree::Punct(p) if p.as_char() == '=')
+                    })
+                    .filter_map(|t| match t {
+                        TokenTree::Ident(i) => Some(i.to_string()),
+                        _ => None,
+                    })
+                    .last()
+                    .unwrap_or_default();
+                if TEST_ATTRIBUTES.contains(&last.as_str()) || last == "test_case" {
+                    count += 1;
+                }
+            }
+            TokenTree::Group(g) => count += test_attributes_in(g.stream()),
+            _ => {}
+        }
+        after_hash = false;
+    }
+    count
 }
 
 pub fn parse_fn(fn_item: &syn::ItemFn, is_method: bool, content_lines: &[&str]) -> FunctionItem {
@@ -173,6 +243,7 @@ pub fn parse_fn(fn_item: &syn::ItemFn, is_method: bool, content_lines: &[&str]) 
         calls: visitor.calls,
         docs,
         line,
+        line_end: fn_item.span().end().line.max(line),
         source_code,
     }
 }
@@ -207,7 +278,8 @@ pub fn parse_struct(s_item: &syn::ItemStruct, content_lines: &[&str]) -> StructI
         syn::Fields::Unit => {}
     }
 
-    StructItem { name, visibility, fields, derives, docs, line, source_code }
+    let line_end = s_item.span().end().line.max(line);
+    StructItem { name, visibility, fields, derives, docs, line, line_end, source_code }
 }
 
 pub fn parse_enum(e_item: &syn::ItemEnum, content_lines: &[&str]) -> EnumItem {
@@ -220,7 +292,8 @@ pub fn parse_enum(e_item: &syn::ItemEnum, content_lines: &[&str]) -> EnumItem {
 
     let variants = e_item.variants.iter().map(|v| v.ident.to_string()).collect();
 
-    EnumItem { name, visibility, variants, docs, line, source_code }
+    let line_end = e_item.span().end().line.max(line);
+    EnumItem { name, visibility, variants, docs, line, line_end, source_code }
 }
 
 pub fn parse_trait(t_item: &syn::ItemTrait, content_lines: &[&str]) -> TraitItem {
@@ -238,7 +311,8 @@ pub fn parse_trait(t_item: &syn::ItemTrait, content_lines: &[&str]) -> TraitItem
         }
     }
 
-    TraitItem { name, visibility, methods, docs, line, source_code }
+    let line_end = t_item.span().end().line.max(line);
+    TraitItem { name, visibility, methods, docs, line, line_end, source_code }
 }
 
 pub fn parse_impl(i_item: &syn::ItemImpl, content_lines: &[&str]) -> ImplItem {
@@ -293,6 +367,7 @@ pub fn parse_impl(i_item: &syn::ItemImpl, content_lines: &[&str]) -> ImplItem {
                 calls: visitor.calls,
                 docs,
                 line: fn_line,
+                line_end: fn_item.span().end().line.max(fn_line),
                 source_code: fn_source,
             });
         }

@@ -21,7 +21,7 @@ use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
 
 use crate::model::tree_layout::{COLLAPSED_FOLDER_SIZE, EMPTY_FOLDER_SIZE};
-use crate::model::{Graph, NodeId};
+use crate::model::{EdgeKind, Graph, NodeId};
 
 const PAD_X: f32 = 22.0;
 const PAD_TOP: f32 = 44.0;
@@ -102,7 +102,7 @@ pub struct WireBundle {
     /// Card pairs the bundle stands for.
     pub pairs: u32,
     /// Wires per kind, indexed by `EdgeKind as usize`.
-    pub kinds: [u32; 6],
+    pub kinds: [u32; EdgeKind::COUNT],
     /// Index of the route drawn for the whole bundle.
     pub route: u32,
 }
@@ -110,7 +110,6 @@ pub struct WireBundle {
 impl WireBundle {
     /// The kind the bundle carries most (ties go to the earlier kind), for its colour.
     pub fn main_kind(&self) -> crate::model::EdgeKind {
-        use crate::model::EdgeKind;
         let kinds = [
             EdgeKind::Import,
             EdgeKind::Call,
@@ -462,7 +461,7 @@ pub(crate) struct LayoutCache {
     /// Columns and order from the previous layout, for containers whose items did not change.
     carried: Vec<Option<Frozen>>,
     /// Wires per kind for every code card pair.
-    pair_kinds: HashMap<(NodeId, NodeId), [u32; 6]>,
+    pair_kinds: HashMap<(NodeId, NodeId), [u32; EdgeKind::COUNT]>,
     frozen: Vec<Frozen>,
     placed: Vec<Placed>,
 }
@@ -516,8 +515,8 @@ fn fingerprint(graph: &Graph) -> u64 {
 }
 
 /// Wires per kind for every (provider, consumer) card pair.
-fn pair_kinds(graph: &Graph) -> HashMap<(NodeId, NodeId), [u32; 6]> {
-    let mut kinds: HashMap<(NodeId, NodeId), [u32; 6]> = HashMap::new();
+fn pair_kinds(graph: &Graph) -> HashMap<(NodeId, NodeId), [u32; EdgeKind::COUNT]> {
+    let mut kinds: HashMap<(NodeId, NodeId), [u32; EdgeKind::COUNT]> = HashMap::new();
     for e in graph.edges.iter().filter(|e| e.kind.is_code_flow()) {
         kinds.entry((e.from_node, e.to_node)).or_default()[e.kind as usize] += 1;
     }
@@ -821,7 +820,7 @@ impl Tree {
         &self,
         graph: &Graph,
         routes: &mut [WireRoute],
-        pair_kinds: &HashMap<(NodeId, NodeId), [u32; 6]>,
+        pair_kinds: &HashMap<(NodeId, NodeId), [u32; EdgeKind::COUNT]>,
     ) -> Vec<WireBundle> {
         let end = |card: NodeId| match self.visible(card) {
             Ok(n) => VisibleEnd::Card(n),
@@ -832,7 +831,13 @@ impl Tree {
         for (i, r) in routes.iter_mut().enumerate() {
             let key = (end(r.provider), end(r.consumer));
             let b = *index.entry(key.clone()).or_insert_with(|| {
-                bundles.push(WireBundle { from: key.0, to: key.1, pairs: 0, kinds: [0; 6], route: i as u32 });
+                bundles.push(WireBundle {
+                    from: key.0,
+                    to: key.1,
+                    pairs: 0,
+                    kinds: [0; EdgeKind::COUNT],
+                    route: i as u32,
+                });
                 (bundles.len() - 1) as u32
             });
             let bundle = &mut bundles[b as usize];
