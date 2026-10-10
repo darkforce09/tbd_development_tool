@@ -74,12 +74,13 @@ fn highlighted_edges(state: &CanvasState, graph: &Graph) -> Vec<(EdgeId, u32)> {
     out
 }
 
-/// The far-zoom card layer, rebuilt only when the scene or the selection change.
+/// The far-zoom card layer, rebuilt only when the scene, the selection or the lit session change.
 fn card_layer(state: &mut CanvasState, graph: &Graph) -> CardLayer {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     state.scene.revision.hash(&mut hasher);
     state.selected_nodes.hash(&mut hasher);
+    state.session_lit_nodes.hash(&mut hasher);
     let key = hasher.finish();
     if let Some((k, layer)) = &state.card_layer {
         if *k == key {
@@ -87,7 +88,7 @@ fn card_layer(state: &mut CanvasState, graph: &Graph) -> CardLayer {
         }
     }
     let dimmed = |n: &studio_graph::Node| is_dimmed(n, state.trace_nodes.as_ref());
-    let boxes = build_card_layer(graph, dimmed, &state.selected_nodes);
+    let boxes = build_card_layer(graph, dimmed, &state.selected_nodes, &state.session_lit_nodes);
     let layer = CardLayer { revision: scene::next_revision(), boxes: Arc::new(boxes) };
     state.card_layer = Some((key, layer.clone()));
     layer

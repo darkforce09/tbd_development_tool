@@ -695,11 +695,13 @@ pub fn build_overlay(graph: &Graph, edges: impl IntoIterator<Item = (EdgeId, u32
     (straight, curves_start)
 }
 
-/// Cards as plain rects, for zoom levels where their contents cannot be read.
+/// Cards as plain rects, for zoom levels where their contents cannot be read; selected cards and
+/// the cards of the chosen agent session (`session_lit`) stand out.
 pub fn build_card_layer(
     graph: &Graph,
     dimmed: impl Fn(&studio_graph::Node) -> bool,
     selected: &std::collections::BTreeSet<NodeId>,
+    session_lit: &std::collections::BTreeSet<NodeId>,
 ) -> Vec<BoxInstance> {
     graph
         .nodes
@@ -708,6 +710,9 @@ pub fn build_card_layer(
         .map(|n| {
             let fill = if selected.contains(&n.id) {
                 CARD_BORDER_SELECTED
+            } else if session_lit.contains(&n.id) {
+                // A file the chosen agent session touched.
+                DISTRICT_CHANGES
             } else {
                 with_alpha(archetype_color(n.archetype), if dimmed(n) { 35 } else { 175 })
             };

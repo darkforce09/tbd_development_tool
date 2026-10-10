@@ -86,6 +86,9 @@ impl StudioApp {
         let path_buf = path.to_path_buf();
         self.current_project_path = Some(path_buf.clone());
         self.canvas_state.desk.clear(path_buf.canonicalize().ok().or_else(|| Some(path_buf.clone())));
+        self.canvas_state.session_lit = None;
+        self.canvas_state.session_lit_nodes.clear();
+        self.canvas_state.changes_selected = Default::default();
         self.path_input = path_buf.to_string_lossy().to_string();
         self.is_loading = true;
         self.load_error = None;

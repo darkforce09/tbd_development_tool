@@ -3059,9 +3059,11 @@ dependencies = [
 name = "studio_sources"
 version = "0.1.0"
 dependencies = [
+ "memchr",
  "quote",
  "rayon",
  "rkyv",
+ "serde",
  "serde_json",
  "studio_parser",
  "syn 2.0.119",

@@ -101,6 +101,7 @@ impl App for StudioApp {
                             }
                         }
                         LoaderMessage::InitialLayoutReady { graph, stats, search_index } => {
+                            crate::timing::event(|| format!("initial layout received ({} files)", stats.file_count));
                             self.graph = graph;
                             graph_replaced = true;
                             // A project opens at its top level, with nothing selected.
@@ -117,6 +118,10 @@ impl App for StudioApp {
                             ));
                         }
                         LoaderMessage::Complete { graph, stats, search_index, from_cache } => {
+                            crate::timing::event(|| {
+                                let how = if from_cache { "from cache" } else { "parsed" };
+                                format!("parse complete ({} files, {how})", stats.file_count)
+                            });
                             self.graph = graph;
                             graph_replaced = true;
                             self.project_stats = Some(stats.clone());
@@ -214,6 +219,10 @@ impl App for StudioApp {
                         n.show_member_wires = !n.show_member_wires;
                     }
                 }
+                CanvasAction::LoadCommitFiles(id) => self.load_commit_files(id),
+                CanvasAction::OpenSessionPlan(id) => self.open_session_plan(id),
+                // B3 lights the session's files from this.
+                CanvasAction::LightSession(id) => self.canvas_state.session_lit = id,
                 other => {
                     self.canvas_state.action_request = Some(other);
                 }

@@ -3,12 +3,18 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use studio_canvas::{
-    FilesView, IgnoredView, PackageBrick, RunView, SettingRow, SettingsCardView, ToolTile, WorkflowRow,
+    BranchView, ChangesView, CommitBead, FileChangeView, FilesView, IgnoredView, PackageBrick, RunView, SessionChip,
+    SettingRow, SettingsCardView, ShippedView, TicketLinkView, TicketView, ToolTile, WorkflowRow, WorktreeRowView,
 };
-use studio_graph::{human_bytes, Graph};
-use studio_sources::{GitDisk, Packages, Settings, TargetKind, Tool, ToolKind, Tools};
+use studio_graph::{human_bytes, EvidenceTier, Graph};
+use studio_sources::tickets::TICKETS_FOLDER;
+use studio_sources::{
+    next_tickets, ticket_ids_in, AgentIndex, Commit, FileChange, GitDisk, GitHistory, Packages, Session, Settings,
+    Shipped, SourceKind, SourceState, TargetKind, Ticket, TicketIndex, Tool, ToolKind, Tools, Worktree,
+};
 
 /// The order tools are shown and pinned in: by kind, then by name.
 fn kind_rank(kind: ToolKind) -> usize {
@@ -228,6 +234,256 @@ pub fn files_view(disk: Option<&GitDisk>, sizes: &BTreeMap<PathBuf, u64>, settin
     }
 }
 
+/// Changed files a row lists (the district shows as many as fit).
+const ROW_FILES: usize = 40;
+/// Commits a row's track holds.
+const ROW_BEADS: usize = 40;
+/// Sessions a row's lane lists.
+const LANE_SESSIONS: usize = 24;
+/// Tickets the column lists as next.
+const NEXT_TICKETS: usize = 12;
+
+/// What a source that has not reported says: its own words when the project has nothing for it,
+/// else that it failed, else that it is still reading.
+fn source_note(status: &BTreeMap<SourceKind, SourceState>, kind: SourceKind, what: &str, reading: &str) -> String {
+    match status.get(&kind) {
+        Some(SourceState::Unavailable(m)) => m.clone(),
+        Some(SourceState::Failed(e)) => format!("{what} could not be read: {e}"),
+        _ => reading.to_string(),
+    }
+}
+
+/// How long ago `then_ms` was at `now_ms`, in words; past a week, the (UTC) date.
+fn ago(then_ms: i64, now_ms: i64) -> String {
+    if then_ms <= 0 {
+        return String::new();
+    }
+    let minutes = (now_ms - then_ms).max(0) / 60_000;
+    match minutes {
+        0 => "just now".to_string(),
+        1..=59 => format!("{minutes} min ago"),
+        60..=1439 => format!("{} h ago", minutes / 60),
+        1440..=2879 => "yesterday".to_string(),
+        2880..=10079 => format!("{} days ago", minutes / 1440),
+        _ => {
+            // Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
+            let z = then_ms.div_euclid(86_400_000) + 719_468;
+            let era = z.div_euclid(146_097);
+            let doe = z - era * 146_097;
+            let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+            let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+            let mp = (5 * doy + 2) / 153;
+            let day = doy - (153 * mp + 2) / 5 + 1;
+            let month = if mp < 10 { mp + 3 } else { mp - 9 };
+            let year = yoe + era * 400 + i64::from(month <= 2);
+            format!("{year:04}-{month:02}-{day:02}")
+        }
+    }
+}
+
+fn file_change_view(f: &FileChange) -> FileChangeView {
+    FileChangeView {
+        path: f.path.clone(),
+        added: f.added.unwrap_or(0),
+        removed: f.deleted.unwrap_or(0),
+        old_path: f.old_path.clone(),
+        binary: f.added.is_none() || f.deleted.is_none(),
+    }
+}
+
+fn ticket_view(t: &Ticket, folder: &Path, short_len: usize) -> TicketView {
+    let shipped = match (&t.shipped, &t.shipped_at) {
+        (Shipped::Commit(id), _) => Some(ShippedView::Commit(id.chars().take(short_len).collect())),
+        (Shipped::NotInRepo, _) => Some(ShippedView::NotInRepo),
+        (Shipped::None, Some(_)) => Some(ShippedView::NotChecked),
+        (Shipped::None, None) => None,
+    };
+    let name = Path::new(&t.file).file_name().map_or_else(|| t.file.clone().into(), |n| n.to_os_string());
+    TicketView {
+        id: t.id.clone(),
+        status: t.status.clone(),
+        priority: t.priority.map(|p| p.to_string()),
+        title: t.title.clone(),
+        file: folder.join(name),
+        shipped,
+        link: None,
+    }
+}
+
+/// The Changes district: one row per worktree, the branch strip and the tickets column, from git,
+/// the agent session index and the ticket registry. Each part that has not reported says why.
+pub fn changes_view(
+    history: Option<&GitHistory>,
+    agents: Option<&AgentIndex>,
+    tickets: Option<&TicketIndex>,
+    commit_files: &BTreeMap<String, Arc<Vec<FileChange>>>,
+    status: &BTreeMap<SourceKind, SourceState>,
+    now_unix_ms: i64,
+) -> ChangesView {
+    let mut view = ChangesView {
+        sessions_message: match agents {
+            None => Some(source_note(status, SourceKind::Agents, "Agent sessions", "Reading agent sessions…")),
+            Some(a) if a.sessions.is_empty() => Some(studio_sources::agents::NO_SESSIONS.to_string()),
+            Some(_) => None,
+        },
+        ..Default::default()
+    };
+    let short_len = history.and_then(|h| h.commits.first()).map_or(7, |c| c.short.len().max(7));
+
+    // The tickets column, before the rows link to it.
+    view.tickets.message = match tickets {
+        None => Some(source_note(status, SourceKind::Tickets, "Tickets", "Reading tickets…")),
+        Some(index) if index.tickets.is_empty() && index.bad_files.is_empty() => {
+            Some(format!("No tickets here ({TICKETS_FOLDER})"))
+        }
+        Some(index) if index.tickets.is_empty() => {
+            Some(format!("{} ticket files could not be read", index.bad_files.len()))
+        }
+        Some(_) => None,
+    };
+    if let Some(index) = tickets.filter(|_| view.tickets.message.is_none()) {
+        let rank = |s: &str| match s {
+            "ready" => 0,
+            "queued" => 1,
+            _ => 2,
+        };
+        let mut counts: Vec<(String, usize)> = index.status_counts.iter().map(|(s, n)| (s.clone(), *n)).collect();
+        counts.sort_by(|a, b| rank(&a.0).cmp(&rank(&b.0)).then(a.0.cmp(&b.0)));
+        view.tickets.counts = counts;
+        view.tickets.next =
+            next_tickets(index, NEXT_TICKETS).into_iter().map(|t| ticket_view(t, &index.folder, short_len)).collect();
+        let waiting: usize = ["ready", "queued"].iter().filter_map(|s| index.status_counts.get(*s)).sum();
+        view.tickets.more_next = waiting.saturating_sub(view.tickets.next.len());
+    }
+
+    let Some(history) = history else {
+        // A folder without git says so through the disk source too, which may report first.
+        view.message = Some(match (status.get(&SourceKind::Git), status.get(&SourceKind::Disk)) {
+            (Some(SourceState::Unavailable(_) | SourceState::Failed(_)), _) | (_, None) => {
+                source_note(status, SourceKind::Git, "Git", "Reading git…")
+            }
+            (_, Some(SourceState::Unavailable(m))) => m.clone(),
+            _ => source_note(status, SourceKind::Git, "Git", "Reading git…"),
+        });
+        return view;
+    };
+    view.commits_on_head = history.commit_count;
+    view.local_branches = history.branches.len();
+    view.co_authored = history.co_authored_commits;
+    view.commits_read = history.commits.len();
+
+    let sessions_at = |path: &Path| -> Vec<&Session> {
+        let Some(a) = agents else { return Vec::new() };
+        let mut found: Vec<&Session> =
+            a.sessions.iter().filter(|s| a.roots.get(s.root).is_some_and(|r| r == path)).collect();
+        found.sort_by(|x, y| y.started.cmp(&x.started).then(x.id.cmp(&y.id)));
+        found
+    };
+    let bead = |c: &Commit| CommitBead {
+        id: c.id.clone(),
+        short: c.short.clone(),
+        time: c.time,
+        co_authored: !c.co_authors.is_empty(),
+        files: commit_files.get(&c.id).map(|files| files.iter().map(file_change_view).collect()),
+        age: ago(c.time * 1000, now_unix_ms),
+    };
+    let head = history.commits.first().map(|c| c.id.as_str());
+
+    let mut worktrees: Vec<&Worktree> = history.worktrees.iter().collect();
+    worktrees.sort_by(|a, b| b.is_main.cmp(&a.is_main).then(a.path.cmp(&b.path)));
+    for (i, w) in worktrees.into_iter().enumerate() {
+        let short: String = w.head.chars().take(short_len).collect();
+        let branch = history.branches.iter().find(|b| Some(&b.name) == w.branch.as_ref());
+        // HEAD's history is this worktree's when it has HEAD checked out; else only its own head
+        // commit is known.
+        let commits = if head == Some(w.head.as_str()) {
+            history.commits.iter().take(ROW_BEADS).map(bead).collect()
+        } else if let Some(c) = history.commits.iter().find(|c| c.id == w.head) {
+            vec![bead(c)]
+        } else if !w.head.is_empty() {
+            let time = branch.map_or(0, |b| b.time);
+            vec![CommitBead {
+                id: w.head.clone(),
+                short: short.clone(),
+                time,
+                co_authored: false,
+                files: commit_files.get(&w.head).map(|files| files.iter().map(file_change_view).collect()),
+                age: ago(time * 1000, now_unix_ms),
+            }]
+        } else {
+            Vec::new()
+        };
+        let c = &w.changes;
+        let change_counts: Vec<(&'static str, usize)> = [
+            ("modified", c.modified),
+            ("added", c.added),
+            ("deleted", c.deleted),
+            ("renamed", c.renamed),
+            ("untracked", c.untracked),
+            ("conflicted", c.conflicted),
+        ]
+        .into_iter()
+        .filter(|(_, n)| *n > 0)
+        .collect();
+        let sessions = sessions_at(&w.path);
+        let chips: Vec<SessionChip> = sessions
+            .iter()
+            .take(LANE_SESSIONS)
+            .map(|s| SessionChip {
+                id: s.id.clone(),
+                slug: s.slug.clone().unwrap_or_else(|| s.id.chars().take(8).collect()),
+                started_ms: s.started,
+                touches: s.touch_count,
+                has_plan: s.plan.is_some(),
+                started: ago(s.started, now_unix_ms),
+            })
+            .collect();
+
+        // Tickets the branch names: matched by name only, so Unresolved.
+        let mut row_tickets = Vec::new();
+        if let (Some(index), Some(name)) = (tickets, &w.branch) {
+            for id in ticket_ids_in(name) {
+                if let Some(t) = index.tickets.iter().find(|t| t.id == id) {
+                    let mut linked = ticket_view(t, &index.folder, short_len);
+                    linked.link = Some(TicketLinkView { row: i, tier: EvidenceTier::Unresolved, basis: "branch name" });
+                    view.tickets.linked.push(linked);
+                    row_tickets.push(id);
+                }
+            }
+        }
+
+        view.rows.push(WorktreeRowView {
+            branch: w.branch.clone().unwrap_or_else(|| format!("detached at {short}")),
+            label: if w.is_main { "you".to_string() } else { w.path.display().to_string() },
+            path: w.path.clone(),
+            is_main: w.is_main,
+            ahead_behind: branch.filter(|b| b.upstream.is_some()).map(|b| (b.ahead, b.behind)),
+            change_counts,
+            files: w.files.iter().take(ROW_FILES).map(file_change_view).collect(),
+            more_files: w.files.len().saturating_sub(ROW_FILES),
+            commits,
+            more_sessions: sessions.len() - chips.len(),
+            sessions: chips,
+            tickets: row_tickets,
+        });
+    }
+
+    let mut branches: Vec<BranchView> = history
+        .branches
+        .iter()
+        .map(|b| BranchView {
+            name: b.name.clone(),
+            ahead_behind: b.upstream.as_ref().map(|_| (b.ahead, b.behind)),
+            time: b.time,
+            sessions: agents.map_or(0, |a| a.sessions.iter().filter(|s| s.branches.contains(&b.name)).count()),
+            age: ago(b.time * 1000, now_unix_ms),
+        })
+        .collect();
+    branches.sort_by(|a, b| a.name.cmp(&b.name));
+    view.branches = branches;
+    view
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,5 +546,289 @@ mod tests {
             [("api".to_string(), 3), ("inner".to_string(), 2)],
             "innermost package, files outside left out"
         );
+    }
+}
+
+#[cfg(test)]
+mod changes_tests {
+    use super::*;
+    use studio_sources::{Branch, PlanRef, StatusCounts};
+
+    /// 2025-10-09T08:53:20Z.
+    const NOW: i64 = 1_760_000_000_000;
+
+    fn commit(n: usize, co: bool) -> Commit {
+        Commit {
+            id: format!("{n:040x}"),
+            short: format!("{n:07x}"),
+            author: "a".into(),
+            time: NOW / 1000 - n as i64 * 3600,
+            subject: String::new(),
+            parents: 1,
+            co_authors: if co { vec!["Claude <c@x>".into()] } else { Vec::new() },
+        }
+    }
+
+    fn worktree(path: &str, head: &str, branch: Option<&str>, is_main: bool) -> Worktree {
+        Worktree {
+            path: PathBuf::from(path),
+            head: head.into(),
+            branch: branch.map(str::to_string),
+            is_main,
+            changes: StatusCounts { modified: 2, untracked: 1, ..Default::default() },
+            files: vec![
+                FileChange { path: "a.rs".into(), old_path: None, added: Some(3), deleted: Some(1) },
+                FileChange { path: "b.rs".into(), old_path: Some("old.rs".into()), added: Some(0), deleted: Some(0) },
+                FileChange { path: "logo.png".into(), old_path: None, added: None, deleted: None },
+            ],
+        }
+    }
+
+    fn branch(name: &str, head: &str, upstream: bool) -> Branch {
+        Branch {
+            name: name.into(),
+            head: head.into(),
+            upstream: upstream.then(|| format!("origin/{name}")),
+            ahead: 2,
+            behind: 1,
+            time: NOW / 1000 - 7200,
+            subject: String::new(),
+        }
+    }
+
+    /// HEAD is commit 1 on `main`; `slice/T-940.11` (worktree wt-b) is at commit 9, not in HEAD's
+    /// history; wt-a is detached at HEAD.
+    fn history() -> GitHistory {
+        let commits: Vec<Commit> = (1..=5).map(|n| commit(n, n % 2 == 1)).collect();
+        let head = commits[0].id.clone();
+        let side = commit(9, false).id;
+        GitHistory {
+            branches: vec![
+                branch("zeta", &side, false),
+                branch("main", &head, true),
+                branch("slice/T-940.11", &side, false),
+            ],
+            // Linked worktrees first and out of order: rows put the main checkout first, then by path.
+            worktrees: vec![
+                worktree("/r/wt-b", &side, Some("slice/T-940.11"), false),
+                worktree("/r/wt-a", &head, None, false),
+                worktree("/r/main", &head, Some("main"), true),
+            ],
+            commit_count: 4286,
+            co_authors: Default::default(),
+            co_authored_commits: 3,
+            commits,
+        }
+    }
+
+    fn session(id: &str, root: usize, started: i64, plan: bool, branches: &[&str]) -> Session {
+        Session {
+            id: id.into(),
+            slug: Some(format!("slug-{id}")),
+            root,
+            branches: branches.iter().map(|b| b.to_string()).collect(),
+            started,
+            ended: started + 1,
+            logs: Vec::new(),
+            plan: plan.then_some(PlanRef { path: None, log: 0, offset: 0, len: 0, time: started }),
+            tasks: Vec::new(),
+            touch_count: 4,
+        }
+    }
+
+    fn agents() -> AgentIndex {
+        AgentIndex {
+            roots: vec![PathBuf::from("/r/main"), PathBuf::from("/r/wt-b"), PathBuf::from("/r/wt-a")],
+            sessions: vec![
+                session("old", 0, NOW - 3 * 86_400_000, false, &["main"]),
+                session("new", 0, NOW - 120_000, true, &["main"]),
+                session("side", 1, NOW - 7_200_000, false, &["slice/T-940.11", "main"]),
+            ],
+            ..Default::default()
+        }
+    }
+
+    fn ticket(id: &str, status: &str, priority: Option<i64>, shipped_at: Option<&str>, shipped: Shipped) -> Ticket {
+        Ticket {
+            id: id.into(),
+            title: format!("title {id}"),
+            status: status.into(),
+            kind: None,
+            priority,
+            order: None,
+            parent: None,
+            shipped_at: shipped_at.map(str::to_string),
+            shipped,
+            spec: None,
+            plan: None,
+            file: format!(".ai/tickets/{id}.toml"),
+        }
+    }
+
+    fn tickets(shipped: Shipped, shipped_at: Option<&str>) -> TicketIndex {
+        let tickets = vec![
+            ticket("T-1", "queued", Some(0), None, Shipped::None),
+            ticket("T-2", "ready", Some(1), None, Shipped::None),
+            ticket("T-3", "idea", None, None, Shipped::None),
+            ticket("T-940.11", "shipped", None, shipped_at, shipped),
+        ];
+        let mut status_counts = BTreeMap::new();
+        for t in &tickets {
+            *status_counts.entry(t.status.clone()).or_insert(0) += 1;
+        }
+        TicketIndex {
+            files: tickets.len(),
+            tickets,
+            status_counts,
+            bad_files: Vec::new(),
+            folder: "/r/main/.ai/tickets".into(),
+        }
+    }
+
+    fn ready() -> BTreeMap<SourceKind, SourceState> {
+        BTreeMap::new()
+    }
+
+    #[test]
+    fn rows_are_worktrees_main_first_with_their_commits_files_and_sessions() {
+        let h = history();
+        let a = agents();
+        let mut loaded = BTreeMap::new();
+        let head = h.commits[0].id.clone();
+        loaded.insert(
+            head.clone(),
+            Arc::new(vec![FileChange { path: "x.rs".into(), old_path: None, added: Some(1), deleted: None }]),
+        );
+        let view = changes_view(Some(&h), Some(&a), None, &loaded, &ready(), NOW);
+
+        assert_eq!((view.commits_on_head, view.local_branches, view.co_authored, view.commits_read), (4286, 3, 3, 5));
+        assert!(view.message.is_none() && view.sessions_message.is_none());
+        let paths: Vec<&str> = view.rows.iter().map(|r| r.path.to_str().unwrap()).collect();
+        assert_eq!(paths, ["/r/main", "/r/wt-a", "/r/wt-b"]);
+
+        let main = &view.rows[0];
+        assert_eq!((main.branch.as_str(), main.label.as_str(), main.is_main), ("main", "you", true));
+        assert_eq!(main.ahead_behind, Some((2, 1)));
+        assert_eq!(main.change_counts, [("modified", 2), ("untracked", 1)]);
+        assert_eq!(main.commits.len(), 5, "HEAD's history on the row that has HEAD checked out");
+        assert!(main.commits[0].co_authored && !main.commits[1].co_authored);
+        assert_eq!(main.commits[0].age, "1 h ago");
+        assert_eq!(main.commits[0].files.as_ref().map(Vec::len), Some(1), "loaded files are shown");
+        assert!(main.commits[0].files.as_ref().unwrap()[0].binary, "no count is binary");
+        assert!(main.commits[1].files.is_none(), "not loaded yet");
+        assert_eq!(main.files[1].old_path.as_deref(), Some("old.rs"));
+        assert!(main.files[2].binary && !main.files[0].binary);
+
+        // Sessions by root, newest first; slug and start only.
+        let ids: Vec<&str> = main.sessions.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["new", "old"]);
+        assert_eq!(main.sessions[0].slug, "slug-new");
+        assert_eq!(main.sessions[0].started, "2 min ago");
+        assert!(main.sessions[0].has_plan && !main.sessions[1].has_plan);
+        assert_eq!(main.sessions[1].started, "3 days ago");
+
+        let detached = &view.rows[1];
+        assert_eq!(detached.branch, format!("detached at {}", &head[..7]));
+        assert_eq!(detached.label, "/r/wt-a");
+        assert_eq!(detached.commits.len(), 5, "a worktree at HEAD shares HEAD's history");
+        assert!(detached.sessions.is_empty(), "root 2 has no sessions");
+
+        let side = &view.rows[2];
+        assert_eq!(side.ahead_behind, None, "no upstream");
+        assert_eq!(side.commits.len(), 1, "only the branch's own head is known");
+        assert_eq!(side.commits[0].short, "0000000", "the first seven of its id");
+        assert_eq!(side.commits[0].age, "2 h ago", "from the branch's time");
+        assert_eq!(side.sessions.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["side"]);
+
+        let names: Vec<&str> = view.branches.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(names, ["main", "slice/T-940.11", "zeta"], "by name");
+        let sessions: Vec<usize> = view.branches.iter().map(|b| b.sessions).collect();
+        assert_eq!(sessions, [3, 1, 0]);
+        assert_eq!(view.branches[0].ahead_behind, Some((2, 1)));
+        assert_eq!(view.branches[2].ahead_behind, None);
+    }
+
+    #[test]
+    fn tickets_link_by_branch_name_unresolved_and_say_what_git_knows_of_their_commit() {
+        let h = history();
+        let sha = "0000000000000000000000000000000000000009";
+        let cases = [
+            (Shipped::Commit(sha.into()), Some(sha), Some(ShippedView::Commit("0000000".into()))),
+            (Shipped::NotInRepo, Some("abcdef1"), Some(ShippedView::NotInRepo)),
+            (Shipped::None, Some("abcdef1"), Some(ShippedView::NotChecked)),
+            (Shipped::None, None, None),
+        ];
+        for (shipped, at, expected) in cases {
+            let t = tickets(shipped, at);
+            let view = changes_view(Some(&h), None, Some(&t), &BTreeMap::new(), &ready(), NOW);
+            assert!(view.tickets.message.is_none());
+            assert_eq!(view.tickets.counts[0], ("ready".to_string(), 1), "ready, then queued, then by name");
+            assert_eq!(view.tickets.counts[1].0, "queued");
+            let next: Vec<&str> = view.tickets.next.iter().map(|t| t.id.as_str()).collect();
+            assert_eq!(next, ["T-2", "T-1"]);
+            assert_eq!(view.tickets.more_next, 0);
+            assert_eq!(view.tickets.next[0].priority.as_deref(), Some("1"));
+            assert_eq!(view.tickets.next[0].file, PathBuf::from("/r/main/.ai/tickets/T-2.toml"));
+
+            assert_eq!(view.tickets.linked.len(), 1);
+            let linked = &view.tickets.linked[0];
+            assert_eq!(linked.id, "T-940.11");
+            let link = linked.link.as_ref().unwrap();
+            assert_eq!((link.row, link.tier, link.basis), (2, EvidenceTier::Unresolved, "branch name"));
+            assert_eq!(linked.shipped, expected);
+            assert_eq!(view.rows[2].tickets, ["T-940.11"]);
+            assert!(view.rows[0].tickets.is_empty());
+        }
+        assert_eq!(ShippedView::Commit("0000000".into()).tier(), Some(EvidenceTier::Proven));
+    }
+
+    #[test]
+    fn each_missing_source_says_so_plainly() {
+        let mut status = BTreeMap::new();
+        let view = changes_view(None, None, None, &BTreeMap::new(), &status, NOW);
+        assert_eq!(view.message.as_deref(), Some("Reading git…"));
+        assert_eq!(view.sessions_message.as_deref(), Some("Reading agent sessions…"));
+        assert_eq!(view.tickets.message.as_deref(), Some("Reading tickets…"));
+
+        status.insert(SourceKind::Git, SourceState::Unavailable("No git repository here".into()));
+        status.insert(SourceKind::Agents, SourceState::Unavailable(studio_sources::agents::NO_SESSIONS.into()));
+        status.insert(SourceKind::Tickets, SourceState::Unavailable("No tickets here (.ai/tickets)".into()));
+        let view = changes_view(None, None, None, &BTreeMap::new(), &status, NOW);
+        assert_eq!(view.message.as_deref(), Some("No git repository here"));
+        assert_eq!(view.sessions_message.as_deref(), Some("No agent sessions for this project"));
+        assert_eq!(view.tickets.message.as_deref(), Some("No tickets here (.ai/tickets)"));
+        assert!(view.rows.is_empty());
+
+        // The disk source may say there is no git before the history job does.
+        let mut disk_first = BTreeMap::new();
+        disk_first.insert(SourceKind::Git, SourceState::Running);
+        disk_first.insert(SourceKind::Disk, SourceState::Unavailable("No git repository here".into()));
+        let view = changes_view(None, None, None, &BTreeMap::new(), &disk_first, NOW);
+        assert_eq!(view.message.as_deref(), Some("No git repository here"));
+
+        // Read, but empty.
+        let empty_agents = AgentIndex::default();
+        let no_tickets = TicketIndex {
+            tickets: Vec::new(),
+            status_counts: BTreeMap::new(),
+            files: 0,
+            bad_files: Vec::new(),
+            folder: "/r/.ai/tickets".into(),
+        };
+        let view =
+            changes_view(Some(&history()), Some(&empty_agents), Some(&no_tickets), &BTreeMap::new(), &ready(), NOW);
+        assert!(view.message.is_none());
+        assert_eq!(view.sessions_message.as_deref(), Some("No agent sessions for this project"));
+        assert_eq!(view.tickets.message.as_deref(), Some("No tickets here (.ai/tickets)"));
+        assert!(view.rows.iter().all(|r| r.sessions.is_empty()));
+    }
+
+    #[test]
+    fn ages_read_as_words_then_dates() {
+        assert_eq!(ago(NOW - 10_000, NOW), "just now");
+        assert_eq!(ago(NOW - 5 * 60_000, NOW), "5 min ago");
+        assert_eq!(ago(NOW - 26 * 3_600_000, NOW), "yesterday");
+        assert_eq!(ago(NOW - 30 * 86_400_000, NOW), "2025-09-09");
+        assert_eq!(ago(0, NOW), "");
     }
 }

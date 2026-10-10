@@ -1,0 +1,6 @@
+id = "T-3"
+kind = "work"
+title = "Queued with a priority"
+status = "queued"
+priority = 1
+order = 3

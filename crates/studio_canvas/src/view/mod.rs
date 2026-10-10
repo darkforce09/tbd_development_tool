@@ -75,6 +75,8 @@ impl<'a> CanvasView<'a> {
             Stop::Run => Some("Reading the project's tools…".to_string()),
             Stop::Files if districts.files.is_some() => None,
             Stop::Files => Some("Reading the disk…".to_string()),
+            Stop::Changes if districts.changes.is_some() => None,
+            Stop::Changes => Some("Reading git…".to_string()),
             _ => Some("Nothing read here yet".to_string()),
         });
         if let Some(files) = &districts.files {
@@ -114,6 +116,49 @@ impl<'a> CanvasView<'a> {
                 Some(crate::districts::run::RunAction::Open(file, line)) => {
                     self.state.desk.open(&file, Some(line));
                     self.state.fly_to(crate::camera::CameraTarget::Stop(Stop::Desk));
+                }
+                None => {}
+            }
+        }
+        if let Some(changes) = &districts.changes {
+            use crate::districts::changes::{self as cd, ChangesAction};
+            let selection = cd::ChangesSelection {
+                lit_session: self.state.session_lit.clone(),
+                ..self.state.changes_selected.clone()
+            };
+            // A click that starts a flight here (from another district) is not also a click on the
+            // district's contents.
+            let gate = if self.state.camera.is_flying() { InputGate { clicked: false, ..gate } } else { gate };
+            let action = cd::paint_changes(&painter, &world, &self.state.transform, rect, changes, &selection, &gate);
+            match action {
+                Some(ChangesAction::SelectRow(row)) => {
+                    self.state.changes_selected = cd::ChangesSelection { row: Some(row), ..Default::default() };
+                }
+                Some(ChangesAction::SelectCommit(row, bead)) => {
+                    self.state.changes_selected =
+                        cd::ChangesSelection { row: Some(row), commit: Some((row, bead)), ..Default::default() };
+                    // The commit's files are read once, on the first pick.
+                    let bead = changes.rows.get(row).and_then(|r| r.commits.get(bead));
+                    if let Some(b) = bead.filter(|b| b.files.is_none()) {
+                        self.state.action_request = Some(CanvasAction::LoadCommitFiles(b.id.clone()));
+                    }
+                }
+                Some(ChangesAction::LoadCommitFiles(id)) => {
+                    self.state.action_request = Some(CanvasAction::LoadCommitFiles(id));
+                }
+                Some(ChangesAction::LightSession(id)) => {
+                    self.state.action_request = Some(CanvasAction::LightSession(id));
+                }
+                Some(ChangesAction::OpenSessionPlan(id)) => {
+                    self.state.action_request = Some(CanvasAction::OpenSessionPlan(id));
+                }
+                Some(ChangesAction::OpenFile(file)) => {
+                    self.state.desk.open(&file, None);
+                    self.state.fly_to(crate::camera::CameraTarget::Stop(Stop::Desk));
+                }
+                Some(ChangesAction::FlyToRow(row)) => {
+                    let target = cd::row_world_rect(&world, changes, row);
+                    self.state.fly_to(crate::camera::CameraTarget::Rect(target));
                 }
                 None => {}
             }
@@ -206,16 +251,24 @@ impl<'a> CanvasView<'a> {
             if target.starts_with("http://") || target.starts_with("https://") {
                 ctx.open_url(egui::OpenUrl::new_tab(target));
             } else {
-                let clean = target.split(['#', '?']).next().unwrap_or_default();
                 let base = from.parent().unwrap_or(std::path::Path::new(""));
-                let path = match (clean.strip_prefix('/'), &state.desk.root) {
-                    (Some(rooted), Some(root)) => root.join(rooted),
-                    _ => base.join(clean),
-                };
-                if path.is_file() {
-                    state.desk.open(&path, None);
+                if let Some(link) = crate::desk::parse_link(&target, base, state.desk.root.as_deref()) {
+                    // One look at the disk, on a click, so a broken link says so instead of
+                    // opening an empty card.
+                    if !link.path.is_file() {
+                        state.status_message = Some(format!("Not found: {}", link.path.display()));
+                    } else if let Some(lines) = link.lines {
+                        use crate::desk::{LitKind, LitRange, LINK_SOURCE};
+                        state.desk.open_lit(&link.path, vec![LitRange::new(lines, LitKind::Lit, LINK_SOURCE)]);
+                    } else {
+                        state.desk.open(&link.path, None);
+                    }
                 }
             }
+        }
+        // An edit picked on a plan card: its file, with the edit lit.
+        if let Some((path, lights)) = out.open_lit {
+            state.desk.open_lit(&path, lights);
         }
         let over_desk = ctx
             .input(|i| i.pointer.hover_pos())

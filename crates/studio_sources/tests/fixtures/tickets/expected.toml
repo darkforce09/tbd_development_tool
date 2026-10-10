@@ -1,0 +1,29 @@
+# What `read_tickets` finds in `.ai/tickets/` here. The test builds a git repository with one
+# commit, 35c962b8419dc5e2e44930ef9c1a9214b9c4e06f (fixed author, dates and content), which T-1
+# names by its short id; T-4's commit is in no repository.
+
+# `T-*.toml` files directly in the folder (`queue.json` and `estimates/T-99.toml` are not read).
+files = 14
+bad_files = ["T-12.toml", "T-8.toml"]
+tickets = 12
+
+# `next_tickets`: ready by priority, order, id; then queued.
+next = ["T-10", "T-2", "T-2.9", "T-2.10", "T-9", "T-3", "T-1.2.3.4"]
+
+[status_counts]
+cancelled = 1
+deferred = 1
+idea = 1
+queued = 2
+ready = 5
+shipped = 2
+
+# With the git repository. Tickets not listed have no `shipped_at`.
+[shipped]
+"T-1" = "35c962b8419dc5e2e44930ef9c1a9214b9c4e06f"
+"T-4" = "not in repo"
+
+# Without one: nothing is checked, `shipped_at` is kept.
+[shipped_without_git]
+"T-1" = "not checked"
+"T-4" = "not checked"

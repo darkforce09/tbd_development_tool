@@ -13,6 +13,10 @@ pub mod world;
 
 pub use camera::{CameraTarget, Stop};
 pub use desk::{content_for_text, CardContent, DeskRequest, DeskState};
+pub use districts::changes::{
+    BranchView, ChangesAction, ChangesLayout, ChangesSelection, ChangesView, CommitBead, FileChangeView, SessionChip,
+    ShippedView, TicketLinkView, TicketView, TicketsColumnView, WorktreeRowView,
+};
 pub use districts::files::{FilesView, IgnoredView, SettingRow, SettingsCardView};
 pub use districts::run::{PackageBrick, RunSection, RunView, ToolTile, WorkflowRow};
 pub use districts::DistrictViews;

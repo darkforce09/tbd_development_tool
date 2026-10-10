@@ -186,11 +186,21 @@ fn the_card_layer_skips_hidden_cards_and_marks_selection() {
     let (mut g, [lib, _, main, _]) = project();
     g.toggle_cluster_collapse("root/b");
     let selected = std::collections::BTreeSet::from([lib]);
-    let boxes = build_card_layer(&g, |_| false, &selected);
+    let boxes = build_card_layer(&g, |_| false, &selected, &Default::default());
     assert_eq!(boxes.len(), g.nodes.len() - 1, "main.rs is inside the collapsed folder");
     assert!(g.is_node_in_collapsed_cluster(main));
     let selected_fill = CARD_BORDER_SELECTED.to_srgba_unmultiplied();
     assert_eq!(boxes.iter().filter(|b| b.fill == selected_fill).count(), 1);
+}
+
+#[test]
+fn the_card_layer_tints_the_lit_session_files() {
+    let (g, [lib, a, _, _]) = project();
+    let lit = std::collections::BTreeSet::from([lib, a]);
+    let boxes = build_card_layer(&g, |_| false, &std::collections::BTreeSet::from([lib]), &lit);
+    let fill = |c: egui::Color32| boxes.iter().filter(|b| b.fill == c.to_srgba_unmultiplied()).count();
+    assert_eq!(fill(CARD_BORDER_SELECTED), 1, "the selection wins");
+    assert_eq!(fill(DISTRICT_CHANGES), 1);
 }
 
 #[test]

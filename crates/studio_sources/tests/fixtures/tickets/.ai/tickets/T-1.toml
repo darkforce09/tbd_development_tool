@@ -1,0 +1,14 @@
+id = "T-1"
+kind = "program"
+title = "Ship the first thing"
+status = "shipped"
+priority = 1
+order = 1
+shipped_at = "35c962b"
+spec = "docs/specs/t1.md"
+plan = "docs/plans/t1.md"
+children = ["T-1.2.3.4"]
+created_at = "2026-01-01T00:00:00Z"
+
+[scope]
+owns = ["src/one.rs"]

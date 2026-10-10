@@ -424,6 +424,12 @@ pub fn render_nodes_and_sockets(
         }
     }
 
+    // Layer D-2: the chosen agent session's files, ringed (outside the card, apart from the
+    // selection's border).
+    if !state.session_lit_nodes.is_empty() {
+        paint_session_rings(painter, state, graph, visible_node_ids);
+    }
+
     // Layer E: Pin Sockets
     if zoom >= 0.35 {
         for &node_id in visible_node_ids {
@@ -463,5 +469,30 @@ pub fn render_nodes_and_sockets(
                 }
             }
         }
+    }
+}
+
+/// A purple ring and a soft glow around each visible card the chosen agent session touched.
+fn paint_session_rings(painter: &Painter, state: &CanvasState, graph: &Graph, visible_node_ids: &[NodeId]) {
+    let zoom = state.transform.zoom;
+    let gap = (4.0 * zoom).clamp(1.0, 4.0);
+    for &node_id in visible_node_ids {
+        if !state.session_lit_nodes.contains(&node_id) || graph.is_node_in_collapsed_cluster(node_id) {
+            continue;
+        }
+        let Some(node) = graph.nodes.get(&node_id) else { continue };
+        let min = state.transform.world_to_screen(Pos2::new(node.position[0], node.position[1]));
+        let max = state
+            .transform
+            .world_to_screen(Pos2::new(node.position[0] + node.size[0], node.position[1] + node.size[1]));
+        let ring = Rect::from_min_max(min, max).expand(gap);
+        let radius = CornerRadius::from((6.0 * zoom).clamp(1.0, 8.0));
+        painter.rect_stroke(
+            ring.expand(gap),
+            radius,
+            Stroke::new(gap * 1.5, with_alpha(DISTRICT_CHANGES, 50)),
+            egui::StrokeKind::Middle,
+        );
+        painter.rect_stroke(ring, radius, Stroke::new(1.5, DISTRICT_CHANGES), egui::StrokeKind::Middle);
     }
 }

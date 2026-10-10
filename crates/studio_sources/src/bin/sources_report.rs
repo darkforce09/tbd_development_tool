@@ -8,6 +8,9 @@ fn main() {
         eprintln!("usage: sources_report <project folder>");
         std::process::exit(2);
     };
+    if args_has("--sessions") {
+        return sessions_section(&root, args_has("--cold"));
+    }
     let started = Instant::now();
     let (graph, stats) = match studio_parser::load_rust_project(&root) {
         Ok(loaded) => loaded,
@@ -142,6 +145,7 @@ fn main() {
         }
         Err(e) => println!("  git                {e:?}"),
     }
+    git_history_section(&runner, &canonical);
     let json: Vec<std::path::PathBuf> =
         files.iter().filter(|f| f.extension().is_some_and(|e| e == "json")).cloned().collect();
     let started = Instant::now();
@@ -171,6 +175,32 @@ fn main() {
             let bytes = studio_sources::du_bytes(&canonical.join(folder));
             println!("    du {folder:<14} {bytes} bytes in {:.2?}", started.elapsed());
         }
+    }
+
+    // Tickets (`.ai/tickets`), with every `shipped_at` asked of git once.
+    let started = Instant::now();
+    match studio_sources::read_tickets(&runner, &canonical) {
+        Ok(index) => {
+            println!("  tickets            read in {:.2?}", started.elapsed());
+            println!("    files            {} ({} bad)", index.files, index.bad_files.len());
+            for (file, why) in index.bad_files.iter().take(5) {
+                println!("      {file}: {why}");
+            }
+            let counts: Vec<String> = index.status_counts.iter().map(|(s, n)| format!("{s} {n}")).collect();
+            println!("    status           {}", counts.join(" / "));
+            let shipped = |want: fn(&studio_sources::Shipped) -> bool| {
+                index.tickets.iter().filter(|t| t.shipped_at.is_some() && want(&t.shipped)).count()
+            };
+            println!(
+                "    shipped_at       {} confirmed, {} not in repo, {} not checked",
+                shipped(|s| matches!(s, studio_sources::Shipped::Commit(_))),
+                shipped(|s| *s == studio_sources::Shipped::NotInRepo),
+                shipped(|s| *s == studio_sources::Shipped::None)
+            );
+            let next: Vec<&str> = studio_sources::next_tickets(&index, 5).iter().map(|t| t.id.as_str()).collect();
+            println!("    next             {}", next.join(" "));
+        }
+        Err(e) => println!("  tickets            {e:?}"),
     }
 
     // `--tests <path prefix>`: tests per file under that folder, to check against other counts.
@@ -204,4 +234,178 @@ fn main() {
 
 fn args_has(flag: &str) -> bool {
     std::env::args().any(|a| a == flag)
+}
+
+/// Branches, history, co-authors, worktrees, the per-folder last commit and one commit's files.
+fn git_history_section(runner: &studio_sources::Runner, root: &std::path::Path) {
+    let started = Instant::now();
+    let history = match studio_sources::read_history(runner, root) {
+        Ok(history) => history,
+        Err(e) => return println!("  git history        {e:?}"),
+    };
+    println!("  git history        read in {:.2?}", started.elapsed());
+    println!("    local branches   {}", history.branches.len());
+    println!("    commits on HEAD  {} ({} read)", history.commit_count, history.commits.len());
+    println!("    co-authored      {} commits", history.co_authored_commits);
+    let mut names: Vec<(&String, &usize)> = history.co_authors.iter().collect();
+    names.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    for (name, n) in names.iter().take(5) {
+        println!("      {name:<30} {n}");
+    }
+    for wt in &history.worktrees {
+        let (added, deleted) =
+            wt.files.iter().fold((0, 0), |(a, d), f| (a + f.added.unwrap_or(0), d + f.deleted.unwrap_or(0)));
+        println!(
+            "    worktree         {} [{}]{} {} changes: {} files +{added} -{deleted}, {} untracked",
+            wt.path.display(),
+            wt.branch.as_deref().unwrap_or("detached"),
+            if wt.is_main { " (main checkout)" } else { "" },
+            wt.changes.total(),
+            wt.files.len(),
+            wt.changes.untracked
+        );
+    }
+    let started = Instant::now();
+    match studio_sources::read_part_commits(runner, root) {
+        Ok(parts) => println!(
+            "  part commits       {} folders from {} commits in {:.2?} (paths as recorded, renames unpaired)",
+            parts.by_folder.len(),
+            parts.commits_scanned,
+            started.elapsed()
+        ),
+        Err(e) => println!("  part commits       {e:?}"),
+    }
+    let Some(head) = history.commits.first() else { return };
+    let dir = std::env::temp_dir().join(format!("studio-sources-report-{}", std::process::id()));
+    let store = studio_sources::Store::in_dir(&dir);
+    let started = Instant::now();
+    let cold = studio_sources::commit_files_cached(runner, root, &store, &head.id);
+    let cold_time = started.elapsed();
+    let started = Instant::now();
+    let warm = studio_sources::commit_files_cached(runner, root, &store, &head.id);
+    let warm_time = started.elapsed();
+    let _ = std::fs::remove_dir_all(&dir);
+    match (cold, warm) {
+        (Ok(cold), Ok(warm)) => println!(
+            "  commit files       HEAD {}: {} files, cold {cold_time:.2?}, warm {warm_time:.2?}{}",
+            head.short,
+            cold.len(),
+            if cold == warm { "" } else { " (warm differs!)" }
+        ),
+        (cold, warm) => println!("  commit files       cold {cold:?}, warm {warm:?}"),
+    }
+}
+
+/// `--sessions [--cold]`: the agent session index for the project and its linked worktrees,
+/// indexed twice on one store (with `--cold`, a fresh temporary store: cold, then warm).
+fn sessions_section(root: &std::path::Path, cold: bool) {
+    let root = root.canonicalize().unwrap_or(root.to_path_buf());
+    let runner = studio_sources::Runner::new(studio_sources::CancelToken::default());
+    let mut roots = vec![root.clone()];
+    if let Ok(out) =
+        studio_sources::Command::git(&root, ["worktree", "list", "--porcelain"]).and_then(|c| runner.run(&c))
+    {
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            if let Some(path) = line.strip_prefix("worktree ") {
+                let path = std::path::Path::new(path).canonicalize().unwrap_or(path.into());
+                if !roots.contains(&path) {
+                    roots.push(path);
+                }
+            }
+        }
+    }
+    let Some(claude) = studio_sources::default_claude_dir() else {
+        return println!("  sessions           no home folder");
+    };
+    println!("  sessions           {}", claude.display());
+    for (i, r) in roots.iter().enumerate() {
+        println!("    root {i}           {}", r.display());
+    }
+    let temp = std::env::temp_dir().join(format!("studio-sessions-report-{}", std::process::id()));
+    let store = if cold { studio_sources::Store::in_dir(&temp) } else { studio_sources::Store::for_project(&root) };
+    let mut runs = Vec::new();
+    for _ in 0..2 {
+        let started = Instant::now();
+        let result = studio_sources::index_sessions(&claude, &roots, Some(&store), None);
+        runs.push((started.elapsed(), result));
+    }
+    let _ = std::fs::remove_dir_all(&temp);
+    let first_label = if cold { "cold (fresh store)" } else { "first (project store)" };
+    let read = |r: &Result<studio_sources::AgentIndex, _>| {
+        r.as_ref().map_or(String::new(), |i| {
+            let s = &i.stats;
+            format!(
+                " ({} new, {} resumed, {} reparsed files; {} MB scanned for later cwds)",
+                s.new_files,
+                s.resumed_files,
+                s.reparsed_files,
+                s.later_cwd_bytes / 1_000_000
+            )
+        })
+    };
+    println!("    {first_label:<20} {:.2?}{}", runs[0].0, read(&runs[0].1));
+    println!("    warm (same store)    {:.2?}{}", runs[1].0, read(&runs[1].1));
+    let index = match runs.pop().map(|r| r.1) {
+        Some(Ok(index)) => index,
+        Some(Err(e)) => return println!("    {e:?}"),
+        None => return,
+    };
+    if runs[0].1.as_ref().ok().map(|i| (&i.sessions, &i.touches)) != Some((&index.sessions, &index.touches)) {
+        println!("    WARNING: the warm pass differs from the first");
+    }
+    let s = &index.stats;
+    let mapped: Vec<_> = index.folders.iter().filter(|f| f.mapped).collect();
+    println!("    folders          {} scanned ({} logs), {} mapped", index.folders.len(), s.scanned_logs, mapped.len());
+    for f in &mapped {
+        let name = f.folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        println!("      {name} ({} logs, {} MB)", f.logs, f.bytes / 1_000_000);
+    }
+    println!("    main logs        {} ({} MB)", s.main_logs, s.main_bytes / 1_000_000);
+    println!("    subagent logs    {} ({} MB)", s.subagent_logs, s.subagent_bytes / 1_000_000);
+    println!(
+        "    lines            {} ({} parsed, {} bad, {} duplicate)",
+        s.lines, s.parsed_lines, s.bad_lines, s.duplicate_lines
+    );
+    println!(
+        "    sessions         {} ({} entered after their first cwd, {} main logs)",
+        index.sessions.len(),
+        s.later_cwd_sessions,
+        s.later_cwd_logs
+    );
+    use studio_sources::TouchKind;
+    for kind in [TouchKind::Read, TouchKind::Edit, TouchKind::Write, TouchKind::BashEdit] {
+        let main = index.touches.iter().filter(|t| t.kind == kind && !t.subagent).count();
+        let sub = index.touches.iter().filter(|t| t.kind == kind && t.subagent).count();
+        println!("    {:<16} {main} main, {sub} subagent", format!("touches {}", kind.label()));
+    }
+    let with_hunks = index.touches.iter().filter(|t| !t.hunks.is_empty()).count();
+    let in_task = index.touches.iter().filter(|t| t.task.is_some()).count();
+    println!("    touches          {} ({with_hunks} with line numbers, {in_task} in a task)", index.touches.len());
+    let gone_files: std::collections::BTreeSet<_> =
+        index.touches.iter().map(|t| &t.path).filter(|p| !p.is_file()).collect();
+    let in_root_gone = index.touches.iter().filter(|t| gone_files.contains(&t.path)).count();
+    println!("    in repo, gone    {in_root_gone} touches on {} files no longer on disk", gone_files.len());
+    println!(
+        "    out of repo      {} (gone: {} — e.g. removed worktrees; still on disk: {})",
+        s.out_of_repo_touches, s.out_of_repo_gone, s.out_of_repo_existing
+    );
+    for (folder, n) in &s.out_of_repo_top {
+        println!("      {n:>6}  {folder}");
+    }
+    let plans: Vec<_> = index.sessions.iter().filter_map(|s| s.plan.as_ref()).collect();
+    let on_disk = plans.iter().filter(|p| p.path.as_ref().is_some_and(|p| p.is_file())).count();
+    let by_file_only = plans.iter().filter(|p| p.len == 0).count();
+    println!(
+        "    plans            {} ({on_disk} with file, {} without; {by_file_only} found by slug only)",
+        plans.len(),
+        plans.len() - on_disk
+    );
+    let tasks: usize = index.sessions.iter().map(|s| s.tasks.len()).sum();
+    let states: usize = index.sessions.iter().flat_map(|s| &s.tasks).map(|t| t.states.len()).sum();
+    println!("    tasks            {tasks} ({states} state changes)");
+    let mut unknown: Vec<_> = s.unknown_types.iter().collect();
+    unknown.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    let top: Vec<String> = unknown.iter().take(10).map(|(t, n)| format!("{t} {n}")).collect();
+    println!("    unknown types    {}", top.join(", "));
+    println!("    index time       {} ms (warm pass, as the index measures itself)", s.elapsed_ms);
 }

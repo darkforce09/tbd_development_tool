@@ -16,7 +16,7 @@ use studio_graph::{Graph, NodeId};
 use studio_ui::color_tokens::*;
 use studio_ui::{file_extension_color, with_alpha, CodeView, MarkdownViewer};
 
-use super::{CardContent, DeskCard, DeskState, NavigatorRow};
+use super::{code_lights, CardContent, DeskCard, DeskState, NavigatorRow, PlanBody, PlanDoc, PlanEdit};
 use crate::camera::Stop;
 use crate::transform::CanvasTransform;
 use crate::world::WorldLayout;
@@ -45,6 +45,8 @@ pub struct DeskOutput {
     pub load_folder: Option<String>,
     /// A link clicked in a document: the document, and the target as written.
     pub link: Option<(PathBuf, String)>,
+    /// An edit picked on a plan card: open its file with these lines lit.
+    pub open_lit: Option<(PathBuf, Vec<super::LitRange>)>,
 }
 
 fn screen_rect(transform: &CanvasTransform, world: Rect) -> Rect {
@@ -129,7 +131,11 @@ pub fn show_desk(
 
 /// One open file: its header and its contents.
 fn card_ui(ui: &mut Ui, card: &mut DeskCard, height: f32, out: &mut DeskOutput, close: &mut Option<u64>) {
-    let accent = file_extension_color(card.path.extension().and_then(|e| e.to_str()).unwrap_or(""));
+    let accent = if card.session.is_some() {
+        DISTRICT_CHANGES
+    } else {
+        file_extension_color(card.path.extension().and_then(|e| e.to_str()).unwrap_or(""))
+    };
     Frame::new()
         .fill(CODE_EDITOR_BG)
         .stroke(Stroke::new(1.0, CARD_BORDER_NORMAL))
@@ -151,9 +157,12 @@ fn card_ui(ui: &mut Ui, card: &mut DeskCard, height: f32, out: &mut DeskOutput, 
                             if ui.button(egui_phosphor::regular::X).on_hover_text("Put it away").clicked() {
                                 *close = Some(card.id);
                             }
-                            let map = ui.button(egui_phosphor::regular::CROSSHAIR).on_hover_text("Show it on the map");
-                            if map.clicked() {
-                                out.show_on_map = Some(card.path.clone());
+                            if card.session.is_none() {
+                                let map =
+                                    ui.button(egui_phosphor::regular::CROSSHAIR).on_hover_text("Show it on the map");
+                                if map.clicked() {
+                                    out.show_on_map = Some(card.path.clone());
+                                }
                             }
                             if let CardContent::Markdown(_) = card.content {
                                 let label = if card.show_source { "Rendered" } else { "Source" };
@@ -167,6 +176,8 @@ fn card_ui(ui: &mut Ui, card: &mut DeskCard, height: f32, out: &mut DeskOutput, 
                 ui.add(egui::Separator::default().spacing(0.0));
                 let scroll_to = card.scroll_to.take();
                 let id = Id::new(("desk_card", card.id));
+                let lights = card.document().is_some().then(|| code_lights(card.lights()));
+                let (lit, marks) = lights.unwrap_or_default();
                 match &card.content {
                     CardContent::Loading => {
                         ui.add_space(24.0);
@@ -177,12 +188,22 @@ fn card_ui(ui: &mut Ui, card: &mut DeskCard, height: f32, out: &mut DeskOutput, 
                         });
                     }
                     CardContent::Code(doc) => {
-                        CodeView::new(doc, id).lit(card.lit.clone()).scroll_to(scroll_to).show(ui);
+                        CodeView::new(doc, id).lit(&lit).marks(&marks).scroll_to(scroll_to).show(ui);
                     }
                     CardContent::Markdown(doc) if card.show_source => {
-                        CodeView::new(doc, id).lit(card.lit.clone()).scroll_to(scroll_to).show(ui);
+                        CodeView::new(doc, id).lit(&lit).marks(&marks).scroll_to(scroll_to).show(ui);
                     }
                     CardContent::Markdown(doc) => {
+                        // Lines are lit (by the chosen session): say so, one click from the source.
+                        if !marks.is_empty() || !lit.is_empty() {
+                            let text = format!("{} lines lit — view source", egui_phosphor::regular::CODE);
+                            let note = ui.add(
+                                egui::Button::new(RichText::new(text).color(DISTRICT_CHANGES).size(12.5)).frame(false),
+                            );
+                            if note.clicked() {
+                                card.show_source = true;
+                            }
+                        }
                         ScrollArea::vertical().id_salt(id).auto_shrink([false, false]).show(ui, |ui| {
                             Frame::new().inner_margin(Margin::symmetric(22, 16)).show(ui, |ui| {
                                 if let Some(target) = MarkdownViewer::new(&doc.text).font_size(14.0).show(ui) {
@@ -198,9 +219,110 @@ fn card_ui(ui: &mut Ui, card: &mut DeskCard, height: f32, out: &mut DeskOutput, 
                         note(ui, &format!("Too large to show here · {}", studio_graph::human_bytes(*bytes)))
                     }
                     CardContent::Unreadable(err) => note(ui, &format!("Could not read it: {err}")),
+                    CardContent::Plan(plan) => plan_ui(ui, plan, id, out),
                 }
             });
         });
+}
+
+/// A plan card's body: who and where, the plan, its steps with their edits, the other edits.
+fn plan_ui(ui: &mut Ui, plan: &PlanDoc, id: Id, out: &mut DeskOutput) {
+    ScrollArea::vertical().id_salt(id).auto_shrink([false, false]).show(ui, |ui| {
+        Frame::new().inner_margin(Margin::symmetric(20, 14)).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 6.0;
+            let dim = |t: &str| RichText::new(t).font(FontId::proportional(12.5)).color(TEXT_DIM);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(dim(&format!("started {}", plan.started)));
+                if !plan.branches.is_empty() {
+                    ui.label(dim(&format!("· {} {}", egui_phosphor::regular::GIT_BRANCH, plan.branches.join(", "))));
+                }
+                ui.label(dim(&format!("· {}", plan.worktree)));
+            });
+            ui.label(RichText::new("Observed · session log").font(FontId::proportional(12.0)).color(DISTRICT_CHANGES));
+            ui.add_space(4.0);
+
+            if let Some(note) = plan.plan.note() {
+                ui.label(RichText::new(note).font(FontId::proportional(13.0)).color(DISTRICT_PIPELINE));
+            }
+            if let PlanBody::Text { doc, path, .. } = &plan.plan {
+                let from = path.clone().unwrap_or_default();
+                if let Some(target) = MarkdownViewer::new(&doc.text).font_size(14.0).show(ui) {
+                    out.link = Some((from, target));
+                }
+            }
+
+            ui.add_space(8.0);
+            heading(ui, "Steps");
+            if plan.steps.is_empty() {
+                ui.label(dim("The session created no tasks."));
+            }
+            for (n, step) in plan.steps.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    let (badge, _) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::hover());
+                    ui.painter().circle_filled(badge.center(), 11.0, with_alpha(DISTRICT_CHANGES, 200));
+                    ui.painter().text(
+                        badge.center(),
+                        Align2::CENTER_CENTER,
+                        (n + 1).to_string(),
+                        FontId::proportional(11.5),
+                        TEXT_PRIMARY,
+                    );
+                    let subject = if step.subject.is_empty() { "(subject not in the log)" } else { &step.subject };
+                    ui.label(RichText::new(subject).font(FontId::proportional(13.5)).color(TEXT_PRIMARY));
+                    ui.label(dim(&step.state));
+                });
+                for edit in &step.edits {
+                    edit_row(ui, edit, &plan.slug, 30.0, out);
+                }
+            }
+
+            ui.add_space(8.0);
+            heading(ui, "Edits");
+            let reads = match plan.reads {
+                0 => String::new(),
+                1 => " · 1 file read".to_string(),
+                n => format!(" · {n} files read"),
+            };
+            if plan.edits.is_empty() {
+                ui.label(dim(&format!("No edits outside the steps{reads}.")));
+            } else {
+                ui.label(dim(&format!("Made outside any step, in order{reads}.")));
+            }
+            for edit in &plan.edits {
+                edit_row(ui, edit, &plan.slug, 0.0, out);
+            }
+        });
+    });
+}
+
+fn heading(ui: &mut Ui, text: &str) {
+    ui.label(RichText::new(text).font(FontId::proportional(14.0)).color(TEXT_PRIMARY).strong());
+}
+
+/// One edit: its file, kind, time and where it is now. Clicking opens the file with it lit.
+fn edit_row(ui: &mut Ui, edit: &PlanEdit, slug: &str, indent: f32, out: &mut DeskOutput) {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
+    let opens = edit.matched.opens();
+    if opens && response.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::from(5.0), FLOATING_BTN_HOVER);
+    }
+    let painter = ui.painter();
+    let left = rect.left_center() + vec2(indent + 6.0, 0.0);
+    let right = format!("{} · {} · {}", edit.kind, edit.time, edit.matched.label());
+    let right_width = right.chars().count() as f32 * 6.4;
+    let max_chars = ((rect.width() - indent - right_width - 24.0) / 7.0).max(8.0) as usize;
+    let color = if opens { TEXT_SECONDARY } else { TEXT_DIM };
+    let file = studio_ui::truncate_with_ellipsis(&edit.rel, max_chars);
+    painter.text(left, Align2::LEFT_CENTER, file, FontId::monospace(12.0), color);
+    let tone = match edit.matched {
+        super::EditMatch::Lit(_) => DISTRICT_CHANGES,
+        super::EditMatch::Stale(_) => DISTRICT_PIPELINE,
+        _ => TEXT_DIM,
+    };
+    painter.text(rect.right_center() - vec2(6.0, 0.0), Align2::RIGHT_CENTER, right, FontId::proportional(11.5), tone);
+    if opens && response.clicked() {
+        out.open_lit = Some((edit.path.clone(), edit.lights(slug)));
+    }
 }
 
 fn note(ui: &mut Ui, text: &str) {

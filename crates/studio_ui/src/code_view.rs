@@ -11,7 +11,10 @@ use std::ops::RangeInclusive;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use egui::text::LayoutJob;
-use egui::{vec2, Align2, Color32, CornerRadius, FontId, Id, Label, Rect, Sense, TextFormat, TextWrapMode, Ui, Vec2};
+use egui::{
+    vec2, Align2, Color32, CornerRadius, FontId, Id, Label, Rect, Sense, Stroke, StrokeKind, TextFormat, TextWrapMode,
+    Ui, Vec2,
+};
 use syntect::easy::HighlightLines;
 
 use crate::colors::*;
@@ -166,6 +169,64 @@ pub struct CodeViewResponse {
     pub visible: Option<RangeInclusive<usize>>,
 }
 
+/// What a gutter mark says about its lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GutterMarkKind {
+    /// An observed edit, found exactly where it is now: a filled bar.
+    Edit,
+    /// One of several places an edit could be: an outlined bar, the lines not banded.
+    Candidate,
+    /// An edit the file no longer holds: an amber tick.
+    Stale,
+}
+
+/// A mark in the 4 pt column at the gutter's left edge, with what it says on hover.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GutterMark {
+    /// Lines (1-based).
+    pub lines: RangeInclusive<usize>,
+    pub kind: GutterMarkKind,
+    pub tip: String,
+}
+
+/// What a stale mark says.
+pub const STALE_TIP: &str = "this edit no longer matches the file";
+
+/// The width of the mark column at the gutter's left edge.
+pub const MARK_WIDTH: f32 = 4.0;
+
+/// Whether `line` is in one of the lit ranges.
+pub fn is_lit(lit: &[RangeInclusive<usize>], line: usize) -> bool {
+    lit.iter().any(|r| r.contains(&line))
+}
+
+/// The mark shown on `line`: an edit before a stale tick before a candidate; the first of a kind.
+pub fn mark_at(marks: &[GutterMark], line: usize) -> Option<&GutterMark> {
+    [GutterMarkKind::Edit, GutterMarkKind::Stale, GutterMarkKind::Candidate]
+        .into_iter()
+        .find_map(|kind| marks.iter().find(|m| m.kind == kind && m.lines.contains(&line)))
+}
+
+/// Where a mark is painted in a row's mark column (`column`: the 4 pt strip of the row), and
+/// whether it is filled (an edit), outlined (a candidate) or a short tick (stale).
+pub fn mark_shape(kind: GutterMarkKind, column: Rect) -> (Rect, bool) {
+    match kind {
+        GutterMarkKind::Edit => (column, true),
+        GutterMarkKind::Candidate => (column.shrink2(vec2(0.5, 0.5)), false),
+        GutterMarkKind::Stale => {
+            let tick = Rect::from_center_size(column.center(), vec2(column.width(), column.height() * 0.5));
+            (tick, true)
+        }
+    }
+}
+
+fn mark_color(kind: GutterMarkKind) -> Color32 {
+    match kind {
+        GutterMarkKind::Edit | GutterMarkKind::Candidate => DISTRICT_CHANGES,
+        GutterMarkKind::Stale => DISTRICT_PIPELINE,
+    }
+}
+
 /// A read-only view of a document.
 pub struct CodeView<'a> {
     doc: &'a CodeDocument,
@@ -173,7 +234,9 @@ pub struct CodeView<'a> {
     /// Number of the first line (1-based), for documents that are a slice of a file.
     first_line: usize,
     /// Lines (1-based) shown lit, e.g. what a plan step changed.
-    lit: Option<RangeInclusive<usize>>,
+    lit: &'a [RangeInclusive<usize>],
+    /// Marks in the gutter's mark column.
+    marks: &'a [GutterMark],
     /// Scroll so this line (1-based) is near the top, once.
     scroll_to: Option<usize>,
     font_size: f32,
@@ -181,11 +244,18 @@ pub struct CodeView<'a> {
 
 impl<'a> CodeView<'a> {
     pub fn new(doc: &'a CodeDocument, id: Id) -> Self {
-        Self { doc, id, first_line: 1, lit: None, scroll_to: None, font_size: 12.5 }
+        Self { doc, id, first_line: 1, lit: &[], marks: &[], scroll_to: None, font_size: 12.5 }
     }
 
-    pub fn lit(mut self, lines: Option<RangeInclusive<usize>>) -> Self {
+    /// Lines (1-based) shown lit, in any number of ranges.
+    pub fn lit(mut self, lines: &'a [RangeInclusive<usize>]) -> Self {
         self.lit = lines;
+        self
+    }
+
+    /// Marks painted in the gutter's mark column.
+    pub fn marks(mut self, marks: &'a [GutterMark]) -> Self {
+        self.marks = marks;
         self
     }
 
@@ -219,22 +289,41 @@ impl<'a> CodeView<'a> {
             visible = Some(self.first_line + rows.start..=self.first_line + rows.end.saturating_sub(1));
             for i in rows {
                 let number = self.first_line + i;
-                let lit = self.lit.as_ref().is_some_and(|r| r.contains(&number));
+                let lit = is_lit(self.lit, number);
+                let mark = mark_at(self.marks, number);
                 ui.horizontal(|ui| {
                     ui.set_height(row_height);
-                    let (row, _) = ui.allocate_exact_size(vec2(gutter, row_height), Sense::hover());
+                    let (row, response) = ui.allocate_exact_size(vec2(gutter, row_height), Sense::hover());
                     if lit {
                         let width = (ui.clip_rect().right() - row.left()).max(gutter);
                         let band = Rect::from_min_size(row.min, vec2(width, row_height));
                         ui.painter().rect_filled(band, CornerRadius::ZERO, CODE_LINE_HIGHLIGHT);
                     }
                     // The first 4 points of the gutter are kept for change marks.
+                    if let Some(mark) = mark {
+                        let column = Rect::from_min_size(row.min, vec2(MARK_WIDTH, row_height));
+                        let (shape, filled) = mark_shape(mark.kind, column);
+                        let color = mark_color(mark.kind);
+                        if filled {
+                            ui.painter().rect_filled(shape, CornerRadius::ZERO, color);
+                        } else {
+                            ui.painter().rect_stroke(
+                                shape,
+                                CornerRadius::ZERO,
+                                Stroke::new(1.0, color),
+                                StrokeKind::Inside,
+                            );
+                        }
+                        if !mark.tip.is_empty() {
+                            response.on_hover_text(&mark.tip);
+                        }
+                    }
                     ui.painter().text(
                         row.right_center() - vec2(10.0, 0.0),
                         Align2::RIGHT_CENTER,
                         number.to_string(),
                         font.clone(),
-                        if lit { TEXT_SECONDARY } else { CODE_GUTTER_TEXT },
+                        if lit || mark.is_some() { TEXT_SECONDARY } else { CODE_GUTTER_TEXT },
                     );
                     let runs = highlights.as_ref().and_then(|h| h.get(i)).map(Vec::as_slice);
                     let job = line_job(self.doc.line(i), runs, &font);
@@ -287,5 +376,50 @@ mod tests {
         }
         let job = line_job(line, Some(&h[0]), &FontId::monospace(12.0));
         assert_eq!(job.text, line, "nothing lost or doubled");
+    }
+
+    fn mark(lines: RangeInclusive<usize>, kind: GutterMarkKind) -> GutterMark {
+        GutterMark { lines, kind, tip: String::new() }
+    }
+
+    #[test]
+    fn several_ranges_light_and_marks_pick_the_strongest() {
+        let lit = [3..=4, 10..=10];
+        assert_eq!((1..=11).filter(|&l| is_lit(&lit, l)).collect::<Vec<_>>(), [3, 4, 10]);
+        assert!(!is_lit(&[], 1));
+
+        let marks = [
+            mark(1..=8, GutterMarkKind::Candidate),
+            mark(5..=6, GutterMarkKind::Stale),
+            mark(6..=7, GutterMarkKind::Edit),
+        ];
+        let kinds: Vec<_> = (1..=9).map(|l| mark_at(&marks, l).map(|m| m.kind)).collect();
+        use GutterMarkKind::*;
+        assert_eq!(
+            kinds,
+            [
+                Some(Candidate),
+                Some(Candidate),
+                Some(Candidate),
+                Some(Candidate),
+                Some(Stale),
+                Some(Edit),
+                Some(Edit),
+                Some(Candidate),
+                None
+            ]
+        );
+    }
+
+    #[test]
+    fn marks_fill_outline_or_tick_the_column() {
+        let column = Rect::from_min_size(egui::pos2(0.0, 0.0), vec2(MARK_WIDTH, 18.0));
+        assert_eq!(mark_shape(GutterMarkKind::Edit, column), (column, true));
+        let (outline, filled) = mark_shape(GutterMarkKind::Candidate, column);
+        assert!(!filled && column.contains_rect(outline));
+        let (tick, filled) = mark_shape(GutterMarkKind::Stale, column);
+        assert!(filled && tick.height() < column.height() && tick.center() == column.center());
+        assert_eq!(mark_color(GutterMarkKind::Edit), DISTRICT_CHANGES);
+        assert_eq!(mark_color(GutterMarkKind::Stale), DISTRICT_PIPELINE);
     }
 }

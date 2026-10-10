@@ -1,6 +1,7 @@
 use studio_viewer::app::StudioApp;
 
 fn main() -> eframe::Result<()> {
+    studio_viewer::timing::start();
     let viewport = egui::ViewportBuilder::default()
         .with_inner_size([1440.0, 900.0])
         .with_min_inner_size([800.0, 600.0])

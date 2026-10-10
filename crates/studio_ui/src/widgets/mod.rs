@@ -6,6 +6,7 @@ pub mod dock;
 pub mod file_card;
 pub mod floating_toolbar;
 pub mod group_cluster;
+pub mod pill;
 pub mod pin_socket;
 
 pub use card_frame::{paint_card_frame, truncate_with_ellipsis, CardFrameProps};
@@ -19,4 +20,5 @@ pub use group_cluster::{
     cluster_tint, paint_folder_map_label, paint_group_cluster, GroupClusterLayout, GroupClusterProps, DETAIL_ICONS,
     FOLDER_TEXT_MIN_PX,
 };
+pub use pill::{Pill, PILL_HEIGHT};
 pub use pin_socket::{paint_pin_socket, SocketVisualState};

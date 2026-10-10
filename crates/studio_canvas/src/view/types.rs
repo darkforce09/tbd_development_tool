@@ -108,6 +108,12 @@ pub enum CanvasAction {
     /// Load a minimised folder whose contents are not in the graph yet (cluster id), then show it
     /// at the given detail level.
     ExpandFolder(String, FolderDetail),
+    /// Read the files this commit (full id) changed, for the Changes district.
+    LoadCommitFiles(String),
+    /// Open this agent session's plan (session id) on the Desk.
+    OpenSessionPlan(String),
+    /// Light what this agent session (id) touched on the map, or nothing.
+    LightSession(Option<String>),
 }
 
 pub use studio_ui::ContextMenuItem as ContextMenuAction;
@@ -218,6 +224,12 @@ pub struct CanvasState {
     pub files_open: BTreeSet<String>,
     /// The disk tree's rows, and what they were worked out from (scene revision, open folders).
     pub files_rows: Option<(u64, Arc<Vec<crate::districts::files::TreeRow>>)>,
+    /// What is picked in the Changes district.
+    pub changes_selected: crate::districts::changes::ChangesSelection,
+    /// The agent session whose touches are lit on the map (session id).
+    pub session_lit: Option<String>,
+    /// The cards of the files that session touched, found once per change of session or map.
+    pub session_lit_nodes: BTreeSet<NodeId>,
 }
 
 impl Default for CanvasState {
@@ -257,6 +269,9 @@ impl Default for CanvasState {
             run_selected: None,
             files_open: BTreeSet::new(),
             files_rows: None,
+            changes_selected: Default::default(),
+            session_lit: None,
+            session_lit_nodes: BTreeSet::new(),
         }
     }
 }

@@ -68,6 +68,89 @@ fn fmt_bytes(bytes: u64) -> String {
     }
 }
 
+/// Git: what the history read, and the part-commits pass.
+fn debug_git(ui: &mut egui::Ui, sources: &super::sources::ProjectSources) {
+    let Some(history) = &sources.history else { return };
+    section(ui, "GIT");
+    let ms = |d: Option<Duration>| d.map_or(String::new(), |d| format!(", {} ms", d.as_millis()));
+    let parts = match &sources.part_commits {
+        Some(parts) => format!(
+            "{} folders, {} commits{}",
+            parts.by_folder.len(),
+            parts.commits_scanned,
+            ms(sources.part_commits_elapsed)
+        ),
+        None => "not read yet".to_string(),
+    };
+    rows(
+        ui,
+        "debug_git",
+        &[
+            ("Branches", history.branches.len().to_string()),
+            (
+                "Commits on HEAD",
+                format!("{} ({} read{})", history.commit_count, history.commits.len(), ms(sources.history_elapsed)),
+            ),
+            ("Co-authored", format!("{} of {}", history.co_authored_commits, history.commits.len())),
+            ("Worktrees", history.worktrees.len().to_string()),
+            ("Part-commit folders", parts),
+            ("Commit pages", sources.commit_files.len().to_string()),
+        ],
+    );
+}
+
+/// Agent sessions: the index's numbers and the line types it does not read.
+fn debug_agents(ui: &mut egui::Ui, sources: &super::sources::ProjectSources) {
+    let Some(agents) = &sources.agents else { return };
+    let s = &agents.stats;
+    section(ui, "AGENT SESSIONS");
+    let touches = sources
+        .agent_touches
+        .iter()
+        .map(|(kind, (main, sub))| format!("{kind} {main}/{sub}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mapped = agents.folders.iter().filter(|f| f.mapped).count();
+    rows(
+        ui,
+        "debug_agents",
+        &[
+            ("Main logs", format!("{} ({})", s.main_logs, fmt_bytes(s.main_bytes))),
+            ("Subagent logs", format!("{} ({})", s.subagent_logs, fmt_bytes(s.subagent_bytes))),
+            ("Folders", format!("{mapped} of {} mapped, {} logs scanned", agents.folders.len(), s.scanned_logs)),
+            ("Sessions", agents.sessions.len().to_string()),
+            ("Lines", format!("{} ({} parsed)", s.lines, s.parsed_lines)),
+            ("Touches main/sub", if touches.is_empty() { "none".to_string() } else { touches }),
+            ("Out of repo", s.out_of_repo_touches.to_string()),
+            ("Duplicate lines", s.duplicate_lines.to_string()),
+            ("Bad lines", s.bad_lines.to_string()),
+            ("Files resumed", format!("{} ({} reparsed, {} new)", s.resumed_files, s.reparsed_files, s.new_files)),
+            ("Index", format!("{} ms", s.elapsed_ms)),
+        ],
+    );
+    let mut unknown: Vec<(&String, &u64)> = s.unknown_types.iter().collect();
+    unknown.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    if !unknown.is_empty() {
+        let text = unknown.iter().take(5).map(|(t, n)| format!("{t} {n}")).collect::<Vec<_>>().join(", ");
+        ui.label(
+            RichText::new(format!("Line types not read: {text}"))
+                .font(FontId::new(10.5, FontFamily::Proportional))
+                .color(TEXT_DIM),
+        );
+    }
+}
+
+/// Tickets: files found and those that could not be read.
+fn debug_tickets(ui: &mut egui::Ui, sources: &super::sources::ProjectSources) {
+    let Some(tickets) = &sources.tickets else { return };
+    section(ui, "TICKETS");
+    rows(
+        ui,
+        "debug_tickets",
+        &[("Files", tickets.files.to_string()), ("Bad files", tickets.bad_files.len().to_string())],
+    );
+}
+
 fn section(ui: &mut egui::Ui, title: &str) {
     ui.add_space(6.0);
     ui.label(RichText::new(title).font(FontId::new(10.5, FontFamily::Monospace)).color(TEXT_DIM).strong());
@@ -193,6 +276,9 @@ impl StudioApp {
                 RichText::new(format!("{} tools, {} commands", tools.tools.len(), tools.all().count())).color(TEXT_DIM),
             );
         }
+        debug_git(ui, sources);
+        debug_agents(ui, sources);
+        debug_tickets(ui, sources);
     }
 
     fn debug_frame(&self, ui: &mut egui::Ui) {

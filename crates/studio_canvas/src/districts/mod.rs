@@ -2,6 +2,7 @@
 //! sources read (packages, tools, git, ...); the canvas lays them out and paints them in the
 //! district's own units, so they stay crisp at every zoom.
 
+pub mod changes;
 pub mod files;
 pub mod run;
 
@@ -12,4 +13,5 @@ use std::sync::Arc;
 pub struct DistrictViews {
     pub run: Option<Arc<run::RunView>>,
     pub files: Option<Arc<files::FilesView>>,
+    pub changes: Option<Arc<changes::ChangesView>>,
 }

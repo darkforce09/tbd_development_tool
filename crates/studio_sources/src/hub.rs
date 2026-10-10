@@ -73,6 +73,14 @@ pub enum SourceEvent {
     Settings(Arc<crate::settings::Settings>),
     /// Bytes a top-level entry (relative to the root) takes on disk.
     FolderSize(std::path::PathBuf, u64),
+    /// The project's tickets (`.ai/tickets`).
+    Tickets(Arc<crate::tickets::TicketIndex>),
+    /// The last commit on HEAD that touched each folder.
+    PartCommits(Arc<crate::git::PartCommits>),
+    /// The files one commit changed, by its full id; read when asked for.
+    CommitFiles(String, Arc<Vec<crate::git::FileChange>>),
+    /// Coding agents' sessions that worked in the project.
+    Agents(Arc<crate::agents::AgentIndex>),
 }
 
 /// Why a job stopped without a result.
