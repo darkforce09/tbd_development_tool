@@ -60,6 +60,27 @@ Every folder header has three buttons, one per level (minimised, node view, open
 
 **L6. Hubs are badges.** A file or folder that feeds at least half of the other connected items in its folder, and at least 8 of them, is a **hub** (a shared types file, a prelude). Its wires would say little ("everything uses it") and bury everything else, so they are not drawn or laid out. The hub shows a "used by N" badge instead, and its wires appear when it is selected. A hub still sits left of everything it feeds (L1).
 
+**L7. Districts keep their places and never overlap.** Every project gets the same five districts, always in the same place: **Pipeline** north, **Files** west, **Code** in the centre with the **Desk** below it, **Run** east, **Changes** south (see [Districts](#districts)). Wires never leave the Code map.
+
+## Districts
+
+The map of the code (everything above) is one district of a larger world. The world is laid out around the Code map's bounds, which the layout engine owns: a district growing never moves the map, and the map growing moves the districts while the camera stays on the one it is at.
+
+| District | Where | What it holds | Colour |
+|---|---|---|---|
+| Pipeline | north | the flows a run takes, across processes and languages | yellow `#FFD60A` |
+| Files | west | the disk as it is: folders, sizes, ignore rules, settings | teal `#63E6E2` |
+| Code | centre | every package and folder, and how they connect | blue `#0A84FF` |
+| Desk | below Code | open files and plans, side by side | cyan `#64D2FF` |
+| Run | east | tools, apps, builds, tests and the console | green `#30D158` |
+| Changes | south | commits, worktrees and agents at work | purple `#BF5AF2` |
+
+- Districts other than Code are drawn in their own units, scaled with the size of the map, so the world view stays in proportion for a project of any size and each district reads at 100% when the camera visits it.
+- From far away each district shows its name at a constant size, and short labels in the gaps say how they relate ("feeds →", "makes →", "↑ runs as", "↓ changes").
+- At a district, the others dim. Clicking a dimmed district goes there.
+- A district with nothing to show says so plainly ("No git repository here"). It never shows sample content, and it never disappears or moves the others.
+- The camera flies between districts in 0.85 s, zooming out on long trips so the way stays visible. Any wheel, pinch or drag stops it where it is. A flight that ends at 100% lands on whole pixels.
+
 ## Placement of things that are not code flow
 
 - Documentation is shown as a chip on the card it documents ("docs 2") by default. Its wires can be turned on in the View menu.

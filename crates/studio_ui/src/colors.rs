@@ -113,6 +113,14 @@ pub const SOCKET_RING_IDLE: Color32 = Color32::from_rgb(0x2d, 0x2d, 0x38);
 pub const SOCKET_RING_HOVER: Color32 = Color32::from_rgb(0xff, 0xff, 0xff);
 
 // Overlay & toolbar
+// Districts (docs/VISUAL_LANGUAGE.md, Districts): each keeps its place and colour in every project.
+pub const DISTRICT_PIPELINE: Color32 = Color32::from_rgb(0xff, 0xd6, 0x0a);
+pub const DISTRICT_FILES: Color32 = Color32::from_rgb(0x63, 0xe6, 0xe2);
+pub const DISTRICT_CODE: Color32 = Color32::from_rgb(0x0a, 0x84, 0xff);
+pub const DISTRICT_DESK: Color32 = Color32::from_rgb(0x64, 0xd2, 0xff);
+pub const DISTRICT_RUN: Color32 = Color32::from_rgb(0x30, 0xd1, 0x58);
+pub const DISTRICT_CHANGES: Color32 = Color32::from_rgb(0xbf, 0x5a, 0xf2);
+
 pub const PANEL_BG: Color32 = Color32::from_rgb(0x14, 0x14, 0x17);
 pub const PANEL_BORDER: Color32 = Color32::from_rgb(0x27, 0x27, 0x2f);
 pub const BADGE_BG: Color32 = Color32::from_rgb(0x27, 0x27, 0x33);
