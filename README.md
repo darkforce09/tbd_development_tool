@@ -8,7 +8,7 @@ Built in Rust with [egui](https://github.com/emilk/egui) and [wgpu](https://wgpu
 
 ## Features
 
-- **One canvas**: the whole project on a single canvas.
+- **One world**: the whole project on a single canvas, in five districts that sit in the same place in every project: Pipeline north, Files west, Code in the centre with the Desk below it, Run east, Changes south. The camera flies between them.
 - **Nothing hidden**: the canvas shows every file and folder on disk, including empty folders, gitignored files, binaries, images, large files and symlinks, laid out as the real nested folder tree. See [What the canvas shows](#what-the-canvas-shows).
 - **Polyglot parsing**: Rust through `syn`, 17 more languages through tree-sitter, plus Markdown and Bohemia Enforce Script (Arma Reforger / DayZ). See [Supported languages](#supported-languages).
 - **Wires**: imports, calls and Markdown links between files and between individual members, drawn on the GPU in instanced batches. There is a CPU fallback.
@@ -39,24 +39,34 @@ To use a specific graphics backend, set `WGPU_BACKEND` (`vulkan`, `metal`, `dx12
 
 | Action | Input |
 |---|---|
-| Pan | right-drag, or <kbd>Space</kbd> + left-drag |
-| Zoom | scroll over the canvas, <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + scroll anywhere, or pinch |
+| Go to a district | click it, or its button in the compass at the top right |
+| The whole project | <kbd>Home</kbd>, **All** in the compass, or click the project name in the title bar |
+| Pan | drag with any mouse button |
+| Zoom | scroll over the canvas, <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + scroll, pinch, or <kbd>=</kbd> / <kbd>-</kbd> |
+| Back to 100% | <kbd>0</kbd>, or the zoom under the compass |
 | Scroll inside an open code card | scroll over the card's code |
 | Select and trace | click a card: everything upstream and downstream of it is highlighted, the rest dims |
-| Search symbols | <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd> or <kbd>/</kbd> |
+| Search symbols | <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>K</kbd>, or <kbd>/</kbd> when no text field has focus |
 | Close / deselect | <kbd>Esc</kbd> |
+| Open a file on the Desk | double-click its card, pick it in the Desk's navigator, or **Open on the Desk** in its context menu |
+| See a tool's commands | click its tile in the Run district; click a command to open where it is defined |
+| Build, Test, Trace and pinned tools | the Dock at the bottom; hover an icon for exactly what it runs |
 | Open a folder | double-click it: it opens in place and fills the view |
-| Go back up | click a folder or the project name in the breadcrumb in the title bar |
+| Go back up | click a folder or the district in the breadcrumb in the title bar |
 | Change a folder's detail level | the three buttons in its header (minimised, node view, open) |
-| Open or close the sidebar | the arrow tab at the left edge, under the title bar |
 | Show or hide wires | **View** menu: all wires, member wires, and each kind (documentation is off by default; cards show "docs N" chips instead) |
+| Open another project | the arrow next to the project name in the title bar |
 | Debug panel and project stats | <kbd>F3</kbd> |
 | Move / maximise the window | drag / double-click an empty part of the title bar |
 | Resize the window | drag a window edge or corner |
 
-A project opens at its top level: its main folders, closed, with one wire per pair of them. The number on a wire is how many file pairs it stands for, and heavier wires are thicker. A file or folder used by most of its neighbours shows "used by N" instead of its wires. See [docs/VISUAL_LANGUAGE.md](docs/VISUAL_LANGUAGE.md).
+The Run district lists the tools a project defines, found by reading its files: Cargo binaries and examples, `.cargo/config.toml` aliases, the subcommands of clap command-line tools (nested, including enums from other crates), `package.json` scripts, Makefile targets, justfile recipes and GitHub Actions workflows. Nothing is run to find them.
 
-Studio draws its own title bar. On macOS, resizing from the edges is not supported yet.
+Nothing on the canvas changes what the map says: wires come from the code, so they cannot be drawn, cut or deleted by hand, and cards stay where the layout puts them.
+
+A project opens on the whole world. In the Code district, the project shows at its top level: its main folders, closed, with one wire per pair of them. The number on a wire is how many file pairs it stands for, and heavier wires are thicker. A file or folder used by most of its neighbours shows "used by N" instead of its wires. See [docs/VISUAL_LANGUAGE.md](docs/VISUAL_LANGUAGE.md).
+
+Studio draws its own title bar. On macOS the native window buttons stay at its left end.
 
 ## Supported languages
 
@@ -112,7 +122,8 @@ Otherwise it is parsed as C.
 |---|---|
 | `studio_graph` | Graph model: nodes, ports, edges, clusters, member nodes. Serializable with `rkyv`. |
 | `studio_parser` | Project scanning (`git ls-files`, Cargo workspaces), language detection, extraction (`syn`, tree-sitter, Markdown, Enforce), graph builders, save and re-parse, cache. |
-| `studio_canvas` | Infinite canvas: transform, input, spatial hash culling, card and wire rendering, the wgpu wire pipeline. |
+| `studio_canvas` | Infinite canvas: the world and its districts, the camera, input, spatial hash culling, card and wire rendering, the wgpu wire pipeline. |
+| `studio_sources` | Everything read about a project besides its code (packages, settings, tools, git, agent sessions), read-only and off the UI thread. |
 | `studio_ui` | Theme, color tokens, syntax highlighting (`syntect`), Markdown rendering, card widgets. |
 | `studio_viewer` | The eframe application (`studio_viewer` binary), telemetry, and the `bench_scale` benchmark. |
 

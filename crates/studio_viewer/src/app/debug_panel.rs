@@ -123,6 +123,7 @@ impl StudioApp {
             .show(ctx, |ui| {
                 ui.set_width(300.0);
                 self.debug_project(ui);
+                self.debug_sources(ui);
                 self.debug_frame(ui);
                 self.debug_process(ui);
                 self.debug_gpu(ui);
@@ -165,6 +166,32 @@ impl StudioApp {
         );
         if let Some(msg) = &self.canvas_state.status_message {
             ui.label(RichText::new(msg).font(FontId::new(10.5, FontFamily::Proportional)).color(TEXT_DIM));
+        }
+    }
+
+    /// Each source of the project and where it is: running, ready (and how long it took),
+    /// nothing to read, or failed.
+    fn debug_sources(&self, ui: &mut egui::Ui) {
+        let Some(sources) = &self.sources else { return };
+        section(ui, "SOURCES");
+        let entries: Vec<(&str, String)> = sources
+            .status
+            .iter()
+            .map(|(kind, state)| {
+                let text = match state {
+                    studio_sources::SourceState::Running => "reading…".to_string(),
+                    studio_sources::SourceState::Ready { elapsed } => format!("ready in {} ms", elapsed.as_millis()),
+                    studio_sources::SourceState::Unavailable(why) => why.clone(),
+                    studio_sources::SourceState::Failed(why) => format!("failed: {why}"),
+                };
+                (kind.label(), text)
+            })
+            .collect();
+        rows(ui, "debug_sources", &entries);
+        if let Some(tools) = &sources.tools {
+            ui.label(
+                RichText::new(format!("{} tools, {} commands", tools.tools.len(), tools.all().count())).color(TEXT_DIM),
+            );
         }
     }
 
